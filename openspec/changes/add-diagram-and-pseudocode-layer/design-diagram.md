@@ -75,3 +75,36 @@ flowchart LR
 ```
 
 **图不表达的约束**：`ui-design.md` 只写指针不复制图（design D5），复制会漂。
+
+## 4. marker 与制品之间的存在约束
+
+这张图回答：**哪些制品是「一定在」、哪些是「视 marker 而定」**。它不表达文件格式与命名规范。
+
+```mermaid
+erDiagram
+    CHANGE ||--|| PROPOSAL : "必有"
+    CHANGE ||--|| DESIGN_MD : "必有"
+    CHANGE ||--o| DESIGN_DIAGRAM : "full 档必有"
+    CHANGE ||--|| MARKER : "proposal 头部声明"
+
+    MARKER ||--o| DESIGN_DIAGRAM : "full 时要求存在"
+    DESIGN_DIAGRAM ||--|{ MERMAID_BLOCK : "至少 1 块"
+    DESIGN_MD ||--o| PSEUDOCODE_SECTION : "强制节或 N/A"
+
+    MARKER {
+        string kind "full / none"
+        string reason "两档都必填"
+    }
+    MERMAID_BLOCK {
+        string lang "必须是 mermaid"
+        string question "块前一行：这图回答什么"
+        string limit "块后一句：图不表达什么"
+    }
+    PSEUDOCODE_SECTION {
+        string data_structure
+        string control_flow
+        string edge_cases
+    }
+```
+
+**图不表达的约束**：`none` 档不禁止存在 `design-diagram.md`（有人先画后决定不用），只是不要求；`full` 档的图类型选择由内容决定，marker 不规定画哪几类。

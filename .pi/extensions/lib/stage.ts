@@ -289,6 +289,11 @@ export const ROUTING_DOC_CATALOG: Readonly<Record<string, string | null>> =
 			...ROUTING_CODE_DOCS_BY_STACK.backend.map((d) => [d.path, d.section]),
 			...ROUTING_CODE_DOCS_BY_STACK.frontend.map((d) => [d.path, d.section]),
 			...ROUTING_ACCEPTANCE_DOCS.map((d) => [d.path, d.section]),
+			// 图与伪代码约定（marker 在 propose 产出，故 explore/propose 即可读）
+			[
+				"docs/reference/开发执行规范.md",
+				"13. change 图表达与伪代码层（design-diagram.md / design.md）",
+			],
 		]),
 	);
 

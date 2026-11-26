@@ -74,6 +74,7 @@ change 的 `proposal.md` 头部 SHALL 声明二值 marker 之一：
 
 - `full`：change 根 SHALL 存在 `design-diagram.md`，且其中 SHALL 至少含一个 ` ```mermaid ` 代码块
 - `none`：括号内理由 MUST 非空，且 SHALL 用大白话说明为什么不需要图（如「只改措辞」「无表结构变更」「无状态机」「单层调用无时序可言」）
+- `full`：括号内理由同样 MUST 非空，用来说明这个 change 的哪一部分需要图
 - marker 缺失：新 change（有 `.openspec.yaml`）缺失 marker SHALL 使归档门禁判红
 
 **不判理由的正确性**：机器只判「有没有写理由」，理由成立与否归 review 与看图的人。
@@ -86,7 +87,7 @@ change 的 `proposal.md` 头部 SHALL 声明二值 marker 之一：
 #### Scenario: none 档理由非空
 
 - **WHEN** change 声明 `<!-- diagrams: none(只改文档措辞，无表结构、无状态机、无跨层调用) -->`
-- **THEN** 归档门禁通过；理由为空或缺失括号内容则判红
+- **THEN** 归档门禁通过；理由为空或缺失括号内容则判红（`full` 档同理）
 
 #### Scenario: marker 缺失
 

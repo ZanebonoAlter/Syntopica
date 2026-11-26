@@ -24,8 +24,16 @@ CHANGE_DIR="${CHANGE_DIR%/}"
 case "/$CHANGE_DIR/" in
 */changes/archive/*) echo "— legacy（已归档补档），跳过"; exit 0 ;;
 esac
-if [ ! -f "$CHANGE_DIR/.openspec.yaml" ]; then
+YAML="$CHANGE_DIR/.openspec.yaml"
+if [ ! -f "$YAML" ]; then
 	echo "— legacy（无 .openspec.yaml），跳过"
+	exit 0
+fi
+# 规则生效日之前创建的 change 不追溯（R-3：用创建时间而非「有无 yaml」判 legacy，
+# 否则规则上线时在途的 change 会在归档时突然变红）
+created="$(sed -n 's/^created:[[:space:]]*//p' "$YAML" | head -1 | tr -d ' "'"'"'')"
+if [[ "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [[ "$created" < "2026-11-26" ]]; then
+	echo "— legacy（created ${created} 早于规则生效日 2026-11-26），不追溯"
 	exit 0
 fi
 
@@ -47,7 +55,9 @@ for line in text.splitlines():
     if s.startswith('<!--'):
         head.append(s)
         continue
-    break  # 头部结束
+    if s.startswith('#'):      # 允许文档标题行出现在 marker 之前/之间
+        continue
+    break                      # 正文开始，头部结束
 blob = '\n'.join(head)
 m = re.search(r'<!--\s*diagrams:\s*(full|none)\s*\((.*?)\)\s*-->', blob, re.S)
 if m:
@@ -67,6 +77,8 @@ for line in text.splitlines():
         continue
     if s.startswith('<!--'):
         head.append(s); continue
+    if s.startswith('#'):
+        continue
     break
 sys.exit(0 if re.search(r'<!--\s*diagrams:', '\n'.join(head)) else 1)
 PY
@@ -100,6 +112,16 @@ fi
 blocks="$(grep -c '^[`][`][`]mermaid' "$DIAGRAM" 2>/dev/null || true)"
 if [ "${blocks:-0}" -eq 0 ]; then
 	echo "✗ design-diagram.md 里没有 mermaid 代码块（三个反引号 + mermaid）"
+	exit 1
+fi
+# 围栏必须成对闭合（R-6：否则空壳或未闭合围栏也能过）
+if ! awk '/^```/{n++} END{exit (n % 2)}\' "$DIAGRAM"; then
+	echo "✗ design-diagram.md 代码围栏未闭合（反引号行数为奇数）"
+	exit 1
+fi
+# 至少一块 mermaid 块内有实质内容（不是紧跟闭合的空块）
+if ! awk '/^```mermaid/{inblk=1;next} /^```/{if(inblk&&n>0)f=1; inblk=0;n=0;next} inblk&&NF{n++} END{exit (f?0:1)}' "$DIAGRAM"; then
+	echo "✗ design-diagram.md 的 mermaid 块是空壳（块内没有任何内容行）"
 	exit 1
 fi
 

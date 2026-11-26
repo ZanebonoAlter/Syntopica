@@ -34,21 +34,21 @@
 
 ## 5. 验证
 
-- [ ] 5.1 `bash scripts/harness/archive-readiness.sh add-diagram-and-pseudocode-layer` 全绿（本 change 自己要有 marker + 图）
+- [x] 5.1 `bash scripts/harness/archive-readiness.sh add-diagram-and-pseudocode-layer` 全绿（本 change 自己要有 marker + 图）
 - [x] 5.2 负例测试通过（任务 2.3）
 - [x] 5.3 已归档 change 不因缺 marker 判红（回归：随便挑 3 个归档 change 跑门禁）
 - [x] 5.4 `check-standards.sh` 无新增失败
 
 ## 6. review
 
-- [ ] 6.1 派 review（`minimax-cn/MiniMax-M3.1-Flash:max`）
-- [ ] 6.2 处置 review 发现
+- [x] 6.1 派 review（`minimax-cn/MiniMax-M3.1-Flash:max`）
+- [x] 6.2 处置 review 发现
 
 ## 7. 归档
 
-- [ ] 7.1 六项门禁全绿
-- [ ] 7.2 `openspec archive add-diagram-and-pseudocode-layer --yes`
-- [ ] 7.3 `openspec validate --specs` 全过
+- [x] 7.1 六项门禁全绿
+- [x] 7.2 `openspec archive add-diagram-and-pseudocode-layer --yes`
+- [x] 7.3 `openspec validate --specs` 全过
 
 ## 8. 测试
 
@@ -74,13 +74,13 @@
 
 ## 10. 验收
 
-- [ ] A marker 二值唯一、理由必填、机器不判理由正确性
-- [ ] B 五类图判据写进 §13，含 ER 与用例图（用例图注明是 flowchart 模拟）
-- [ ] C 「图 SHALL 在对话中呈现」是硬约束，不是建议
-- [ ] D 伪代码节默认要有、N/A 写理由
-- [ ] E 门禁三查三不查，legacy 不追溯
-- [ ] F 样板 change 补图完成且图在对话里出现过
-- [ ] G ISS-01 的 Q1–Q6 六个待定问题各有结论（记进 ledger）
+- [x] A marker 二值唯一、理由必填、机器不判理由正确性
+- [x] B 五类图判据写进 §13，含 ER 与用例图（用例图注明是 flowchart 模拟）
+- [x] C 「图 SHALL 在对话中呈现」是硬约束，不是建议
+- [x] D 伪代码节默认要有、N/A 写理由
+- [x] E 门禁三查三不查，legacy 不追溯
+- [x] F 样板 change 补图完成且图在对话里出现过
+- [x] G ISS-01 的 Q1–Q6 六个待定问题各有结论（记进 ledger）
 
 ## 11. ISS-01 六个待定问题的结论（本 change 一并落定）
 

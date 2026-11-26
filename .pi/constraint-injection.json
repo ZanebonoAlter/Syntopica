@@ -7,7 +7,9 @@
         "/skill:openspec-explore"
       ],
       "docs": {
-        "required": [],
+        "required": [
+          "docs/reference/开发执行规范.md"
+        ],
         "conditional": {
           "backend": [],
           "frontend": []
@@ -23,7 +25,9 @@
         "/skill:openspec-propose"
       ],
       "docs": {
-        "required": [],
+        "required": [
+          "docs/reference/开发执行规范.md"
+        ],
         "conditional": {
           "backend": [],
           "frontend": []

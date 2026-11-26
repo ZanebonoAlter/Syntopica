@@ -3,7 +3,7 @@
  *
  * 设计决策（见 docs/reference/开发执行规范.md §11 归档门禁、§4.1 门禁分层表）：
  * 1. 挂 tool_call，仅 bash 命令命中 `openspec archive` 时介入；其余工具调用零开销直接放行
- * 2. 六项 block 级检查（各自独立判定、不强制顺序，任一失败即 block）+ 检查⑤措辞（warn）
+ * 2. 八项 block 级检查（各自独立判定、不强制顺序，任一失败即 block）+ 检查⑤措辞（warn）
  *    + ⑥' UI 验收 + ⑦' 约束读取对账（④ 场景映射对账已退役，见第 6 条）：
  *    ① `bash scripts/harness/doc-impact.sh verify openspec/changes/<name>` 退出码 0
  *    ② `bash scripts/harness/check-standards.sh --change <name>` 退出码 0（F 段只对账归档目标）
@@ -181,7 +181,7 @@ export default function (pi: ExtensionAPI) {
 
 // ---------- 归档检查 ----------
 
-/** 对一次 openspec archive 执行六项归档检查（block 级）+ 检查⑤措辞扫描（warn 级不 block）
+/** 对一次 openspec archive 执行八项归档检查（block 级）+ 检查⑤措辞扫描（warn 级不 block）
  *  + 检查⑥' UI 验收、⑦' 约束读取对账（block 级）；失败返回 { block: true, reason }，
  *  通过/豁免返回 undefined */
 async function gateArchive(
@@ -197,7 +197,7 @@ async function gateArchive(
 		console.warn(`[spec-gate] ${why}，豁免放行（归档检查与⑤措辞扫描均未执行）`);
 		warn(
 			pi,
-			`⚠️ [spec-gate] ${why}，openspec archive 已豁免放行；六项归档检查（doc-impact verify / check-standards / tasks.md 尾三节 / review-trace 痕迹对账 / UI 验收对账脚本+规划制品 / 约束文档读取对账）与检查⑤（措辞扫描）均未执行，留痕备查。`,
+			`⚠️ [spec-gate] ${why}，openspec archive 已豁免放行；八项归档检查（doc-impact verify / check-standards / tasks.md 尾三节 / review-trace 痕迹对账 / UI 验收对账脚本+规划制品 / 约束文档读取对账 / diagrams marker 与图块）与检查⑤（措辞扫描）均未执行，留痕备查。`,
 		);
 		auditPolicy(ctx, extractChangeName(command) || undefined, {
 			policy: "spec-gate",
@@ -280,6 +280,28 @@ async function gateArchive(
 		const body = constraintRead.stdout.trim() || constraintRead.detail;
 		failures.push(`[constraint-read-trace] ${body}`);
 		failedChecks.push("constraint-read");
+	}
+
+	// 2.8 检查⑧：diagrams marker 与图/理由一致性（change-diagram-convention）——二值
+	//     marker 存在 + none 档理由非空 + full 档 design-diagram.md 含 mermaid 块。
+	//     只查形式，不查图类型/语法/理由成立性；无 .openspec.yaml 或已归档补档走 legacy
+	//     豁免（脚本内部判定，直接 exit 0）。脚本 spawn 失败沿既有 fail-open 语义。
+	const diagramsCheck = await runScript(pi, ctx, [
+		"scripts/harness/diagrams-trace.sh",
+		changeDir,
+	]);
+	if (
+		diagramsCheck.code === -1 ||
+		diagramsCheck.code === 126 ||
+		diagramsCheck.code === 127
+	) {
+		console.warn(
+			`[spec-gate] 检查⑧ diagrams 对账脚本执行失败（exit ${diagramsCheck.code}），fail-open 放行该项（不阻断）：${diagramsCheck.detail}`,
+		);
+	} else if (!diagramsCheck.ok) {
+		const body = diagramsCheck.stdout.trim() || diagramsCheck.detail;
+		failures.push(`[diagrams-trace] ${body}`);
+		failedChecks.push("diagrams");
 	}
 
 	// 3. 检查⑤：验收措辞扫描（warn 级——仅留痕，不进 failures、不改下方裁决；
