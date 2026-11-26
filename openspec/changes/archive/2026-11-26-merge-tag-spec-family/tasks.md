@@ -28,20 +28,20 @@
 
 - [x] 4.1 生成 `specs/{tagging,auxiliary-label,tag-matching}/spec.md` 的 `## ADDED Requirements`
 - [x] 4.2 生成 23 个旧 capability 的 `## REMOVED Requirements`（脚本从现有 spec 抽标题，逐条带删除原因）
-- [ ] 4.3 **归档后断言** 22 个 `openspec/specs/<cap>/` 目录已被 openspec 自动退役删除（凭 `.openspec.yaml` 的 `retire_capabilities: true`，不留空壳；R-1 更正了原先「先归档再手删空壳」的错误流程）
-- [ ] 4.4 归档后补 marker 与 Purpose：
-  - [ ] 4.4a `tagging` → `<!-- domain: semantic-board, ui -->`（成员并集 7 域装不下，取舍见 design D9）
-  - [ ] 4.4b `tag-matching` → `<!-- domain: semantic-board, topic-graph -->`
-  - [ ] 4.4c `auxiliary-label` 保留原 marker，但**手改 Purpose**为族级文案（delta 的 Purpose 对已存在 spec 会被忽略，R-5）
-  - [ ] 4.4d `tagging` / `tag-matching` 的新 main spec 标题按存量风格改为 `<capability> Specification`（R-14）
-- [ ] 4.5 `openspec validate --specs` → 158 全过（178 - 22 + 2）
+- [x] 4.3 **归档后断言** 22 个 `openspec/specs/<cap>/` 目录已被 openspec 自动退役删除（凭 `.openspec.yaml` 的 `retire_capabilities: true`，不留空壳；R-1 更正了原先「先归档再手删空壳」的错误流程）
+- [x] 4.4 归档后补 marker 与 Purpose：
+  - [x] 4.4a `tagging` → `<!-- domain: semantic-board, ui -->`（成员并集 7 域装不下，取舍见 design D9）
+  - [x] 4.4b `tag-matching` → `<!-- domain: semantic-board, topic-graph -->`
+  - [x] 4.4c `auxiliary-label` 保留原 marker，但**手改 Purpose**为族级文案（delta 的 Purpose 对已存在 spec 会被忽略，R-5）
+  - [x] 4.4d `tagging` / `tag-matching` 的新 main spec 标题按存量风格改为 `<capability> Specification`（R-14）
+- [x] 4.5 `openspec validate --specs` → 158 全过（178 - 22 + 2）
 
 ## 5. 验证
 
-- [ ] 5.1 `bash scripts/harness/domain-history.sh semantic-board` → 第 6 段列出「仍能经其它 capability 命中本域」的孤儿 delta（实测 15 个 change）；另有 21 个只碰过被删 capability 的 change 会彻底不可见（R-7，见 design D6）
-- [ ] 5.2 `bash scripts/harness/check-standards.sh` → J 段 3 个新 capability 有合法 marker，0 失败
-- [ ] 5.3 抽查 5 条 Requirement 的来源注释，grep archive 确认 change 名与日期属实
-- [ ] 5.4 确认代码零改动：`git status` 里 `backend-go/` 与 `front/` 无本 change 文件
+- [x] 5.1 `bash scripts/harness/domain-history.sh semantic-board` → 第 6 段列出「仍能经其它 capability 命中本域」的孤儿 delta（实测 15 个 change）；另有 21 个只碰过被删 capability 的 change 会彻底不可见（R-7，见 design D6）
+- [x] 5.2 `bash scripts/harness/check-standards.sh` → J 段 3 个新 capability 有合法 marker，0 失败
+- [x] 5.3 抽查 5 条 Requirement 的来源注释，grep archive 确认 change 名与日期属实
+- [x] 5.4 确认代码零改动：`git status` 里 `backend-go/` 与 `front/` 无本 change 文件
 
 ## 6. review
 
@@ -50,9 +50,9 @@
 
 ## 8. 归档
 
-- [ ] 8.1 `bash scripts/harness/archive-readiness.sh merge-tag-spec-family` 六项全绿
-- [ ] 8.2 `openspec archive merge-tag-spec-family`（归档验证：REMOVED 3/3 已实测有效，按标题匹配，Reason 文本不干扰）
-- [ ] 8.3 归档后跑 `openspec validate --specs` 确认 158 个 capability 无空壳残留
+- [x] 8.1 `bash scripts/harness/archive-readiness.sh merge-tag-spec-family` 六项全绿
+- [x] 8.2 `openspec archive merge-tag-spec-family`（归档验证：REMOVED 3/3 已实测有效，按标题匹配，Reason 文本不干扰）
+- [x] 8.3 归档后跑 `openspec validate --specs` 确认 158 个 capability 无空壳残留
 
 ## 9. 测试
 
@@ -75,14 +75,14 @@
 - [x] 7.1 `docs/reference/standard/shared/doc-authoring.md` 补「族级 capability 命名与来源注释」约定
 - [ ] 7.2 `docs/research/process-arch-rework/issues.md` 回填 ISS-04 进度（首族已合并，其余 29 个待办）
 - [x] 7.3 本 change 无 flow 影响不成立（semantic-board 流程文档需补一句指向新族），在 `docs/reference/flow/semantic-board.md` 变更溯源表加一行
-- [ ] 7.4 修旧 capability 名的跨文件引用（R-8）：`docs/reference/api/feeds.md:55`（source-board-hit-rate）、`api/semantic-boards.md:128,153`、`flow/semantic-board.md:500,522`、`flow/reading.md:212` → 改指新族；另有 4 个 main spec 的指针（board-concept-management ×3、board-health-checkup:312、analysis-pause-control:87、board-editing-ui:17）列为本 change 内的仅改指针 MODIFIED
-- [ ] 7.5 归档后跑 `domain-history.sh` 复核孤儿损失口径，把「已退役 capability → 族」别名表登记为后续 change（R-7）
+- [x] 7.4 修旧 capability 名的跨文件引用（R-8）：`docs/reference/api/feeds.md:55`（source-board-hit-rate）、`api/semantic-boards.md:128,153`、`flow/semantic-board.md:500,522`、`flow/reading.md:212` → 改指新族；另有 4 个 main spec 的指针（board-concept-management ×3、board-health-checkup:312、analysis-pause-control:87、board-editing-ui:17）列为本 change 内的仅改指针 MODIFIED
+- [x] 7.5 归档后跑 `domain-history.sh` 复核孤儿损失口径，把「已退役 capability → 族」别名表登记为后续 change（R-7）
 
 ## 11. 验收
 
-- [ ] A 三个族级 capability 各自包含原成员的全部 Requirement，条数守恒（55/38/55）
-- [ ] B 每条 Requirement 带 `<!-- from: ... -->` 来源注释，可 grep archive 验证
-- [ ] C 22 个旧 capability 在 `openspec/specs/` 下被自动退役；其 delta 中「仍能经其它 capability 命中本域」的 15 个 change 落第 6 段，21 个会彻底不可见（R-7 已知损失，用别名表后续补）
+- [x] A 三个族级 capability 各自包含原成员的全部 Requirement，条数守恒（55/38/55）
+- [x] B 每条 Requirement 带 `<!-- from: ... -->` 来源注释，可 grep archive 验证
+- [x] C 22 个旧 capability 在 `openspec/specs/` 下被自动退役；其 delta 中「仍能经其它 capability 命中本域」的 15 个 change 落第 6 段，21 个会彻底不可见（R-7 已知损失，用别名表后续补）
 
 ## 备注
 
