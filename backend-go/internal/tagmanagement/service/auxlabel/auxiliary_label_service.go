@@ -2,6 +2,8 @@ package auxlabel
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,11 +12,13 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/textutil"
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/service/core"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"syntopica-backend/internal/tagmanagement/repository"
@@ -72,23 +76,24 @@ type AuxiliaryLabelEmbedder func(ctx context.Context, input string, mode Auxilia
 // and count batch calls (design D1 phase one).
 type AuxiliaryLabelBatchEmbedder func(ctx context.Context, inputs []string, mode AuxiliaryLabelEmbeddingMode) ([]string, [][]float64, error)
 
-type mergeMatcherFunc func(ctx context.Context, db *gorm.DB, labels []models.SemanticLabel, mergePgVector string, mergeVector []float64) (*models.SemanticLabel, error)
+// mergeMatcherFunc resolves the L2 merge target for one new label. The merge
+// pgvector text is passed straight through as the SQL binding parameter (the
+// batch embedder already produced it — no re-serialization of 2560 float64s),
+// and mergeVector supplies the dimension used to build the halfvec cast
+// (fix-aux-label-dedup-ann design D3).
+type mergeMatcherFunc func(ctx context.Context, db *gorm.DB, mergePgVector string, mergeVector []float64) (*models.SemanticLabel, error)
 
 const (
-	auxActiveLabelsTTL    = 5 * time.Minute
-	auxMergeEmbeddingsTTL = 10 * time.Minute
+	auxActiveLabelsTTL = 5 * time.Minute
 )
 
 type auxLabelCache struct {
 	mu sync.RWMutex
 
-	// Active auxiliary labels cache
-	activeLabels   []models.SemanticLabel
-	activeLabelsAt time.Time
-
-	// Merge embedding vectors cache
-	mergeEmbeddings   map[uint][]float64
-	mergeEmbeddingsAt time.Time
+	// Active auxiliary labels cache + its L1 exact-match indexes (same lifecycle
+	// and TTL — built together on load).
+	active   *auxLabelIndex
+	activeAt time.Time
 }
 
 type AuxiliaryLabelService struct {
@@ -108,10 +113,8 @@ var packageAuxLabelCache = &auxLabelCache{}
 // ResetTestData clears the DB but not this in-memory cache.
 func InvalidateAuxLabelCache() {
 	packageAuxLabelCache.mu.Lock()
-	packageAuxLabelCache.activeLabels = nil
-	packageAuxLabelCache.mergeEmbeddings = nil
-	packageAuxLabelCache.activeLabelsAt = time.Time{}
-	packageAuxLabelCache.mergeEmbeddingsAt = time.Time{}
+	packageAuxLabelCache.active = nil
+	packageAuxLabelCache.activeAt = time.Time{}
 	packageAuxLabelCache.mu.Unlock()
 }
 
@@ -172,6 +175,22 @@ func EnsureVectorDimensionOnce(ctx context.Context) {
 			logging.Errorf("Failed to ensure semantic_labels.merge_embedding vector dimension: %v; "+
 				"INSERT into semantic_labels will fail until this is resolved", err)
 		}
+		// The L2 dedup ANN index embeds the runtime dimension in its expression: a
+		// stale-dimension index silently degrades recall to a sequential scan, so
+		// reconcile it after the column guards. Failure only degrades performance
+		// (the L2 query stays correct), hence WARN instead of aborting startup.
+		//
+		// EXCEPT when the cause is stale merge_embedding rows: the recall query
+		// casts merge_embedding::halfvec(<dim>) itself, so those rows make the
+		// recall FAIL (whole attach batch) instead of degrading. The guard logs an
+		// ERROR with the cleanup SQL in that case — the WARN below must not
+		// promise a "sequential scan, results stay correct" that does not hold.
+		if err := database.EnsureSemanticLabelMergeHalfvecIndex(repository.Repo.DB(), dim); err != nil {
+			logging.Warnf("Failed to ensure semantic_labels merge halfvec HNSW index: %v; "+
+				"aux-label L2 dedup recall no longer uses the ANN index (slower). "+
+				"If the cause is a stale merge_embedding dimension, L2 recall FAILS (not degrades) "+
+				"until those rows are cleared — see the ERROR log above", err)
+		}
 		for _, fn := range vectorDimEnsurers {
 			fn(dim)
 		}
@@ -208,26 +227,35 @@ const (
 // slug/normalize-key as an earlier entry — the legacy sequential loop saw
 // those via cache-reload L1 re-matching, the maps replicate it).
 type auxLabelPlan struct {
-	kind        auxPlanKind
-	refIndex    int
-	existing    *models.SemanticLabel // reuse: matched row copy
-	target      *models.SemanticLabel // alias: L2 best match copy
-	alias       string                // alias: incoming label text
-	aliasAdded  bool                  // alias: set at execution for cache step
-	created     *models.SemanticLabel // create: fully populated, ID zero until phase two
-	mergeVector []float64             // create: merge vector for incremental cache absorb
+	kind       auxPlanKind
+	refIndex   int
+	existing   *models.SemanticLabel // reuse: matched row copy
+	target     *models.SemanticLabel // alias: L2 best match copy
+	alias      string                // alias: incoming label text
+	aliasAdded bool                  // alias: set at execution for cache step
+	created    *models.SemanticLabel // create: fully populated, ID zero until phase two
 }
 
 // planAuxiliaryLabels is phase one of the two-phase attach (design D1):
 // validation, L1 in-memory matching, one batch merge-embedding call, L2
-// cosine decisions and one batch storage-embedding call — all OUTSIDE any
-// transaction. N new labels cost exactly 2 batch embedder calls.
+// cosine decisions and one batch storage-embedding call.
+//
+// Transaction boundaries (fix-aux-label-dedup-ann D6): the L1 match and the
+// merge batch embedding run OUTSIDE any transaction; the L2 recall runs inside
+// ONE read-only transaction per batch (so SET LOCAL hnsw.ef_search stays
+// scoped); the storage batch embedding runs OUTSIDE any transaction again.
+// No embedder call ever happens inside a transaction.
+//
+// N new labels cost exactly 2 batch embedder calls.
 func (s *AuxiliaryLabelService) planAuxiliaryLabels(ctx context.Context, labels []core.AuxiliaryLabel) ([]auxLabelPlan, error) {
 	gateStart := time.Now()
 	plans := make([]auxLabelPlan, len(labels))
 
-	active, err := s.loadActiveAuxiliaryLabels(ctx)
-	if err != nil {
+	// The load is kept for its side effect (5-minute TTL re-pull); the L1
+	// lookup itself goes through cache.matchL1, which reads the three indexes
+	// under the cache read lock — applyCreate mutates those maps in place, so
+	// a lock-free read is a fatal "concurrent map read and map write".
+	if _, err := s.loadActiveAuxiliaryLabels(ctx); err != nil {
 		return nil, err
 	}
 
@@ -267,16 +295,11 @@ func (s *AuxiliaryLabelService) planAuxiliaryLabels(ctx context.Context, labels 
 		seenSlug[slug] = i
 		seenNorm[normKey] = i
 
-		// L1: exact match by slug, alias, or whitespace-insensitive normalize key.
-		for j := range active {
-			if active[j].Slug == slug || semanticAliasesContain(active[j].Aliases, label) ||
-				textutil.NormalizeLabelKey(active[j].Label) == normKey {
-				row := active[j] // heap copy — never hand out cache-owned storage
-				plans[i] = auxLabelPlan{kind: auxPlanReuse, existing: &row}
-				break
-			}
-		}
-		if plans[i].kind == auxPlanReuse {
+		// L1: exact match by slug, alias fold, or whitespace-insensitive normalize key.
+		// The indexes replicate the old linear scan's first-hit semantics (first row
+		// wins per key), only without re-slugifying 26k rows per label.
+		if row, hit := s.cache.matchL1(slug, label, normKey); hit {
+			plans[i] = auxLabelPlan{kind: auxPlanReuse, existing: &row}
 			continue
 		}
 		misses = append(misses, missEntry{
@@ -300,16 +323,25 @@ func (s *AuxiliaryLabelService) planAuxiliaryLabels(ctx context.Context, labels 
 		}
 
 		var l3Misses []int
-		for i, m := range misses {
-			best, err := s.mergeMatcher(ctx, s.db, active, mergePgVectors[i], mergeVectors[i])
-			if err != nil {
-				return nil, err
+		// L2 recall runs inside ONE read-only transaction per batch so
+		// SET LOCAL hnsw.ef_search scopes to it (pgvector default 40 would
+		// truncate the wider fallback pool). No embedder call happens inside
+		// this transaction — the storage batch below runs after it closes.
+		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			for i, m := range misses {
+				best, err := s.mergeMatcher(ctx, tx, mergePgVectors[i], mergeVectors[i])
+				if err != nil {
+					return err
+				}
+				if best != nil {
+					plans[m.planIdx] = auxLabelPlan{kind: auxPlanAlias, target: best, alias: m.label}
+					continue
+				}
+				l3Misses = append(l3Misses, i)
 			}
-			if best != nil {
-				plans[m.planIdx] = auxLabelPlan{kind: auxPlanAlias, target: best, alias: m.label}
-				continue
-			}
-			l3Misses = append(l3Misses, i)
+			return nil
+		}, &sql.TxOptions{ReadOnly: true}); err != nil {
+			return nil, err
 		}
 
 		// L3: one batch storage embedding ("label: description") for every L2 miss;
@@ -344,7 +376,7 @@ func (s *AuxiliaryLabelService) planAuxiliaryLabels(ctx context.Context, labels 
 				if m.description != "" {
 					created.Description = m.description
 				}
-				plans[m.planIdx] = auxLabelPlan{kind: auxPlanCreate, created: created, mergeVector: mergeVectors[i]}
+				plans[m.planIdx] = auxLabelPlan{kind: auxPlanCreate, created: created}
 			}
 		}
 	}
@@ -431,7 +463,7 @@ func (s *AuxiliaryLabelService) executeAuxiliaryPlans(ctx context.Context, topic
 	// poison the cache with rows that do not exist.
 	for i := range plans {
 		if plans[i].kind == auxPlanCreate {
-			s.cache.applyCreate(plans[i].created, plans[i].mergeVector)
+			s.cache.applyCreate(plans[i].created)
 		}
 	}
 	if aliasChanged {
@@ -460,7 +492,7 @@ func (s *AuxiliaryLabelService) ResolveAuxiliaryLabel(ctx context.Context, rawLa
 		if err := s.db.WithContext(ctx).Create(plan.created).Error; err != nil {
 			return nil, err
 		}
-		s.cache.applyCreate(plan.created, plan.mergeVector)
+		s.cache.applyCreate(plan.created)
 		return plan.created, nil
 	default:
 		return nil, fmt.Errorf("internal error: corrupt auxiliary plan kind %d", plan.kind)
@@ -497,7 +529,7 @@ func (s *AuxiliaryLabelService) DisableAuxiliaryLabel(ctx context.Context, label
 	if err := s.db.WithContext(ctx).Model(&label).Updates(map[string]any{"status": "disabled", "embedding": nil, "merge_embedding": nil}).Error; err != nil {
 		return err
 	}
-	// 增量失效（design D2）：只删本行条目，不再全清触发 216MB 重拉。
+	// 增量失效（design D2）：只删本行条目，不再全清触发全量重拉。
 	s.cache.applyDisable(labelID)
 	return nil
 }
@@ -580,8 +612,11 @@ func (s *AuxiliaryLabelService) RemoveBoardComposition(ctx context.Context, boar
 	if err := s.db.WithContext(ctx).Where("id = ? AND label_type = ?", boardID, "board").First(&board).Error; err != nil {
 		return err
 	}
+	// 构成单元可为 auxiliary 或 composite（board_composition.auxiliary_label_id 列复用，
+	// 挂载侧 addBoardComposition 已按两类受理）——摘除侧同样受理两类，否则组合标签
+	// 的挂载关系无法解除（体检分诊里的组合标签「建议摘除」会走这条既有 DELETE 链）。
 	var auxiliary models.SemanticLabel
-	if err := s.db.WithContext(ctx).Where("id = ? AND label_type = ?", auxiliaryLabelID, "auxiliary").First(&auxiliary).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("id = ? AND label_type IN ?", auxiliaryLabelID, []string{"auxiliary", "composite"}).First(&auxiliary).Error; err != nil {
 		return err
 	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -675,13 +710,6 @@ func (s *AuxiliaryLabelService) BackfillMissingEmbeddings(ctx context.Context) (
 			return summary, fmt.Errorf("query dead-vector auxiliary labels: %w", err)
 		}
 		if len(rows) == 0 {
-			if summary.Fixed > 0 {
-				// 恢复的 merge 向量此前不在 L2 去重缓存里，失效后下次打标即吃到新向量
-				s.cache.mu.Lock()
-				s.cache.mergeEmbeddings = nil
-				s.cache.mergeEmbeddingsAt = time.Time{}
-				s.cache.mu.Unlock()
-			}
 			return summary, nil
 		}
 		for i := range rows {
@@ -856,20 +884,89 @@ func (s *AuxiliaryLabelService) gcCleanup(ctx context.Context, req AuxLabelGCReq
 	return result, nil
 }
 
-func (s *AuxiliaryLabelService) loadActiveAuxiliaryLabels(ctx context.Context) ([]models.SemanticLabel, error) {
+// auxLabelIndex is the L1 exact-match view over the active auxiliary labels
+// (fix-aux-label-dedup-ann design D5): one lightweight row list plus three
+// key indexes. Built once per cache load (5-minute TTL) so a lookup no longer
+// re-slugifies 26k rows per incoming label. Indexing is first-come-first-served
+// — the first row in list order owns a key — mirroring the legacy linear scan's
+// "first hit wins" break.
+type auxLabelIndex struct {
+	labels []models.SemanticLabel
+	// bySlug keys are row.Slug plus Slugify(alias) for every alias — the
+	// semanticAliasesContain slug-equality口径.
+	bySlug map[string]models.SemanticLabel
+	// byAliasFold keys are lower(trim(alias)) — the trim + EqualFold口径.
+	byAliasFold map[string]models.SemanticLabel
+	// byNormKey keys are NormalizeLabelKey(row.Label).
+	byNormKey map[string]models.SemanticLabel
+}
+
+// newAuxLabelIndex builds the three L1 indexes over labels (list order preserved).
+func newAuxLabelIndex(labels []models.SemanticLabel) *auxLabelIndex {
+	idx := &auxLabelIndex{
+		labels:      labels,
+		bySlug:      make(map[string]models.SemanticLabel, len(labels)),
+		byAliasFold: make(map[string]models.SemanticLabel, len(labels)),
+		byNormKey:   make(map[string]models.SemanticLabel, len(labels)),
+	}
+	for i := range labels {
+		idx.add(labels[i])
+	}
+	return idx
+}
+
+// add indexes one row without overriding an existing key (first-come-first-served).
+func (idx *auxLabelIndex) add(row models.SemanticLabel) {
+	idx.firstWins(idx.bySlug, row.Slug, row)
+	for _, alias := range row.Aliases {
+		idx.firstWins(idx.bySlug, core.Slugify(alias), row)
+		idx.firstWins(idx.byAliasFold, strings.ToLower(strings.TrimSpace(alias)), row)
+	}
+	idx.firstWins(idx.byNormKey, textutil.NormalizeLabelKey(row.Label), row)
+}
+
+func (idx *auxLabelIndex) firstWins(index map[string]models.SemanticLabel, key string, row models.SemanticLabel) {
+	if key == "" {
+		return
+	}
+	if _, taken := index[key]; taken {
+		return
+	}
+	index[key] = row
+}
+
+// match resolves the L1 (slug → alias fold → normalize key) hit for an incoming
+// label. It returns a row copy — never cache-owned storage.
+func (idx *auxLabelIndex) match(slug, label, normKey string) (models.SemanticLabel, bool) {
+	if row, ok := idx.bySlug[slug]; ok {
+		return row, true
+	}
+	if row, ok := idx.byAliasFold[strings.ToLower(strings.TrimSpace(label))]; ok {
+		return row, true
+	}
+	if row, ok := idx.byNormKey[normKey]; ok {
+		return row, true
+	}
+	return models.SemanticLabel{}, false
+}
+
+// loadActiveAuxiliaryLabels returns the cached active-label index, reloading it
+// from the database when the 5-minute TTL expired. Only metadata columns are
+// selected: vectors are never carried in process memory (design D4).
+func (s *AuxiliaryLabelService) loadActiveAuxiliaryLabels(ctx context.Context) (*auxLabelIndex, error) {
 	s.cache.mu.RLock()
-	if s.cache.activeLabels != nil && time.Since(s.cache.activeLabelsAt) < auxActiveLabelsTTL {
-		labels := s.cache.activeLabels
+	if s.cache.active != nil && time.Since(s.cache.activeAt) < auxActiveLabelsTTL {
+		idx := s.cache.active
 		s.cache.mu.RUnlock()
-		return labels, nil
+		return idx, nil
 	}
 	s.cache.mu.RUnlock()
 
 	s.cache.mu.Lock()
 	defer s.cache.mu.Unlock()
 	// Double-check after acquiring write lock
-	if s.cache.activeLabels != nil && time.Since(s.cache.activeLabelsAt) < auxActiveLabelsTTL {
-		return s.cache.activeLabels, nil
+	if s.cache.active != nil && time.Since(s.cache.activeAt) < auxActiveLabelsTTL {
+		return s.cache.active, nil
 	}
 
 	var labels []models.SemanticLabel
@@ -880,9 +977,10 @@ func (s *AuxiliaryLabelService) loadActiveAuxiliaryLabels(ctx context.Context) (
 	if err != nil {
 		return nil, err
 	}
-	s.cache.activeLabels = labels
-	s.cache.activeLabelsAt = time.Now()
-	return labels, nil
+	idx := newAuxLabelIndex(labels)
+	s.cache.active = idx
+	s.cache.activeAt = time.Now()
+	return idx, nil
 }
 
 // lightweightLabelCopy projects a label row onto the column set
@@ -895,33 +993,50 @@ func lightweightLabelCopy(row *models.SemanticLabel) models.SemanticLabel {
 	return copy
 }
 
-// applyCreate incrementally absorbs one L3-created label (design D2): a
-// lightweight row copy is appended to the active list. The merge-embedding
-// map is deliberately NOT touched: readers (sqlMergeMatcher) index it
-// without holding the lock — an in-place map write races them into
-// `fatal error: concurrent map read and map write` (unrecoverable, kills
-// the whole process; observed 2026-10-07). The new vector becomes visible
-// to L2 matching on the next full reload (10min TTL). Timestamps are NOT
-// reset — an incremental upsert is not a cache expiry, so the 216MB full
-// pull never fires mid-batch. Cold (nil) cache halves stay nil; the next
-// full load picks the row up.
-func (c *auxLabelCache) applyCreate(created *models.SemanticLabel, mergeVector []float64) {
-	_ = mergeVector
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.activeLabels != nil {
-		// append beyond any reader's snapshot length — safe against concurrent
-		// iterators, which never touch indices ≥ their snapshot len.
-		c.activeLabels = append(c.activeLabels, lightweightLabelCopy(created))
+// matchL1 resolves the L1 hit (slug → alias fold → normalize key) for one
+// incoming label, reading the three indexes under the cache read lock.
+//
+// The lock is mandatory: applyCreate mutates those Go maps IN PLACE (a
+// newly created label is added to the shared index), so a lock-free reader
+// racing that write is a "fatal error: concurrent map read and map write" —
+// unrecoverable, the process dies (observed in production on 2026-10-07).
+// Every L1 lookup therefore goes through this method; the returned row is a
+// copy — never cache-owned storage.
+func (c *auxLabelCache) matchL1(slug, label, normKey string) (models.SemanticLabel, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.active == nil {
+		return models.SemanticLabel{}, false
 	}
+	return c.active.match(slug, label, normKey)
 }
 
-// applyDisable incrementally removes disabled labels (design D2): the
-// active list is filtered. The merge-embedding map is deliberately NOT
-// touched (see applyCreate: in-place map mutation races lock-free readers
-// into a fatal). Stale vectors linger until the next full reload (10min
-// TTL). Fresh slices only — in-place filtering would race with readers
-// holding the old slice header.
+// applyCreate incrementally absorbs one L3-created label (design D2): a
+// lightweight row copy is appended to the active list and its L1 keys are added
+// to the indexes (first-come-first-served, so it never overrides an existing
+// key — matching the legacy "first hit wins" scan). The L2 recall path reads the
+// database, so the new merge vector is visible to L2 right after commit without
+// any cache reload. Timestamps are NOT reset — an incremental upsert is not a
+// cache expiry, so the 26k-row full pull never fires mid-batch. Cold (nil)
+// cache stays nil; the next full load picks the row up.
+//
+// The in-place index mutation runs under the write lock; L1 readers hold the
+// read lock for the whole lookup (see matchL1).
+func (c *auxLabelCache) applyCreate(created *models.SemanticLabel) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.active == nil {
+		return
+	}
+	row := lightweightLabelCopy(created)
+	c.active.labels = append(c.active.labels, row)
+	c.active.add(row)
+}
+
+// applyDisable incrementally removes disabled labels (design D2): the active
+// list is filtered and the L1 indexes are rebuilt from the survivors (removal
+// can free a key another row would then own). Fresh slices only — in-place
+// filtering would race with readers holding the old slice header.
 func (c *auxLabelCache) applyDisable(ids ...uint) {
 	if len(ids) == 0 {
 		return
@@ -932,30 +1047,31 @@ func (c *auxLabelCache) applyDisable(ids ...uint) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.activeLabels != nil {
-		kept := make([]models.SemanticLabel, 0, len(c.activeLabels))
-		for _, l := range c.activeLabels {
-			if _, gone := drop[l.ID]; !gone {
-				kept = append(kept, l)
-			}
-		}
-		c.activeLabels = kept
+	if c.active == nil {
+		return
 	}
+	kept := make([]models.SemanticLabel, 0, len(c.active.labels))
+	for _, l := range c.active.labels {
+		if _, gone := drop[l.ID]; !gone {
+			kept = append(kept, l)
+		}
+	}
+	c.active = newAuxLabelIndex(kept)
 }
 
 // applyMerge absorbs one MergeAuxiliaryLabelAlias outcome (design D2): the
-// disabled source is dropped from the active list and the target's cached
-// copy is refreshed with its final aliases — no full invalidation. The
-// merge-embedding map is deliberately NOT touched (see applyCreate).
+// disabled source is dropped from the active list and the target's cached copy is
+// refreshed with its final aliases — no full invalidation. Indexes are rebuilt
+// from the survivors so the target's new aliases become L1-matchable.
 func (c *auxLabelCache) applyMerge(sourceID uint, target *models.SemanticLabel) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.activeLabels == nil {
+	if c.active == nil {
 		return
 	}
 	refreshed := lightweightLabelCopy(target)
-	kept := make([]models.SemanticLabel, 0, len(c.activeLabels))
-	for _, l := range c.activeLabels {
+	kept := make([]models.SemanticLabel, 0, len(c.active.labels))
+	for _, l := range c.active.labels {
 		switch l.ID {
 		case sourceID: // disabled — drop
 		case target.ID:
@@ -964,15 +1080,14 @@ func (c *auxLabelCache) applyMerge(sourceID uint, target *models.SemanticLabel) 
 			kept = append(kept, l)
 		}
 	}
-	c.activeLabels = kept
+	c.active = newAuxLabelIndex(kept)
 }
 
 func (s *AuxiliaryLabelService) invalidateOnAliasChange() {
 	s.cache.mu.Lock()
 	defer s.cache.mu.Unlock()
-	s.cache.activeLabels = nil
-	s.cache.activeLabelsAt = time.Time{}
-	// mergeEmbeddings preserved — vectors unchanged by alias changes
+	s.cache.active = nil
+	s.cache.activeAt = time.Time{}
 }
 
 // loadAuxLabelDedupeSim reads the configurable L2 merge similarity threshold
@@ -992,77 +1107,275 @@ func loadAuxLabelDedupeSim(db *gorm.DB) float64 {
 	return v
 }
 
-// sqlMergeMatcher loads merge embeddings from cache and computes cosine
-// similarity in Go. Eliminates the 216 MB DB transfer on every call.
-func sqlMergeMatcher(ctx context.Context, db *gorm.DB, labels []models.SemanticLabel, _ string, mergeVector []float64) (*models.SemanticLabel, error) {
-	// Use package-level cache
-	embeddings, err := packageAuxLabelCacheGetOrLoad(ctx, db)
-	if err != nil {
-		return nil, err
+// L2 recall tuning (fix-aux-label-dedup-ann design D6). hnsw.ef_search MUST be
+// ≥ the candidate limit: pgvector's default 40 would truncate a larger LIMIT
+// (and caps recall). The wider pool is only used by the saturation fallback.
+const (
+	auxMergeCandidateLimit     = 32
+	auxMergeCandidateLimitWide = 128
+	auxMergeEfSearch           = 100
+	auxMergeEfSearchWide       = 200
+)
+
+// recallMergeCandidates is the two-stage recall unit (design D3): halfvec HNSW
+// candidates, then exact float32 rerank. A package variable so tests can count
+// calls (the saturation fallback re-queries exactly once).
+var recallMergeCandidates = queryMergeCandidates
+
+// mergeCandidateProjection is the metadata column set handed to the Go-side
+// adjudication — the vectors themselves are never selected (only their distance
+// is needed, and 32 rows × 2560 dims of text is pure transfer).
+const mergeCandidateProjection = "id, label, slug, label_type, aliases, ref_count, description, status, protected, source, display_order, created_at, updated_at"
+
+// mergeCandidate is one recalled row plus its exact float32 cosine distance.
+type mergeCandidate struct {
+	Row      models.SemanticLabel
+	Distance float64
+}
+
+// mergeVectorDimensionCleanupSQL is the remediation for the embedding-model
+// switch window (review R-2): semantic_labels.merge_embedding is a
+// dimensionless vector, so rows written by the previous model keep their old
+// dimension and the recall cast (merge_embedding::halfvec(<dim>)) fails on
+// them. %d is the runtime dimension — the stale rows are the ones whose
+// dimension differs from it.
+const mergeVectorDimensionCleanupSQL = "UPDATE semantic_labels SET merge_embedding = NULL WHERE label_type='auxiliary' AND status='active' AND merge_embedding IS NOT NULL AND vector_dims(merge_embedding) <> %d;"
+
+// isMergeDimensionMismatch reports whether err is pgvector's dimension-class
+// failure:
+//   - 22P02 (invalid_text_representation): the ::halfvec(<dim>) cast rejects
+//     the row — "expected 2560 dimensions, not 1536";
+//   - 42883 (datatype_mismatch): the <=> operator rejects the pair —
+//     "different vector dimensions 2560 and 1536".
+//
+// Both mean the same thing here: semantic_labels still holds merge vectors of
+// a dimension the runtime embedder does not produce.
+func isMergeDimensionMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	if !strings.Contains(strings.ToLower(pgErr.Message), "dimension") {
+		return false
+	}
+	return pgErr.Code == "22P02" || pgErr.Code == "42883"
+}
+
+// wrapMergeRecallError turns a raw recall failure into a diagnosable one.
+//
+// The dimension class MUST NOT bubble up as a bare SQL error: in the
+// embedding-model switch window it means "semantic_labels holds old-dimension
+// merge vectors", and the remediation (clear the stale vectors, then let the
+// backfill endpoint rebuild them) is not guessable from a pgvector message.
+// It also does NOT degrade to a sequential scan — the cast is in the query
+// itself, so the whole recall fails and with it the whole attach batch.
+func wrapMergeRecallError(err error, dim int) error {
+	if err == nil {
+		return nil
+	}
+	if isMergeDimensionMismatch(err) {
+		return fmt.Errorf("auxiliary label L2 recall failed on a vector dimension mismatch "+
+			"(runtime dimension %d): %w; semantic_labels still holds merge vectors of another dimension — "+
+			"clear the stale rows first: %s then rebuild the vectors via POST /api/auxiliary-labels/backfill-embeddings",
+			dim, err, fmt.Sprintf(mergeVectorDimensionCleanupSQL, dim))
+	}
+	return err
+}
+
+// sqlMergeMatcher resolves the L2 merge target for one new label: database ANN
+// recall (halfvec HNSW over merge_embedding) + exact float32 rerank + the
+// legacy adjudication口径 (cosine ≥ threshold, highest RefCount wins, ties go to
+// the smaller ID). The full-vector process cache this replaced held ~547MB and
+// cost ~1s per label (fix-aux-label-dedup-ann design D3/D4).
+//
+// The recall runs in a read-only transaction with SET LOCAL hnsw.ef_search so
+// the setting never leaks into the pooled connection. Callers that already hold
+// a transaction (planAuxiliaryLabels opens one per batch) are reused as-is.
+func sqlMergeMatcher(ctx context.Context, db *gorm.DB, mergePgVector string, mergeVector []float64) (*models.SemanticLabel, error) {
+	dim := len(mergeVector)
+	if dim == 0 || strings.TrimSpace(mergePgVector) == "" {
+		return nil, fmt.Errorf("auxiliary label merge matcher: empty merge vector")
 	}
 	threshold := loadAuxLabelDedupeSim(db)
 
 	var best *models.SemanticLabel
-	for i := range labels {
-		existingVec, ok := embeddings[labels[i].ID]
-		if !ok {
-			continue
+	recall := func(tx *gorm.DB) error {
+		if err := setMergeEfSearch(tx, dim, auxMergeEfSearch); err != nil {
+			return err
 		}
-		sim, err := airouter.CosineSimilarity(mergeVector, existingVec)
-		if err != nil || sim < threshold {
-			continue
+		candidates, err := recallMergeCandidates(tx, mergePgVector, dim, auxMergeCandidateLimit)
+		if err != nil {
+			return fmt.Errorf("recall merge candidates: %w", err)
 		}
-		candidate := labels[i]
-		if best == nil || candidate.RefCount > best.RefCount || (candidate.RefCount == best.RefCount && candidate.ID < best.ID) {
-			best = &candidate
+		best = pickMergeTarget(candidates, threshold)
+		if !mergeRecallSaturated(candidates, auxMergeCandidateLimit, threshold) {
+			return nil
 		}
+		// Every candidate in the pool is a near-duplicate: the ANN pool was
+		// truncated, so a higher-RefCount target may sit beyond it. Re-query
+		// once with a wider pool (and matching ef_search) before deciding.
+		if err := setMergeEfSearch(tx, dim, auxMergeEfSearchWide); err != nil {
+			return err
+		}
+		wide, err := recallMergeCandidates(tx, mergePgVector, dim, auxMergeCandidateLimitWide)
+		if err != nil {
+			return fmt.Errorf("recall merge candidates (wide): %w", err)
+		}
+		best = pickMergeTarget(wide, threshold)
+		return nil
+	}
+
+	if mergeHandleInTransaction(db) {
+		if err := recall(db); err != nil {
+			return nil, err
+		}
+		return best, nil
+	}
+	if err := db.WithContext(ctx).Transaction(recall); err != nil {
+		return nil, err
 	}
 	return best, nil
 }
 
-// packageAuxLabelCacheGetOrLoad loads merge embeddings using the package-level cache.
-// This is a standalone helper since sqlMergeMatcher is a package-level function (not a method).
-func packageAuxLabelCacheGetOrLoad(ctx context.Context, db *gorm.DB) (map[uint][]float64, error) {
-	packageAuxLabelCache.mu.RLock()
-	if packageAuxLabelCache.mergeEmbeddings != nil && time.Since(packageAuxLabelCache.mergeEmbeddingsAt) < auxMergeEmbeddingsTTL {
-		emb := packageAuxLabelCache.mergeEmbeddings
-		packageAuxLabelCache.mu.RUnlock()
-		return emb, nil
+// setMergeEfSearch sets hnsw.ef_search for the recall transaction. dims above
+// halfvec's 4000 limit take the exact-scan path — no HNSW index is consulted
+// there, so the GUC is pointless (and touching it outside a transaction would
+// just warn).
+func setMergeEfSearch(tx *gorm.DB, dim, efSearch int) error {
+	if dim <= 0 || dim > 4000 {
+		return nil
 	}
-	packageAuxLabelCache.mu.RUnlock()
+	if err := tx.Exec(fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", efSearch)).Error; err != nil {
+		return fmt.Errorf("set hnsw.ef_search: %w", err)
+	}
+	return nil
+}
 
-	packageAuxLabelCache.mu.Lock()
-	defer packageAuxLabelCache.mu.Unlock()
-	if packageAuxLabelCache.mergeEmbeddings != nil && time.Since(packageAuxLabelCache.mergeEmbeddingsAt) < auxMergeEmbeddingsTTL {
-		return packageAuxLabelCache.mergeEmbeddings, nil
+// mergeHandleInTransaction reports whether db already runs inside a transaction.
+// SET LOCAL is only meaningful there, and gorm's Transaction on such a handle
+// opens a savepoint instead of a fresh transaction.
+func mergeHandleInTransaction(db *gorm.DB) bool {
+	if db == nil || db.Statement == nil {
+		return false
+	}
+	_, ok := db.Statement.ConnPool.(*sql.Tx)
+	return ok
+}
+
+// mergeRecallSQL builds the stage-1 ANN recall statement for one dimension. Two
+// invariants live here (both pinned by tests): the WHERE clause is the partial
+// index predicate **verbatim** (otherwise the planner will not use the partial
+// index) and the cast carries the dimension typmod (a bare `::halfvec` never uses
+// the index). dims above halfvec's 4000 limit fall back to the exact column scan.
+func mergeRecallSQL(dim int) string {
+	if dim <= 0 || dim > 4000 {
+		return fmt.Sprintf(`
+		SELECT id
+		FROM semantic_labels
+		WHERE %s
+		ORDER BY merge_embedding <=> ?::vector
+		LIMIT ?
+	`, database.SemanticLabelMergeHalfvecIndexPredicate)
+	}
+	return fmt.Sprintf(`
+		SELECT id
+		FROM semantic_labels
+		WHERE %s
+		ORDER BY merge_embedding::halfvec(%d) <=> ?::halfvec(%d)
+		LIMIT ?
+	`, database.SemanticLabelMergeHalfvecIndexPredicate, dim, dim)
+}
+
+// queryMergeCandidates runs the two-stage recall inside the caller's
+// transaction: (1) ANN candidates by halfvec distance, (2) exact float32 rerank
+// on the original vector column so the threshold口径 keeps full precision.
+func queryMergeCandidates(tx *gorm.DB, mergePgVector string, dim, limit int) ([]mergeCandidate, error) {
+	var ids []uint
+	if err := tx.Raw(mergeRecallSQL(dim), mergePgVector, limit).Scan(&ids).Error; err != nil {
+		return nil, wrapMergeRecallError(err, dim)
+	}
+	if len(ids) == 0 {
+		return nil, nil
 	}
 
-	type row struct {
-		ID             uint
-		MergeEmbedding *string
+	// Exact float32 rerank on the original column (≤limit rows, no index).
+	type exactRow struct {
+		ID       uint
+		Distance float64
 	}
-	var rows []row
-	if err := db.WithContext(ctx).Model(&models.SemanticLabel{}).
-		Select("id, merge_embedding").
-		Where("label_type = ? AND status = ? AND merge_embedding IS NOT NULL", "auxiliary", "active").
-		Find(&rows).Error; err != nil {
+	var exact []exactRow
+	if err := tx.Raw(`
+		SELECT id, merge_embedding <=> ?::vector AS distance
+		FROM semantic_labels
+		WHERE id IN ?
+		ORDER BY merge_embedding <=> ?::vector
+	`, mergePgVector, ids, mergePgVector).Scan(&exact).Error; err != nil {
+		return nil, wrapMergeRecallError(err, dim)
+	}
+	if len(exact) == 0 {
+		return nil, nil
+	}
+
+	// Load the metadata needed for adjudication (vectors excluded).
+	distanceByID := make(map[uint]float64, len(exact))
+	order := make([]uint, len(exact))
+	for i, r := range exact {
+		distanceByID[r.ID] = r.Distance
+		order[i] = r.ID
+	}
+	var rows []models.SemanticLabel
+	if err := tx.Select(mergeCandidateProjection).Where("id IN ?", order).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-
-	result := make(map[uint][]float64, len(rows))
-	for _, r := range rows {
-		if r.MergeEmbedding == nil || *r.MergeEmbedding == "" {
-			continue
-		}
-		vec, err := ParsePgVector(*r.MergeEmbedding)
-		if err != nil {
-			continue
-		}
-		result[r.ID] = vec
+	rowByID := make(map[uint]models.SemanticLabel, len(rows))
+	for _, row := range rows {
+		rowByID[row.ID] = row
 	}
-	packageAuxLabelCache.mergeEmbeddings = result
-	packageAuxLabelCache.mergeEmbeddingsAt = time.Now()
-	return result, nil
+	out := make([]mergeCandidate, 0, len(order))
+	for _, id := range order {
+		row, ok := rowByID[id]
+		if !ok {
+			continue
+		}
+		out = append(out, mergeCandidate{Row: row, Distance: distanceByID[id]})
+	}
+	return out, nil
+}
+
+// pickMergeTarget applies the legacy adjudication口径: cosine = 1 - distance,
+// keep candidates at or above threshold, highest RefCount wins, ties go to the
+// smaller ID.
+func pickMergeTarget(candidates []mergeCandidate, threshold float64) *models.SemanticLabel {
+	var best *models.SemanticLabel
+	for i := range candidates {
+		candidate := candidates[i].Row
+		if 1-candidates[i].Distance < threshold {
+			continue
+		}
+		if best == nil || candidate.RefCount > best.RefCount || (candidate.RefCount == best.RefCount && candidate.ID < best.ID) {
+			copy := candidate
+			best = &copy
+		}
+	}
+	return best
+}
+
+// mergeRecallSaturated reports whether the recall pool was filled (LIMIT hit)
+// with rows that are ALL at or above the merge threshold — the one case where a
+// truncated ANN pool could hide a better (higher RefCount) target.
+func mergeRecallSaturated(candidates []mergeCandidate, limit int, threshold float64) bool {
+	if len(candidates) < limit {
+		return false
+	}
+	for i := range candidates {
+		if 1-candidates[i].Distance < threshold {
+			return false
+		}
+	}
+	return true
 }
 
 // applyAuxAliasWrite（列级只写 aliases 列）取代了历史 addAlias：label 来自缓存加载
@@ -1207,45 +1520,83 @@ func UniqueSemanticLabelSlug(db *gorm.DB, base string) string {
 	}
 }
 
-// ensureSemanticLabelVectorColumnDim checks if a vector column on semantic_labels
-// matches the required dimension and alters it if not. column is a hardcoded column
-// name ("embedding" / "merge_embedding"), never user input, so it is safe to splice
-// into SQL.
+// ensureSemanticLabelVectorColumnDim keeps the vector column on semantic_labels
+// aligned with the runtime embedding dimension. column is a hardcoded column name
+// ("embedding" / "merge_embedding"), never user input, so it is safe to splice into
+// SQL.
+//
+// Three branches (unify-vector-column-dimension design D3/D4 + gap B):
+//
+//  1. The column is already a dimensionless vector (target shape): **no ALTER**.
+//     The dimension is a runtime property — schema must not carry it. Nothing else
+//     to reconcile here: merge_embedding's ANN index（idx_semantic_labels_merge_halfvec_hnsw）
+//     is expression-based and rebuilt by EnsureSemanticLabelMergeHalfvecIndex.
+//  2. The column is vector(dim) and matches the runtime dimension: nothing to do.
+//  3. The column is vector(some other N): **migration transition branch** — only
+//     reachable on databases that have not yet run the unification migration.
+//     The original DROP INDEX + ALTER + rebuild self-healing path is kept here
+//     (the unification migration makes this branch unreachable once it has run).
+//     DROP indexes first: the ANN index on merge_embedding is an expression over
+//     THIS column, so ALTER COLUMN TYPE would fail (or rebuild it at the old
+//     dimension) unless it is dropped first (same discipline as
+//     core/embedding.go:ensureVectorDimension).
 //
 // Should only be called at startup; DDL operations use a 5s lock timeout to avoid
 // blocking if other connections hold table locks.
+//
+// The guard is a session-level SET + RESET pinned to one connection (not
+// SET LOCAL): this function runs **outside** a transaction (the startup path
+// deliberately avoids DDL inside a transaction), and SET LOCAL outside a
+// transaction block is a no-op — the lock guard would silently fail and the
+// ALTER could block writes indefinitely.
 //
 // On ALTER failure it diagnoses whether stale data is blocking the resize and returns
 // an actionable error: pgvector cannot truncate existing vectors, so the caller must
 // clear the rows before the dimension can change.
 func ensureSemanticLabelVectorColumnDim(column string, dim int) error {
 	db := repository.Repo.DB()
-	if err := db.Exec("SET LOCAL lock_timeout = '5s'").Error; err != nil {
-		logging.Warnf("Failed to set lock_timeout: %v", err)
-	}
 
-	var typeStr string
-	if err := db.Raw(`
-		SELECT format_type(a.atttypid, a.atttypmod)
-		FROM pg_attribute a
-		JOIN pg_class c ON c.oid = a.attrelid
-		WHERE c.relname = 'semantic_labels' AND a.attname = ?`, column,
-	).Row().Scan(&typeStr); err != nil {
+	typeStr, err := database.VectorColumnType(db, "semantic_labels", column)
+	if err != nil {
 		return nil // column may not exist yet, let migration handle it
 	}
 
 	expected := fmt.Sprintf("vector(%d)", dim)
-	if typeStr == expected {
+	switch typeStr {
+	case "vector":
+		// Branch 1: already dimensionless — never ALTER it back to a fixed
+		// dimension (that would re-introduce the schema/runtime split).
+		logging.Infof("semantic_labels.%s is already a dimensionless vector — no column rewrite needed (runtime dimension %d)", column, dim)
+		return nil
+	case expected:
+		// Branch 2: column dimension matches the runtime dimension.
 		return nil
 	}
 
+	// Branch 3: migration transition — the column still carries an outdated
+	// dimension constraint; keep the original self-healing ALTER.
 	logging.Infof("Altering semantic_labels.%s column from %s to %s", column, typeStr, expected)
 
-	_ = db.Exec(fmt.Sprintf("DROP INDEX IF EXISTS idx_semantic_labels_%s", column)).Error
-
-	if err := db.Exec(fmt.Sprintf(
-		"ALTER TABLE semantic_labels ALTER COLUMN %s TYPE %s", column, expected,
-	)).Error; err != nil {
+	alterErr := db.Connection(func(tx *gorm.DB) error {
+		defer func() {
+			_ = tx.Exec("RESET lock_timeout").Error
+		}()
+		if err := tx.Exec("SET lock_timeout = '5s'").Error; err != nil {
+			return fmt.Errorf("set lock_timeout: %w", err)
+		}
+		// Drop indexes first — the halfvec ANN index is an expression over this
+		// column (merge_embedding only); a stale one blocks the type change.
+		if column == "merge_embedding" {
+			if err := tx.Exec("DROP INDEX IF EXISTS " + database.SemanticLabelMergeHalfvecIndexName).Error; err != nil { //nolint:gosec // G202: 索引名是包内常量
+				logging.Warnf("Failed to drop %s before altering semantic_labels.%s: %v", database.SemanticLabelMergeHalfvecIndexName, column, err)
+			}
+		}
+		_ = tx.Exec(fmt.Sprintf("DROP INDEX IF EXISTS idx_semantic_labels_%s", column)).Error
+		return tx.Exec(fmt.Sprintf(
+			"ALTER TABLE semantic_labels ALTER COLUMN %s TYPE %s", column, expected,
+		)).Error
+	})
+	if alterErr != nil {
 		var staleRows int64
 		_ = db.Raw(fmt.Sprintf(
 			"SELECT count(*) FROM semantic_labels WHERE %s IS NOT NULL", column,
@@ -1254,10 +1605,10 @@ func ensureSemanticLabelVectorColumnDim(column string, dim int) error {
 			return fmt.Errorf(
 				"alter semantic_labels.%s from %s to %s failed: %d row(s) contain stale vectors of the old dimension; "+
 					"clear them (e.g. UPDATE semantic_labels SET %s = NULL) then restart: %w",
-				column, typeStr, expected, staleRows, column, err,
+				column, typeStr, expected, staleRows, column, alterErr,
 			)
 		}
-		return fmt.Errorf("alter semantic_labels.%s column to %s: %w", column, expected, err)
+		return fmt.Errorf("alter semantic_labels.%s column to %s: %w", column, expected, alterErr)
 	}
 
 	return nil

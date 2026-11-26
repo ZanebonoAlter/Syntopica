@@ -118,7 +118,7 @@ func TestWatchMaterializationIntegration_KeywordAndSentence(t *testing.T) {
 	require.Len(t, stThreads, 2, "tagged articles of the AI tag")
 	require.NotNil(t, stSec.PersistentTopicID, "section owns the dedicated topic")
 
-	kwSecs, kwBatches, err := MaterializeKeywordWatches(ctx, boardID, []repository.BoardTopicWatch{*kwWatch}, 1, WatchMaterializeConfig{Enabled: false}, nil)
+	kwSecs, kwBatches, err := MaterializeKeywordWatches(ctx, boardID, []repository.BoardTopicWatch{*kwWatch}, today, 1, WatchMaterializeConfig{Enabled: false}, nil)
 	require.NoError(t, err)
 	require.Len(t, kwSecs, 1)
 	require.Len(t, kwBatches[0], 2, "harness articles: one tagged + one tag-less (漏网捞回)")
@@ -199,6 +199,67 @@ func TestWatchMaterializationIntegration_KeywordAndSentence(t *testing.T) {
 	assert.Equal(t, 2, watchTopic.HitCount)
 }
 
+// TestWatchMaterializationIntegration_KeywordScanBoundToReportDate verifies
+// the keyword track's publication window follows the REPORT day, never the
+// execution clock (fix-duplicate-article-heat D1/D7): rebuilding a D-3
+// report aggregates only the D-3 articles — the D-day articles must not leak
+// in — while the same watch run for D sees exactly the D-day articles.
+func TestWatchMaterializationIntegration_KeywordScanBoundToReportDate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test: requires testcontainer Postgres")
+	}
+	db := testutil.SetupTestDB(t)
+	repository.Repo = repository.NewTopicGraphRepository(db)
+	ctx := context.Background()
+
+	boardID := seedBoard(t, db)
+	execDay := repository.NormalizeReportDate(time.Now())
+	reportDay := execDay.AddDate(0, 0, -3)
+
+	must := func(q string, args ...interface{}) {
+		t.Helper()
+		require.NoError(t, db.Exec(q, args...).Error)
+	}
+
+	// One keyword watch + two probe articles: one published on the report day
+	// (D-3), one on the execution day (D). The expression is unique so only
+	// these two rows can hit.
+	kwWatch, err := repository.Repo.CreateWatch(repository.CreateWatchInput{
+		SemanticBoardID: boardID, Label: "backfillprobe", Type: repository.WatchTypeKeywordTopic,
+	})
+	require.NoError(t, err)
+	must(`INSERT INTO feeds (id, title, url, created_at) VALUES (660291, 'backfill probe feed', 'https://example.com/backfill-probe', now())`)
+	must(`INSERT INTO articles (id, feed_id, title, ai_content_summary, pub_date, created_at)
+		VALUES (660021, 660291, 'backfillprobe 报告日文章', '报告日发布', ?, now()),
+		       (660022, 660291, 'backfillprobe 执行日文章', '执行日发布', ?, now())`,
+		reportDay.Add(-12*time.Hour), execDay.Add(-12*time.Hour))
+
+	t.Cleanup(func() {
+		db.Exec(`DELETE FROM board_topic_watches WHERE semantic_board_id = ?`, boardID)
+		db.Exec(`DELETE FROM articles WHERE feed_id = 660291`)
+		db.Exec(`DELETE FROM feeds WHERE id = 660291`)
+		db.Exec(`DELETE FROM semantic_labels WHERE slug = 'test-board-watch'`)
+	})
+
+	// ── 补档重建：报告日 = D-3，执行日 = 今天 ──
+	secs, batches, err := MaterializeKeywordWatches(ctx, boardID, []repository.BoardTopicWatch{*kwWatch}, reportDay, 0, WatchMaterializeConfig{Enabled: false}, nil)
+	require.NoError(t, err)
+	require.Len(t, secs, 1, "报告日的命中文章产出一条 section")
+	require.Len(t, batches, 1)
+	require.Len(t, batches[0], 1, "只含报告日（D-3）的文章，D 日的文章不得混入")
+	assert.Equal(t, "backfillprobe 报告日文章", batches[0][0].Title)
+	assert.Equal(t, repository.JSON("[660021]"), batches[0][0].RelatedArticleIDs)
+	assert.Equal(t, 1, secs[0].ArticleCount)
+
+	// ── 当天按时生成：同一关注按执行日扫描，窗口随传入的报告日走 ──
+	secs2, batches2, err := MaterializeKeywordWatches(ctx, boardID, []repository.BoardTopicWatch{*kwWatch}, execDay, 0, WatchMaterializeConfig{Enabled: false}, nil)
+	require.NoError(t, err)
+	require.Len(t, secs2, 1)
+	require.Len(t, batches2[0], 1, "执行日只含执行日当天的文章")
+	assert.Equal(t, "backfillprobe 执行日文章", batches2[0][0].Title)
+	assert.Equal(t, repository.JSON("[660022]"), batches2[0][0].RelatedArticleIDs)
+}
+
 // TestWatchMaterializationAdjudication_KeywordFilterTitleConfidence verifies
 // the keyword track's adjudication layer end-to-end (watch-materialize-
 // llm-adjudication): recall hits are filtered to fitting articles, thread
@@ -211,7 +272,7 @@ func TestWatchMaterializationAdjudication_KeywordFilterTitleConfidence(t *testin
 	db := testutil.SetupTestDB(t)
 	repository.Repo = repository.NewTopicGraphRepository(db)
 	ctx := context.Background()
-	boardID, _ := seedMaterializationWorld(t, db)
+	boardID, today := seedMaterializationWorld(t, db)
 
 	kwWatch, err := repository.Repo.CreateWatch(repository.CreateWatchInput{
 		SemanticBoardID: boardID, Label: "harness", Type: repository.WatchTypeKeywordTopic,
@@ -222,7 +283,7 @@ func TestWatchMaterializationAdjudication_KeywordFilterTitleConfidence(t *testin
 		{"article_id":660002,"related":false,"confidence":0.9,"reason":"顺带提及"},
 		{"article_id":660003,"related":true,"confidence":0.85,"reason":"以 harness 为主题"}
 	],"section_title":"开源 harness 更新"}`}
-	secs, batches, err := MaterializeKeywordWatches(ctx, boardID, []repository.BoardTopicWatch{*kwWatch}, 0, DefaultWatchMaterializeConfig(), chat.f)
+	secs, batches, err := MaterializeKeywordWatches(ctx, boardID, []repository.BoardTopicWatch{*kwWatch}, today, 0, DefaultWatchMaterializeConfig(), chat.f)
 	require.NoError(t, err)
 	require.Len(t, secs, 1)
 	require.Len(t, batches, 1)
@@ -339,7 +400,7 @@ func TestWatchMaterializationAdjudication_DegradeToRecall(t *testing.T) {
 
 	// keyword: call error → full recall + fixed derived name + confidence 1.0.
 	errChat := &capturingChat{err: errors.New("provider down")}
-	secs, batches, err := MaterializeKeywordWatches(ctx, boardID, []repository.BoardTopicWatch{*kwWatch}, 0, DefaultWatchMaterializeConfig(), errChat.f)
+	secs, batches, err := MaterializeKeywordWatches(ctx, boardID, []repository.BoardTopicWatch{*kwWatch}, today, 0, DefaultWatchMaterializeConfig(), errChat.f)
 	require.NoError(t, err, "degradation MUST NOT surface as a materialization error")
 	require.Len(t, secs, 1)
 	assert.Equal(t, 2, secs[0].ArticleCount, "degraded → full recall result")
@@ -369,7 +430,7 @@ func TestWatchMaterializationAdjudication_DisabledZeroCalls(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 	repository.Repo = repository.NewTopicGraphRepository(db)
 	ctx := context.Background()
-	boardID, _ := seedMaterializationWorld(t, db)
+	boardID, today := seedMaterializationWorld(t, db)
 
 	kwWatch, err := repository.Repo.CreateWatch(repository.CreateWatchInput{
 		SemanticBoardID: boardID, Label: "harness", Type: repository.WatchTypeKeywordTopic,
@@ -377,7 +438,7 @@ func TestWatchMaterializationAdjudication_DisabledZeroCalls(t *testing.T) {
 	require.NoError(t, err)
 
 	chat := &capturingChat{resp: `{"verdicts":[]}`}
-	secs, _, err := MaterializeKeywordWatches(ctx, boardID, []repository.BoardTopicWatch{*kwWatch}, 0, WatchMaterializeConfig{Enabled: false, CandidateLimit: 40}, chat.f)
+	secs, _, err := MaterializeKeywordWatches(ctx, boardID, []repository.BoardTopicWatch{*kwWatch}, today, 0, WatchMaterializeConfig{Enabled: false, CandidateLimit: 40}, chat.f)
 	require.NoError(t, err)
 	require.Len(t, secs, 1)
 	assert.Equal(t, 2, secs[0].ArticleCount, "disabled → recall aggregated as-is")
@@ -449,7 +510,7 @@ func TestWatchLabelReadPath_TransientDecoration(t *testing.T) {
 	stSec, stThreads, err := MaterializeSentenceWatch(ctx, *stWatch, today, DefaultWatchSentenceConfig(), WatchMaterializeConfig{Enabled: false}, fakeEmbedder([]float64{1, 0, 0}), nil)
 	require.NoError(t, err)
 	require.NotNil(t, stSec)
-	kwSecs, kwBatches, err := MaterializeKeywordWatches(ctx, boardID, []repository.BoardTopicWatch{*kwWatch}, 1, WatchMaterializeConfig{Enabled: false}, nil)
+	kwSecs, kwBatches, err := MaterializeKeywordWatches(ctx, boardID, []repository.BoardTopicWatch{*kwWatch}, today, 1, WatchMaterializeConfig{Enabled: false}, nil)
 	require.NoError(t, err)
 	require.Len(t, kwSecs, 1)
 

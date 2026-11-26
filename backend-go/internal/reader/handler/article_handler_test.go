@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -299,6 +300,8 @@ func TestGetArticles_Projection(t *testing.T) {
 		"summary_status": {}, "summary_generated_at": {}, "firecrawl_status": {},
 		"firecrawl_error": {}, "firecrawl_crawled_at": {}, "completion_error": {},
 		"created_at": {}, "tag_count": {}, "relevance_score": {}, "excerpt": {},
+		// 疑似 AI 标记是非正文类小字段，必在各筛选分支的字段集里（task 4.1）。
+		"ai_detection_status": {},
 	}
 	forbiddenKeys := []string{"content", "description", "firecrawl_content", "ai_content_summary"}
 
@@ -585,3 +588,191 @@ func TestPerPageOverLimit(t *testing.T) {
 }
 
 func ptrTime2(t time.Time) *time.Time { return &t }
+
+// TestGetArticlesSearchChineseKeywordCoversLike covers add-article-search
+// 2.8（test-cases.md 故事 S4 步 1/2，sqlite 分支即 LIKE 口径）：中文
+// search 关键词命中集合与 title/description LIKE 同一活跃集口径一致，
+// 归档默认排除行为与修复前一致（archived=true 视图内搜索同样生效）。
+func TestGetArticlesSearchChineseKeywordCoversLike(t *testing.T) {
+	setupArticlesHandlerTestDB(t)
+	gin.SetMode(gin.TestMode)
+
+	feed := models.Feed{Title: "Search Feed", URL: "https://example.com/search"}
+	require.NoError(t, database.DB.Create(&feed).Error)
+
+	activeTitle := models.Article{FeedID: feed.ID, Title: "特斯拉Model Y地下车库自燃", Link: "https://example.com/s1"}
+	activeDesc := models.Article{FeedID: feed.ID, Title: "今日行业动态", Description: "特斯拉发布新电池", Link: "https://example.com/s2"}
+	archived := models.Article{FeedID: feed.ID, Title: "特斯拉历史财报", Link: "https://example.com/s3", Archived: true}
+	unrelated := models.Article{FeedID: feed.ID, Title: "英超冬窗转会关闭", Link: "https://example.com/s4"}
+	for _, a := range []*models.Article{&activeTitle, &activeDesc, &archived, &unrelated} {
+		require.NoError(t, database.DB.Create(a).Error)
+	}
+
+	runGetArticles := func(query string) (int, []uint) {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/api/articles?"+query, http.NoBody)
+		GetArticles(ctx)
+		require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+		var body struct {
+			Success bool `json:"success"`
+			Data    []struct {
+				ID    uint   `json:"id"`
+				Title string `json:"title"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+		require.True(t, body.Success)
+		ids := make([]uint, 0, len(body.Data))
+		for _, row := range body.Data {
+			ids = append(ids, row.ID)
+		}
+		return len(body.Data), ids
+	}
+
+	// 活跃集默认视图：命中 = LIKE 口径（title 或 description 含关键词）∧ 未归档
+	gotCount, gotIDs := runGetArticles("search=" + url.QueryEscape("特斯拉"))
+	var likeIDs []uint
+	require.NoError(t, database.DB.Model(&models.Article{}).
+		Where("archived = ? AND (title LIKE ? OR description LIKE ?)", false, "%特斯拉%", "%特斯拉%").
+		Order("id").Pluck("id", &likeIDs).Error)
+	require.Equal(t, len(likeIDs), gotCount, "命中数须与 LIKE 同口径（中文不再系统性漏召回）")
+	require.ElementsMatch(t, likeIDs, gotIDs)
+	require.Contains(t, gotIDs, activeTitle.ID, "标题命中")
+	require.Contains(t, gotIDs, activeDesc.ID, "导语命中")
+	require.NotContains(t, gotIDs, archived.ID, "归档默认排除（S4 步 2，行为与修复前一致）")
+	require.NotContains(t, gotIDs, unrelated.ID, "无关文章不混入")
+
+	// 归档视图（archived=true）：搜索过滤同样生效，仅命中归档行
+	_, gotIDs = runGetArticles("search=" + url.QueryEscape("特斯拉") + "&archived=true")
+	require.Equal(t, []uint{archived.ID}, gotIDs)
+}
+
+// TestGetArticles_AIDetectionStatusProjection 覆盖 task 4.1（article-list-projection
+// spec）：列表行携带疑似 AI 判定状态，未判定的文章也带该字段（值为 unknown），
+// 且不因该字段带出任何正文类大字段。
+func TestGetArticles_AIDetectionStatusProjection(t *testing.T) {
+	setupArticlesHandlerTestDB(t)
+	gin.SetMode(gin.TestMode)
+
+	feed := models.Feed{Title: "Detection Feed", URL: "https://example.com/detection"}
+	require.NoError(t, database.DB.Create(&feed).Error)
+
+	bigBody := "<p>" + strings.Repeat("正文内容 ", 500) + "</p>"
+	suspect := models.Article{
+		FeedID:    feed.ID,
+		Title:     "疑似 AI 稿件",
+		Link:      "https://example.com/detection/suspect",
+		Content:   bigBody,
+		PubDate:   ptrTime2(time.Date(2026, 11, 20, 9, 0, 0, 0, models.ShanghaiTZ)),
+		CreatedAt: time.Now(),
+	}
+	suspect.AIDetectionStatus = models.AIDetectionStatusSuspect
+	suspect.AIDetectionScore = 0.91
+	suspect.AIDetectionSource = models.AIDetectionSourceLLM
+	suspect.AIDetectionAt = ptrTime2(time.Date(2026, 11, 20, 10, 0, 0, 0, models.ShanghaiTZ))
+	require.NoError(t, database.DB.Create(&suspect).Error)
+
+	unknown := models.Article{
+		FeedID:    feed.ID,
+		Title:     "未判定稿件",
+		Link:      "https://example.com/detection/unknown",
+		PubDate:   ptrTime2(time.Date(2026, 11, 20, 8, 0, 0, 0, models.ShanghaiTZ)),
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, database.DB.Create(&unknown).Error)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/articles", http.NoBody)
+
+	GetArticles(ctx)
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+
+	var body struct {
+		Success bool                     `json:"success"`
+		Data    []map[string]interface{} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+	require.True(t, body.Success)
+	require.Len(t, body.Data, 2)
+
+	byID := make(map[uint]map[string]interface{}, len(body.Data))
+	for _, row := range body.Data {
+		byID[uint(row["id"].(float64))] = row
+	}
+	require.Equal(t, models.AIDetectionStatusSuspect, byID[suspect.ID]["ai_detection_status"])
+	// 未判定不省略字段（值表达未判定）。
+	require.Equal(t, models.AIDetectionStatusUnknown, byID[unknown.ID]["ai_detection_status"])
+	// 列表只给判定状态：置信分/来源/时间与正文大字段都留在详情接口。
+	for _, row := range body.Data {
+		for _, forbidden := range []string{
+			"content", "description", "firecrawl_content", "ai_content_summary",
+			"ai_detection_score", "ai_detection_source", "ai_detection_at",
+		} {
+			require.NotContains(t, row, forbidden)
+		}
+	}
+}
+
+// TestGetArticle_AIDetectionFields 覆盖 task 4.2：详情响应给出完整的判定四元组
+// （状态 + 置信分 + 来源 + 时间），未判定的文章给 unknown 与零值。
+func TestGetArticle_AIDetectionFields(t *testing.T) {
+	setupArticlesHandlerTestDB(t)
+	gin.SetMode(gin.TestMode)
+
+	feed := models.Feed{Title: "Detail Feed", URL: "https://example.com/detail"}
+	require.NoError(t, database.DB.Create(&feed).Error)
+
+	detectedAt := time.Date(2026, 11, 20, 10, 30, 0, 0, models.ShanghaiTZ)
+	article := models.Article{
+		FeedID:    feed.ID,
+		Title:     "手动标记的稿件",
+		Link:      "https://example.com/detail/manual",
+		PubDate:   ptrTime2(time.Date(2026, 11, 20, 9, 0, 0, 0, models.ShanghaiTZ)),
+		CreatedAt: time.Now(),
+	}
+	article.AIDetectionStatus = models.AIDetectionStatusSuspect
+	article.AIDetectionScore = 1
+	article.AIDetectionSource = models.AIDetectionSourceManual
+	article.AIDetectionAt = &detectedAt
+	require.NoError(t, database.DB.Create(&article).Error)
+
+	blank := models.Article{
+		FeedID:    feed.ID,
+		Title:     "未判定稿件",
+		Link:      "https://example.com/detail/blank",
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, database.DB.Create(&blank).Error)
+
+	getDetail := func(articleID uint) map[string]interface{} {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Params = gin.Params{{Key: "article_id", Value: fmt.Sprintf("%d", articleID)}}
+		ctx.Request = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/articles/%d", articleID), http.NoBody)
+		GetArticle(ctx)
+		require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+		var body struct {
+			Success bool                   `json:"success"`
+			Data    map[string]interface{} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+		require.True(t, body.Success)
+		return body.Data
+	}
+
+	data := getDetail(article.ID)
+	require.Equal(t, models.AIDetectionStatusSuspect, data["ai_detection_status"])
+	require.Equal(t, float64(1), data["ai_detection_score"])
+	require.Equal(t, models.AIDetectionSourceManual, data["ai_detection_source"])
+	require.NotNil(t, data["ai_detection_at"])
+
+	blankData := getDetail(blank.ID)
+	require.Equal(t, models.AIDetectionStatusUnknown, blankData["ai_detection_status"])
+	require.Equal(t, float64(0), blankData["ai_detection_score"])
+	require.Equal(t, "", blankData["ai_detection_source"])
+	require.Nil(t, blankData["ai_detection_at"])
+}

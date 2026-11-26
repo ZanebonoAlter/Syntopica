@@ -7,6 +7,10 @@ const props = defineProps<{
   visible: boolean
   config: MatchingConfig | null
   loading: boolean
+  /** 保存中（防重复提交）。 */
+  saving?: boolean
+  /** 保存失败信息（父层 API 结果回传；有值时保留输入并提示重试）。 */
+  saveError?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -21,19 +25,59 @@ const show = computed({
 
 const form = ref<Partial<MatchingConfig>>({})
 
+/** 候选泳道权重的文档默认值（缺项/旧后端未下发时回退）。 */
+const LANE_HEAT_CANDIDATE_WEIGHT_DEFAULT = 0.5
+
 watch([() => props.visible, () => props.config], ([v, c]) => {
   if (v && c) {
-    form.value = { ...c }
+    form.value = {
+      ...c,
+      // 缺项回退默认（不把 undefined 留在输入框里，也不伪造 0）。
+      lane_heat_candidate_weight: c.lane_heat_candidate_weight ?? LANE_HEAT_CANDIDATE_WEIGHT_DEFAULT,
+    }
   }
 })
 
+/**
+ * 数值字段归一：空串 / null / NaN / Infinity 一律视为非法（不是 0）。
+ * 相关事件阈值是「相似度」而非身份置信度，范围固定 [0,1]（design D6）。
+ */
+function toFiniteNumber(value: unknown): number | null {
+  if (value === '' || value === null || value === undefined) return null
+  const parsed = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+const relatedThresholdError = computed(() => {
+  const parsed = toFiniteNumber(form.value.related_event_similarity_threshold)
+  if (parsed === null) return '请填写 0 到 1 之间的数值'
+  if (parsed < 0 || parsed > 1) return '取值范围 0 ~ 1'
+  return ''
+})
+
+/** 候选泳道权重：默认 0.5、域 [0,1] 有限数；与相关事件阈值各自独立校验（互不影响）。 */
+const laneHeatWeightError = computed(() => {
+  const parsed = toFiniteNumber(form.value.lane_heat_candidate_weight)
+  if (parsed === null) return '请填写 0 到 1 之间的数值'
+  if (parsed < 0 || parsed > 1) return '取值范围 0 ~ 1'
+  return ''
+})
+
+const hasFormError = computed(() => Boolean(relatedThresholdError.value) || Boolean(laneHeatWeightError.value))
+
 function handleSave() {
-  emit('save', form.value)
+  // 非法输入整体拒绝：不发 PUT，旧值不被覆盖（后端同样按整体拒绝处理）。
+  if (hasFormError.value) return
+  emit('save', {
+    ...form.value,
+    related_event_similarity_threshold: toFiniteNumber(form.value.related_event_similarity_threshold) ?? undefined,
+    lane_heat_candidate_weight: toFiniteNumber(form.value.lane_heat_candidate_weight) ?? undefined,
+  })
 }
 </script>
 
 <template>
-  <AppDialog v-model="show" title="参数配置" width="740px">
+  <AppDialog v-model="show" title="参数配置" size="lg">
     <div v-if="loading" class="loading-text">加载中...</div>
 
     <div v-else class="mc-body">
@@ -189,6 +233,54 @@ function handleSave() {
         </div>
       </div>
 
+      <!-- ===== 相关事件（独立于入板规则：按事件语义推荐，不合并事件） ===== -->
+      <div class="mc-rule-block" data-testid="mc-related-events">
+        <div class="mc-rule-title">
+          <span class="mc-rule-badge mc-rule-badge--related">相关</span>
+          <span>相关事件</span>
+        </div>
+        <p class="mc-rule-desc">按事件名称、描述与辅助标签的语义相似度，推荐同版块「值得一起看」的其他事件。只是相关推荐，不合并事件、不判定同一事实，也不参与入板命中顺序。</p>
+        <div class="mc-grid">
+          <label class="mc-field">
+            <span class="mc-label">相关事件相似度阈值</span>
+            <span class="mc-hint">两条事件描述的余弦相似度达到此值才列为相关。默认 0.86；调高更严格、调低更宽松，改动后无需重算向量，下次展开即生效</span>
+            <AppInput
+              v-model="form.related_event_similarity_threshold"
+              type="number"
+              step="0.01"
+              min="0"
+              max="1"
+              :error="relatedThresholdError"
+              data-testid="mc-related-threshold"
+            />
+          </label>
+        </div>
+      </div>
+
+      <!-- ===== 当天线索热度（lane-heat-metric D8：只进热度，不进生命周期） ===== -->
+      <div class="mc-rule-block" data-testid="mc-lane-heat">
+        <div class="mc-rule-title">
+          <span class="mc-rule-badge mc-rule-badge--related">热度</span>
+          <span>当天线索热度</span>
+        </div>
+        <p class="mc-rule-desc">版块关注度 = 各泳道当天线索数按话题状态加权求和；候选泳道按此权重计入。只影响热度与雷达分档，不参与入板匹配，也不影响话题生命周期（candidate 转正门槛不变）。</p>
+        <div class="mc-grid">
+          <label class="mc-field">
+            <span class="mc-label">候选泳道权重</span>
+            <span class="mc-hint">默认 0.5；0 = 候选不计入版块关注度，1 = 与 active 泳道同权。取值范围 0 ~ 1</span>
+            <AppInput
+              v-model="form.lane_heat_candidate_weight"
+              type="number"
+              step="0.05"
+              min="0"
+              max="1"
+              :error="laneHeatWeightError"
+              data-testid="mc-lane-heat-weight"
+            />
+          </label>
+        </div>
+      </div>
+
       <!-- ===== 升级建议 ===== -->
       <div class="mc-rule-block">
         <div class="mc-rule-title">
@@ -240,8 +332,15 @@ function handleSave() {
     </div>
 
     <template #footer>
+      <span v-if="saveError" class="mc-save-error" data-testid="mc-save-error">{{ saveError }}（输入已保留，可重试）</span>
       <AppButton variant="ghost" size="sm" @click="emit('cancel')">取消</AppButton>
-      <AppButton variant="primary" size="sm" @click="handleSave">保存</AppButton>
+      <AppButton
+        variant="primary"
+        size="sm"
+        :loading="saving"
+        :disabled="hasFormError || saving"
+        @click="handleSave"
+      >保存</AppButton>
     </template>
   </AppDialog>
 </template>
@@ -269,6 +368,12 @@ function handleSave() {
 
 .mc-desc strong {
   color: var(--color-text-secondary);
+}
+
+.mc-save-error {
+  margin-right: auto;
+  font-size: 0.72rem;
+  color: var(--color-danger, #dc2626);
 }
 
 .mc-rule-block {
@@ -332,6 +437,11 @@ function handleSave() {
 .mc-rule-badge--post {
   background: rgba(255, 80, 80, 0.12);
   color: rgba(255, 120, 120, 0.85);
+}
+
+.mc-rule-badge--related {
+  background: rgba(120, 200, 120, 0.12);
+  color: rgba(140, 220, 140, 0.85);
 }
 
 .mc-rule-badge--upgrade {

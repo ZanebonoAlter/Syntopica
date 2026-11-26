@@ -157,7 +157,8 @@ const check = (name, ok) => checks.push([name, ok]);
 	const os = require('os');
 	const path = require('path');
 	const {
-		parseModeSetPayload,
+		parseStageSetPayload,
+	latestBoundChange,
 		mergePaths,
 		buildEditMapPayload,
 		syncEditMap,
@@ -172,38 +173,38 @@ const check = (name, ok) => checks.push([name, ok]);
 	};
 
 	// ---- B 系纯函数 ----
-	check('B1 parseModeSet 合法行', parseModeSetPayload({ payload: JSON.stringify({ mode: 'implementation', boundChange: 'foo' }) }) === 'foo');
-	check('B2 parseModeSet payload 损坏 → null', parseModeSetPayload({ payload: '{broken' }) === null);
-	check('B2b parseModeSet 行缺失 → null', parseModeSetPayload(null) === null && parseModeSetPayload(undefined) === null);
-	check('B3 parseModeSet boundChange=null → null（无档会话）', parseModeSetPayload({ payload: JSON.stringify({ mode: 'requirements', boundChange: null }) }) === null);
+	check('B1 parseStageSet 合法行', parseStageSetPayload({ payload: JSON.stringify({ stage: 'implement', stageFamily: 'implementation', boundChange: 'foo' }) }) === 'foo');
+	check('B2 parseStageSet payload 损坏 → null', parseStageSetPayload({ payload: '{broken' }) === null);
+	check('B2b parseStageSet 行缺失 → null', parseStageSetPayload(null) === null && parseStageSetPayload(undefined) === null);
+	check('B3 parseStageSet boundChange=null → null（未绑定会话）', parseStageSetPayload({ payload: JSON.stringify({ stage: 'propose', stageFamily: 'planning', boundChange: null }) }) === null);
 	check('B4 mergePaths 并集排序去重', JSON.stringify(mergePaths(['b', 'a'], ['a', 'c'])) === JSON.stringify(['a', 'b', 'c']));
 	check('B5 mergePaths 空集边界', mergePaths([], []).length === 0);
 	check('B5b mergePaths 非串/空串成员被滤', JSON.stringify(mergePaths(['a', '', undefined], ['b'])) === JSON.stringify(['a', 'b']));
 	const many = buildEditMapPayload(Array.from({ length: 500 }, (_, i) => `dir/f${i}.go`));
 	check('B6 buildPayload 500+ 路径 n=paths.length', many.n === 500 && many.paths.length === 500);
 
-	// ---- Q 系状态机（临时库 + 伪造 mode.set）----
+	// ---- Q 系状态机（临时库 + 伪造 stage.set）----
 	const tmps = [];
 	try {
-		// Q3 无 mode.set 的会话：零事件不计入
+		// Q3 未绑定阶段（无 stage.set）的会话：零事件不计入
 		const t1 = mktmp(); tmps.push(t1);
-		check('Q3 无档会话 syncEditMap 返回 false 零事件', syncEditMap(t1, 's-none', ['x.go']) === false && lastPaths(t1, 'any') === null);
+		check('Q3 未绑定会话 syncEditMap 返回 false 零事件', syncEditMap(t1, 's-none', ['x.go']) === false && lastPaths(t1, 'any') === null);
 
 		// Q1/Q2 同 session 绑 foo：首条快照 + 累计并集
-		logEvent(t1, { kind: 'mode.set', sessionId: 's1', change: 'foo', payload: { mode: 'implementation', boundChange: 'foo' } });
+		logEvent(t1, { kind: 'stage.set', sessionId: 's1', change: 'foo', payload: { stage: 'implement', stageFamily: 'implementation', boundChange: 'foo', source: 'command' } });
 		check('Q1 首次落库快照 = base∅∪trigger', syncEditMap(t1, 's1', ['a.go']) === true && JSON.stringify(lastPaths(t1, 'foo')) === JSON.stringify(['a.go']));
 		syncEditMap(t1, 's1', ['b.go']);
 		check('Q2 连续回合累计快照（并集）', JSON.stringify(lastPaths(t1, 'foo')) === JSON.stringify(['a.go', 'b.go']));
 		const rowsFoo = queryByChange(t1, 'foo', ['edit.map']);
 		check('Q2b 每回合独立追加（两条事件，非改写）', rowsFoo.length === 2);
 
-		// Q5 档位切换到 bar：base 重读 bar（空起步），foo 不再增长
-		logEvent(t1, { kind: 'mode.set', sessionId: 's1', change: 'bar', payload: { mode: 'implementation', boundChange: 'bar' } });
+		// Q5 绑定切换到 bar：base 重读 bar（空起步），foo 不再增长
+		logEvent(t1, { kind: 'stage.set', sessionId: 's1', change: 'bar', payload: { stage: 'implement', stageFamily: 'implementation', boundChange: 'bar', source: 'edit-dir' } });
 		syncEditMap(t1, 's1', ['z.go']);
-		check('Q5 档位切换：bar 空起步且 foo 不再增长', JSON.stringify(lastPaths(t1, 'bar')) === JSON.stringify(['z.go']) && JSON.stringify(lastPaths(t1, 'foo')) === JSON.stringify(['a.go', 'b.go']));
+		check('Q5 绑定切换：bar 空起步且 foo 不再增长', JSON.stringify(lastPaths(t1, 'bar')) === JSON.stringify(['z.go']) && JSON.stringify(lastPaths(t1, 'foo')) === JSON.stringify(['a.go', 'b.go']));
 
 		// Q8 跨 session 续接：新 session s2 绑 foo，base 从库读旧快照起步
-		logEvent(t1, { kind: 'mode.set', sessionId: 's2', change: 'foo', payload: { mode: 'implementation', boundChange: 'foo' } });
+		logEvent(t1, { kind: 'stage.set', sessionId: 's2', change: 'foo', payload: { stage: 'implement', stageFamily: 'implementation', boundChange: 'foo', source: 'command' } });
 		syncEditMap(t1, 's2', ['c.go']);
 		check('Q8 跨 session 并集不丢（s2 落 {a,b,c}）', JSON.stringify(lastPaths(t1, 'foo')) === JSON.stringify(['a.go', 'b.go', 'c.go']));
 
@@ -226,7 +227,7 @@ const check = (name, ok) => checks.push([name, ok]);
 	const fs = require('fs');
 	const os = require('os');
 	const path = require('path');
-	const { isToolManagedPath, syncEditMap, resetEditMapState } = require('./.emap.cjs');
+	const { isToolManagedPath, isNonPathToken, isExcludedPath, syncEditMap, resetEditMapState } = require('./.emap.cjs');
 	const { logEvent, queryByChange } = require('./.hlog.cjs');
 
 	const mktmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'emap-filter-'));
@@ -246,13 +247,29 @@ const check = (name, ok) => checks.push([name, ok]);
 		&& isToolManagedPath('docs/reference/standard/frontend/layout.md') === false);
 	// F3c 边界：active change 目录下的 tasks.md 等真实产物不剔除（只有 .openspec.yaml 是工具元数据）
 	check('F3c active change 的 tasks.md 不剔除（非工具元数据）', isToolManagedPath('openspec/changes/foo/tasks.md') === false);
+	// F3d 构建/部署产物剔除（fix-editmap-deploy-artifact-pollution）：
+	// deploy-frontend.sh 写静态托管目录与 .frontend-before-* 备份，混入归属集会让
+	// doc-impact 对每个 change 误报 api/database/architecture/standard「疑似遗漏」。
+	check('F3d 部署产物剔除', isToolManagedPath('backend-go/frontend/index.html') === true
+		&& isToolManagedPath('backend-go/.frontend-before-matrix-copy.KtDRQM/_nuxt/a.js') === true
+		&& isToolManagedPath('front/.output/public/index.html') === true
+		&& isToolManagedPath('front/.nuxt/tsconfig.json') === true
+		&& isToolManagedPath('front/dist/x.js') === true);
+	check('F3e 部署产物边界：frontend 只认 backend-go 下的', isToolManagedPath('front/app/features/frontend/a.vue') === false
+		&& isToolManagedPath('backend-go/frontendx/a.go') === false);
+	// F3f 非路径 token 剔除：CLI 开关曾被当成路径写进归属集（实测裸 `--full-page`）
+	check('F3f 非路径 token 剔除', isNonPathToken('--full-page') === true && isNonPathToken('-f') === true
+		&& isNonPathToken('front/app/a.vue') === false && isNonPathToken('-') === false);
+	check('F3g 统一过滤点 isExcludedPath 汇总两档', isExcludedPath('--full-page') === true
+		&& isExcludedPath('backend-go/frontend/index.html') === true
+		&& isExcludedPath('backend-go/internal/a.go') === false);
 
 	const tmps = [];
 	resetEditMapState(); // 隔离 Q 系残留的模块状态（同 bundle 实例跨块共享）
 	try {
 		// F4 全工具自管 trigger：零事件（不落库，不产生污染快照）
 		const t1 = mktmp(); tmps.push(t1);
-		logEvent(t1, { kind: 'mode.set', sessionId: 's1', change: 'foo', payload: { mode: 'implementation', boundChange: 'foo' } });
+		logEvent(t1, { kind: 'stage.set', sessionId: 's1', change: 'foo', payload: { stage: 'implement', stageFamily: 'implementation', boundChange: 'foo', source: 'command' } });
 		syncEditMap(t1, 's1', ['openspec/changes/archive/2026-09-05-x/.openspec.yaml', 'openspec/changes/foo/.openspec.yaml']);
 		check('F4 全工具自管 trigger 零事件', lastPaths(t1, 'foo') === null);
 
@@ -260,9 +277,14 @@ const check = (name, ok) => checks.push([name, ok]);
 		syncEditMap(t1, 's1', ['backend-go/a.go', 'openspec/changes/archive/2026-09-05-x/tasks.md']);
 		check('F5 混合 trigger 落库仅正常路径', JSON.stringify(lastPaths(t1, 'foo')) === JSON.stringify(['backend-go/a.go']));
 
+		// F5b 部署产物 + CLI 开关混合 trigger：两者都不进归属集合
+		syncEditMap(t1, 's1', ['--full-page', 'backend-go/frontend/_nuxt/a.js', 'backend-go/.frontend-before-x/index.html', 'backend-go/b.go']);
+		check('F5b 部署产物与开关 token 不进归属集合',
+			JSON.stringify(lastPaths(t1, 'foo')) === JSON.stringify(['backend-go/a.go', 'backend-go/b.go']));
+
 		// F6 存量污染 base：新快照不再携带（采集侧止增，旧事件不动）
 		const t2 = mktmp(); tmps.push(t2);
-		logEvent(t2, { kind: 'mode.set', sessionId: 's1', change: 'bar', payload: { mode: 'implementation', boundChange: 'bar' } });
+		logEvent(t2, { kind: 'stage.set', sessionId: 's1', change: 'bar', payload: { stage: 'implement', stageFamily: 'implementation', boundChange: 'bar', source: 'command' } });
 		logEvent(t2, { kind: 'edit.map', sessionId: 's1', change: 'bar', payload: { paths: ['openspec/changes/archive/legacy/.openspec.yaml', 'old.go'], n: 2 } });
 		resetEditMapState();
 		syncEditMap(t2, 's1', ['new.go']);

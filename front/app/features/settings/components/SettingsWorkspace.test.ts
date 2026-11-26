@@ -8,6 +8,11 @@ import SettingsWorkspace from './SettingsWorkspace.vue'
  * 9 旧键（6 数据源类 + 3 运行状态类）命中即 router.replace 到复合新键携带 tab=<旧键>。
  */
 
+// 头栏图标本地子集不经插件注册时 Icon 会真实出网拉图标（ETIMEDOUT 噪声，单次 ~130s）
+vi.mock('@iconify/vue', () => ({
+  Icon: { name: 'Icon', inheritAttrs: true, template: '<span class="icon-stub" aria-hidden="true" />' },
+}))
+
 const routeQuery = reactive<Record<string, string>>({})
 const replaceMock = vi.fn((to: { query?: Record<string, unknown> }) => {
   for (const k of Object.keys(routeQuery)) delete routeQuery[k]
@@ -48,7 +53,8 @@ function mountWorkspace() {
 const LEGACY_CASES: [string, string, string][] = [
   ['firecrawl', 'datasources-network', 'firecrawl'],
   ['bocha', 'datasources-network', 'bocha'],
-  ['searxng', 'datasources-network', 'searxng'],
+  // SearXNG 面板已下线（switch-margin-note-search-to-deepseek）：旧键落到 tab=web-search
+  ['searxng', 'datasources-network', 'web-search'],
   ['rsshub', 'datasources-network', 'rsshub'],
   ['datasources', 'datasources-network', 'datasources'],
   ['proxy', 'datasources-network', 'proxy'],
@@ -101,6 +107,20 @@ describe('SettingsWorkspace — 旧键深链重定向', () => {
     routeQuery.foo = 'bar'
     mountWorkspace()
     expect(replaceMock).toHaveBeenCalledWith({ query: { section: 'datasources-network', tab: 'proxy', foo: 'bar' } })
+  })
+
+  it('旧子 tab 深链 ?section=datasources-network&tab=searxng → tab=web-search', () => {
+    routeQuery.section = 'datasources-network'
+    routeQuery.tab = 'searxng'
+    mountWorkspace()
+    expect(replaceMock).toHaveBeenCalledWith({ query: { section: 'datasources-network', tab: 'web-search' } })
+  })
+
+  it('非数据源分区的 searxng tab 不触发重定向（子 tab 只属于复合分区）', () => {
+    routeQuery.section = 'runtime-status'
+    routeQuery.tab = 'searxng'
+    mountWorkspace()
+    expect(replaceMock).not.toHaveBeenCalled()
   })
 
   it('无 section 参数时默认 feeds，不重定向', () => {

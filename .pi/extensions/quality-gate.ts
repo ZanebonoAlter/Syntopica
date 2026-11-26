@@ -50,7 +50,7 @@
  *    isToolNotFound 特征兑底（探测后 PATH 内文件被删的窗口期），不进粘性不分级。
  *    windows 模式不参与（用 Windows 绝对路径执行，不经 bash PATH 查找）。
  * 15. 子线程降载（harden-subagent-constraint-channel D4，2026-09）：带扩展子线程（pi-web
- *     implementer 档 / pi-subagents 后台）的 turn_end 会在共享工作树上与主会话叠加跑全量
+ *     implementer 档（已并入 general-purpose，2026-11-03）/ pi-subagents 后台）的 turn_end 会在共享工作树上与主会话叠加跑全量
  *     门禁——N 子线程并发即 N 倍重命令（4 核树莓派红线）。turn_end 入口先做子线程判定
  *     （lib/child-session isChildSession，与 constraint-injection 继承同源证据）：父子可证
  *     → 本回合整体短路（git 快照/interop 探测/门禁命令一个不跑，gate.check 零记账），
@@ -82,12 +82,12 @@ import {
 	mkdirSync,
 } from "node:fs";
 import { join, delimiter } from "node:path";
-import { logEvent, queryBySession } from "./lib/harness-log";
+import { logEvent } from "./lib/harness-log";
 import { detectActiveChange } from "./lib/active-change";
 import {
 	syncEditMap,
 	resetEditMapState,
-	parseModeSetPayload,
+	latestBoundChange,
 	latestEditMapByChange,
 } from "./lib/edit-map";
 import {
@@ -687,7 +687,7 @@ export default function (pi: ExtensionAPI) {
 
 		// 3.7 并发外部归因预取（attribute-concurrent-gate-noise D5/D7 +
 		//     add-foreign-gate-steer-attribution D4 修复）：mine = 本会话累计触发集 ∪
-		//     本 change（mode.set boundChange）归属；foreign = 会话启动基线 ∪ 其他 change
+		//     本 change（stage.set boundChange）归属；foreign = 会话启动基线 ∪ 其他 change
 		//     归属。gateLog 是同步回调，判定集合必须在此（门禁命令执行前）预取完成，
 		//     不得在回调内发起查询。库不可用 → 归属信号缺席，判定退化为触发集/基线
 		//     （保守方向）；任何异常吞掉（fail-open），不影响门禁既有流程。
@@ -705,11 +705,8 @@ export default function (pi: ExtensionAPI) {
 		const otherChangePaths = new Set<string>();
 		const boundChangePaths = new Set<string>();
 		try {
-			const modeRows = sessionId
-				? queryBySession(repoRoot, sessionId, ["mode.set"])
-				: [];
-			boundChangeName =
-				parseModeSetPayload(modeRows[modeRows.length - 1]) ?? null;
+			// 绑定取数：stage.set（**双读**：无该类行时回退 legacy mode.set——D7 过渡期）
+			boundChangeName = sessionId ? latestBoundChange(repoRoot, sessionId) : null;
 			for (const [change, paths] of latestEditMapByChange(repoRoot)) {
 				const target =
 					change === boundChangeName ? boundChangePaths : otherChangePaths;

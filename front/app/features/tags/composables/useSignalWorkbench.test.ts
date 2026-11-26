@@ -22,6 +22,8 @@ const apiMocks = vi.hoisted(() => ({
   getSignalJobStatus: vi.fn(),
   getSignalResearchProgress: vi.fn(),
   getBoardAnalysisStatus: vi.fn(),
+  getSignalCandidate: vi.fn(),
+  putSignalDisposition: vi.fn(),
 }))
 const notifyMocks = vi.hoisted(() => ({
   success: vi.fn(),
@@ -79,7 +81,7 @@ describe('useSignalWorkbench 发现链路（FE-1/FE-4）', () => {
     await vi.advanceTimersByTimeAsync(3000) // 终态：discovered
     expect(ws.discoveryRunning.value).toBe(false)
     // 终态只重拉列表
-    expect(apiMocks.listSignalCandidates).toHaveBeenCalledWith(9, { granularity: 'month', period: '2026-09' })
+    expect(apiMocks.listSignalCandidates).toHaveBeenCalledWith(9, { granularity: 'month', period: '2026-09', visibility: 'visible', view: 'all' })
     expect(apiMocks.listSignalReports).toHaveBeenCalled()
     // FE-1 核心：全链零 research 请求
     expect(apiMocks.triggerSignalResearch).not.toHaveBeenCalled()
@@ -468,7 +470,7 @@ describe('useSignalWorkbench 视图守卫与周期', () => {
 
     const ok = await ws.changePeriod(9, 'year', '2026')
     expect(ok).toBe(true)
-    expect(apiMocks.listSignalCandidates).toHaveBeenCalledWith(9, { granularity: 'year', period: '2026' })
+    expect(apiMocks.listSignalCandidates).toHaveBeenCalledWith(9, { granularity: 'year', period: '2026', visibility: 'visible', view: 'all' })
     expect(apiMocks.listSignalReports).toHaveBeenCalled()
   })
 
@@ -480,5 +482,81 @@ describe('useSignalWorkbench 视图守卫与周期', () => {
     await ws.loadPeriod(9)
     expect(ws.candidatesError.value).toBe('db down')
     expect(ws.reportsError.value).toBeNull()
+  })
+})
+
+// ── redesign-enrichment-research-workbench 4.2：任务可找回 / 晚响应不串台 / ──
+//    忽略筛选与 disposition / 已忽略候选的研究 409
+
+describe('useSignalWorkbench 跨 scope 与 disposition（redesign 4.2）', () => {
+  it('任务可找回：切周期后研究身份仍在，returnToResearchTask 切回任务周期', async () => {
+    apiMocks.triggerSignalResearch.mockResolvedValue(startedResearch('rj9', 31))
+    const ws = useSignalWorkbench()
+    ws.setBoard(9)
+    await ws.changePeriod(9, 'month', '2026-09')
+    await ws.research(9, 31)
+    expect(ws.researchCandidateId.value).toBe(31)
+    // 切到别的周期：任务身份与所属周期快照不被筛选清空
+    await ws.changePeriod(9, 'month', '2026-08')
+    expect(ws.period.value).toBe('2026-08')
+    expect(ws.researchCandidateId.value).toBe(31)
+    expect(ws.researchTaskPeriod.value).toBe('2026-09')
+    // 任务入口返回原周期
+    apiMocks.triggerSignalResearch.mockResolvedValue({ success: true, data: { status: 'started', job_id: 'rj9b', job_kind: 'board_signal_report', scope: 'board', target_id: 9, candidate_id: 31, granularity: 'month', period: '2026-09' } })
+    await ws.returnToResearchTask(9)
+    expect(ws.period.value).toBe('2026-09')
+  })
+
+  it('候选详情晚响应不串台：setBoard 后到达的详情不写入新视图', async () => {
+    let resolveDetail: (v: unknown) => void = () => {}
+    apiMocks.getSignalCandidate.mockImplementation(
+      () => new Promise((resolve) => { resolveDetail = resolve }),
+    )
+    const ws = useSignalWorkbench()
+    ws.setBoard(9)
+    await ws.loadPeriod(9)
+    const opening = ws.openCandidate(9, 31)
+    ws.setBoard(8) // 切板块：epoch++，旧详情迟到
+    resolveDetail({ success: true, data: { id: 31, signal: '旧板块详情' } })
+    await opening
+    expect(ws.activeCandidateId.value).toBeNull()
+    expect(ws.activeCandidate.value).toBeNull()
+  })
+
+  it('visibility 切换重拉列表；忽略成功刷新列表与详情，运行中 409 只提示', async () => {
+    apiMocks.getSignalCandidate.mockResolvedValue({ success: true, data: { id: 31, ignored_at: null } })
+    const ws = useSignalWorkbench()
+    ws.setBoard(9)
+    await ws.changePeriod(9, 'month', '2026-09')
+    await ws.setCandidateVisibility(9, 'ignored')
+    expect(apiMocks.listSignalCandidates).toHaveBeenLastCalledWith(9, { granularity: 'month', period: '2026-09', visibility: 'ignored', view: 'all' })
+
+    await ws.openCandidate(9, 31)
+    // 忽略：先成功后 409（运行中的忽略不可达）
+    const putMock = vi.fn()
+      .mockResolvedValueOnce({ success: true, data: { candidate_id: 31, ignored: true, ignored_at: '2026-10-15T00:00:00Z' } })
+      .mockResolvedValueOnce({ success: false, status: 409, error: 'board analysis already running' })
+    apiMocks.putSignalDisposition = putMock
+    await ws.ignoreCandidate(9, 31)
+    expect(putMock).toHaveBeenCalledWith(9, 31, true)
+    expect(apiMocks.listSignalCandidates).toHaveBeenCalled()
+    await ws.ignoreCandidate(9, 31)
+    expect(notifyMocks.warn).toHaveBeenCalledWith('任务运行中的候选不能忽略，请等任务结束')
+  })
+
+  it('已忽略候选的新研究 409 candidate_ignored：不启动轮询，提示恢复', async () => {
+    apiMocks.triggerSignalResearch.mockResolvedValue({
+      success: false,
+      status: 409,
+      data: { reason: 'candidate_ignored' },
+      error: 'signal candidate is ignored; restore it before researching',
+    })
+    const ws = useSignalWorkbench()
+    ws.setBoard(9)
+    await ws.changePeriod(9, 'month', '2026-09')
+    const ok = await ws.research(9, 31)
+    expect(ok).toBe(false)
+    expect(ws.researchCandidateId.value).toBeNull()
+    expect(ws.researchError.value).toContain('已忽略，请先恢复')
   })
 })

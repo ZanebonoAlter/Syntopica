@@ -1,3 +1,5 @@
+<!-- domain: ui -->
+
 # unified-form-controls Specification
 
 ## Purpose

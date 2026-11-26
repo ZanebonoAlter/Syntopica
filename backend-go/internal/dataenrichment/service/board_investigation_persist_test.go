@@ -236,10 +236,8 @@ func TestInvestigateBoardQuestion_PersistsFullInvestigation(t *testing.T) {
 	require.Equal(t, repository.ComputeQuestionKey("两条泳道是否由同一资金驱动"), snap["question_key"])
 	lanes := snap["lane_whitelist"].([]any)
 	require.ElementsMatch(t, []any{float64(901), float64(902)}, lanes)
-	require.Contains(t, snap, "methods")
-	require.Contains(t, snap, "method_prompt")
-	require.Contains(t, snap, "method_cards")
-	require.Contains(t, snap, "evidence_needs")
+	// 方法卡链已随 restructure-settings-navigation 全链移除（编排不注入方法卡），
+	// snapshot 不再含 methods/method_prompt/method_cards/evidence_needs。
 	initial := snap["initial_hypotheses"].(map[string]any)
 	require.Len(t, initial["hypotheses"], 3)
 	research := snap["research"].(map[string]any)

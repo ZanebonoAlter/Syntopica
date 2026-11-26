@@ -207,7 +207,7 @@ const flowSteps = computed<FlowStep[]>(() => {
     steps.push({
       id: 'max_sim', title: '④ 最高相似度规则',
       desc: '最像的那一对有多像？需同时满足三个条件',
-      result: `✓Smax=${formatScore(d.max_similarity)} ✓${d.hits}≥${minHits}命中 ✓R=${formatScore(d.hit_rate)} → 满足！${d.downgraded ? ` ⚠降级匹配（原阈值${c.direct_max_sim_min_hits}，因仅有${d.tag_auxiliary_count}个辅助标签降为${d.effective_min_hits}）` : ''}${directionCheckText(d)}`,
+      result: `✓Smax=${formatScore(d.max_similarity)} ✓${d.hits}≥${minHits}命中 ✓R=${formatScore(d.hit_rate)} → 满足！${directionCheckText(d)}`,
       state: 'matched',
     })
     return steps

@@ -1,8 +1,12 @@
+<!-- domain: ai-summary, db -->
+
 # embedding-cache Specification
 
 ## Purpose
 TBD - created by archiving change nightly-throughput-embedding-cache-parallel-crawl. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: Router.Embed 层 embedding 结果持久化缓存（仅限白名单 operation）
 `Router.Embed`（`backend-go/internal/platform/airouter/router.go`）SHALL 仅对白名单 `embeddingCacheOperations`（当前仅 `tagmanagement.embedding`，输入由 tag 固定属性构成、跨文章重复）中的 operation 启用缓存：在加载 route 后、获取信号量之前，按 `(model, input_hash)` 组成的 cache_key 查询 `ai_embedding_cache` 表；命中时 SHALL 跳过 provider 调用与信号量占用，直接反序列化返回 `*EmbeddingResult`。白名单外的 operation（如 `section.embedding` 文章正文、`tagmanagement.auxlabel_embedding` 标签+文章上下文一次性组合、`discovery.route_embedding` 路由回填）SHALL 跳过缓存查询与写入，直接走真实调用（生产实测这些 operation 命中率 0-10%，每行 ~30KB，属纯存储浪费）。
 
@@ -65,3 +69,14 @@ TBD - created by archiving change nightly-throughput-embedding-cache-parallel-cr
 - **WHEN** `section.embedding` 或 `tagmanagement.auxlabel_embedding` 等 operation 调用成功
 - **THEN** 不写 `ai_embedding_cache`，后续同输入调用直接走 provider，不产生 cache_hit 日志
 
+### Requirement: 批量 embedding 缓存 key 按单条拆分
+
+批量调用 embedding 时，缓存查/写 SHALL 按批内每条文本独立计算 cache key（单条文本口径），不得以整个 input 数组拼接为 key。单条路径的缓存 key 生成方式不变。
+
+#### Scenario: 批量部分命中
+- **WHEN** 批量请求 [A, B, C]，其中 B 已有缓存
+- **THEN** 仅 A、C 计为 miss 并发送给 provider；A、C 的结果按各自单条 key 写入缓存，B 不重复写入
+
+#### Scenario: 单条路径 key 兼容
+- **WHEN** 单条调用 embedding（既有 inline 打标路径）
+- **THEN** 缓存 key 与批量化改造前完全一致（历史缓存仍可命中）

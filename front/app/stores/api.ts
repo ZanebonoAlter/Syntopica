@@ -24,6 +24,7 @@ interface FeedPayload {
   max_completion_retries?: number
   firecrawl_enabled?: boolean
   tagging_enabled?: boolean
+  ai_detection_enabled?: boolean
 }
 
 export const useApiStore = defineStore('api', () => {
@@ -149,6 +150,8 @@ export const useApiStore = defineStore('api', () => {
         maxCompletionRetries: feed.max_completion_retries ?? 3,
         firecrawlEnabled: feed.firecrawl_enabled,
         taggingEnabled: feed.tagging_enabled,
+        // 后端 gorm default:false；缺字段（旧后端）同样归一为关，不假装已开启
+        aiDetectionEnabled: feed.ai_detection_enabled ?? false,
       }))
 
       feeds.value = mappedFeeds
@@ -209,6 +212,7 @@ export const useApiStore = defineStore('api', () => {
       max_completion_retries?: number
       firecrawl_enabled?: boolean
       tagging_enabled?: boolean
+      ai_detection_enabled?: boolean
     }
   ) {
     loading.value = true

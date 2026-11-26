@@ -134,7 +134,7 @@ func exportSpecs() []ExportSpec {
 		},
 		{
 			Table:      "topic_tag_board_labels",
-			Columns:    []string{"topic_tag_id", "semantic_board_id", "score", "match_reason", "downgraded", "direction_mismatch", "created_at", "updated_at"},
+			Columns:    []string{"topic_tag_id", "semantic_board_id", "score", "match_reason", "direction_mismatch", "created_at", "updated_at"},
 			NoSequence: true,
 			Where:      "updated_at >= NOW() - INTERVAL ':days days'",
 		},
@@ -205,14 +205,6 @@ func exportSpecs() []ExportSpec {
 		// demo 的叙事工坊原先全空：这批表从来没进过白名单（白名单是早期版本）。
 		// 全量导出（无时间窗）——分析存量资产，行数小（合计 ~2.5k），按窗口过滤会把面板清空。
 		// 排序满足物理 FK：watches/lane → persistent_topics；qa/review → result；其余指向 semantic_labels。
-		{
-			Table:   "analysis_methods",
-			Columns: []string{"id", "name", "title", "summary", "selection_meta", "content", "enabled", "legacy", "deleted_at", "created_at", "updated_at"},
-		},
-		{
-			Table:   "reference_roles",
-			Columns: []string{"id", "name", "title", "content", "enabled", "created_at", "updated_at"},
-		},
 		{
 			Table:         "board_persistent_topics",
 			Columns:       []string{"id", "semantic_board_id", "label", "description", "embedding", "status", "first_seen_date", "last_seen_date", "hit_count", "consecutive_hits", "created_at", "updated_at", "source", "centroid", "is_vacuum", "vacuum_strong", "vacuum_mid"},

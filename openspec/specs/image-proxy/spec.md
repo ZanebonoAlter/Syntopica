@@ -1,3 +1,5 @@
+<!-- domain: api, reading -->
+
 # image-proxy Specification
 
 ## Purpose

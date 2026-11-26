@@ -113,11 +113,13 @@ func validateSignalCandidateShape(c *BoardSignalCandidate) error {
 	if len(c.EvidenceRefs) == 0 || json.Unmarshal(c.EvidenceRefs, &refs) != nil || len(refs) == 0 {
 		return fmt.Errorf("signal candidate requires a non-empty evidence_refs array")
 	}
+	// question-v1 research_brief 形状由唯一写入口（detect 冻结）校验；此处不重复校验。
 	return nil
 }
 
 // SignalCandidateListItem is one list row: the candidate plus the batch's
-// creation time (design §3: 发现时间来自批次).
+// creation time (design §3: 发现时间来自批次) and, when present, the user's
+// ignore marker time (redesign-enrichment-research-workbench D2).
 type SignalCandidateListItem struct {
 	ID                 uint            `json:"id"`
 	DiscoveryID        uint            `json:"discovery_id"`
@@ -128,10 +130,12 @@ type SignalCandidateListItem struct {
 	WhyItMatters       string          `json:"why_it_matters"`
 	ResearchQuestion   string          `json:"research_question"`
 	EvidenceRefs       json.RawMessage `json:"evidence_refs"`
+	ResearchBrief      json.RawMessage `json:"research_brief,omitempty"`
 	Score              int             `json:"score"`
 	Rationale          string          `json:"rationale"`
 	CreatedAt          time.Time       `json:"created_at"`
 	DiscoveryCreatedAt time.Time       `json:"discovery_created_at"`
+	IgnoredAt          *time.Time      `json:"ignored_at"`
 }
 
 // GetSignalCandidateByID fetches one candidate. Board ownership is enforced
@@ -161,16 +165,44 @@ func (r *Repository) GetSignalDiscoveryByID(ctx context.Context, id uint) (*Boar
 // ListSignalCandidatesByPeriod returns a board's candidates for one period,
 // newest batch first (then candidate id), keyed by a candidate-id cursor
 // (exclusive beforeID, 0 = head). Empty newer batches never remove older
-// rows — the list is append-only by construction.
-func (r *Repository) ListSignalCandidatesByPeriod(ctx context.Context, boardID uint, granularity, period string, beforeID uint, limit int) ([]SignalCandidateListItem, error) {
+// rows — the list is append-only by construction. visibility filters by the
+// independent disposition marker (redesign-enrichment-research-workbench D2):
+// visible=无标记, ignored=有标记, all=不筛（旧客户端省略参数的兼容语义）.
+// view 也是 D2 的筛选维度且在分页前生效：pending=无成功报告（配合 excludeCandidateID
+// 剔除 live 研究候选），readable=存在成功报告（重研中仍返回，latest_result_id 保留），
+// all=不筛（省略时兼容旧客户端）。
+func (r *Repository) ListSignalCandidatesByPeriod(ctx context.Context, boardID uint, granularity, period string, beforeID uint, limit int, visibility string, view string, excludeCandidateID uint) ([]SignalCandidateListItem, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
+	if !ValidSignalVisibility(visibility) {
+		return nil, fmt.Errorf("invalid signal candidate visibility %q", visibility)
+	}
+	if !ValidSignalCandidateView(view) {
+		return nil, fmt.Errorf("invalid signal candidate view %q", view)
+	}
+	const reportExists = "SELECT 1 FROM topic_enrichment_result tr WHERE tr.source_signal_id = c.id AND tr.result_kind = 'signal_report'"
 	q := r.db.WithContext(ctx).
 		Table("board_signal_candidate AS c").
-		Select("c.id, c.discovery_id, c.semantic_board_id, c.granularity, c.period, c.signal, c.why_it_matters, c.research_question, c.evidence_refs, c.score, c.rationale, c.created_at, d.created_at AS discovery_created_at").
+		Select("c.id, c.discovery_id, c.semantic_board_id, c.granularity, c.period, c.signal, c.why_it_matters, c.research_question, c.evidence_refs, c.research_brief, c.score, c.rationale, c.created_at, d.created_at AS discovery_created_at, g.ignored_at AS ignored_at").
 		Joins("JOIN board_signal_discovery d ON d.id = c.discovery_id").
+		Joins("LEFT JOIN board_signal_disposition g ON g.candidate_id = c.id").
 		Where("c.semantic_board_id = ? AND c.granularity = ? AND c.period = ?", boardID, granularity, period)
+	switch visibility {
+	case SignalVisibilityVisible:
+		q = q.Where("g.candidate_id IS NULL")
+	case SignalVisibilityIgnored:
+		q = q.Where("g.candidate_id IS NOT NULL")
+	}
+	switch view {
+	case SignalCandidateViewPending:
+		q = q.Where("NOT EXISTS (" + reportExists + ")")
+		if excludeCandidateID > 0 {
+			q = q.Where("c.id <> ?", excludeCandidateID)
+		}
+	case SignalCandidateViewReadable:
+		q = q.Where("EXISTS (" + reportExists + ")")
+	}
 	if beforeID > 0 {
 		q = q.Where("c.id < ?", beforeID)
 	}
@@ -390,4 +422,87 @@ func (r *Repository) SweepOrphanedSignalResearchProgress(ctx context.Context) (i
 		return 0, fmt.Errorf("sweep orphaned signal research progress: %w", result.Error)
 	}
 	return result.RowsAffected, nil
+}
+
+// ── 候选忽略标记（redesign-enrichment-research-workbench D1）─────────────────
+//
+// board_signal_disposition 一行即忽略，无行正常。候选内容/score/快照/报告
+// 均不改；重复忽略保留首次 ignored_at（ON CONFLICT DO NOTHING），恢复即删行
+// （幂等）。归属校验在写入前完成：跨板块/不存在候选一律返回
+// ErrSignalCandidateNotFound（调用方映射 404，不泄露存在性）。
+
+// ErrSignalCandidateNotFound marks a candidate that does not exist or does
+// not belong to the requesting board (cross-board access 404s, not 403).
+var ErrSignalCandidateNotFound = errors.New("signal candidate not found")
+
+// IgnoreSignalCandidate marks one candidate ignored (zero LLM, zero side
+// effects on candidate/report rows). Idempotent: re-ignoring keeps the first
+// ignored_at. Returns the effective ignored_at.
+func (r *Repository) IgnoreSignalCandidate(ctx context.Context, boardID, candidateID uint) (time.Time, error) {
+	var candidate BoardSignalCandidate
+	err := r.db.WithContext(ctx).Select("id", "semantic_board_id").First(&candidate, candidateID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return time.Time{}, ErrSignalCandidateNotFound
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("get signal candidate for ignore: %w", err)
+	}
+	if candidate.SemanticBoardID != boardID {
+		return time.Time{}, ErrSignalCandidateNotFound
+	}
+	// Truncate to µs to match PostgreSQL timestamptz storage precision: the
+	// returned time is bit-identical to what a later re-read observes.
+	now := time.Now().Truncate(time.Microsecond)
+	row := BoardSignalDisposition{CandidateID: candidateID, IgnoredAt: now}
+	if err := r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "candidate_id"}}, DoNothing: true}).
+		Create(&row).Error; err != nil {
+		return time.Time{}, fmt.Errorf("ignore signal candidate: %w", err)
+	}
+	// On conflict the insert was skipped — the marker keeps its first time.
+	stored, err := r.GetSignalDisposition(ctx, candidateID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if stored == nil {
+		return time.Time{}, fmt.Errorf("ignore signal candidate: marker missing after write")
+	}
+	return stored.IgnoredAt, nil
+}
+
+// RestoreSignalCandidate removes one candidate's ignore marker (idempotent:
+// restoring a non-ignored candidate succeeds without effect). Zero LLM; the
+// candidate/report rows stay untouched.
+func (r *Repository) RestoreSignalCandidate(ctx context.Context, boardID, candidateID uint) error {
+	var candidate BoardSignalCandidate
+	err := r.db.WithContext(ctx).Select("id", "semantic_board_id").First(&candidate, candidateID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrSignalCandidateNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("get signal candidate for restore: %w", err)
+	}
+	if candidate.SemanticBoardID != boardID {
+		return ErrSignalCandidateNotFound
+	}
+	if err := r.db.WithContext(ctx).
+		Where("candidate_id = ?", candidateID).
+		Delete(&BoardSignalDisposition{}).Error; err != nil {
+		return fmt.Errorf("restore signal candidate: %w", err)
+	}
+	return nil
+}
+
+// GetSignalDisposition returns the candidate's ignore marker, or nil when it
+// is not ignored (a missing marker is the normal state, not an error).
+func (r *Repository) GetSignalDisposition(ctx context.Context, candidateID uint) (*BoardSignalDisposition, error) {
+	var row BoardSignalDisposition
+	err := r.db.WithContext(ctx).First(&row, candidateID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get signal disposition: %w", err)
+	}
+	return &row, nil
 }

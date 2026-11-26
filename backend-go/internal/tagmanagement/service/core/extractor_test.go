@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,48 +17,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestExtractTopicsFindsCanonicalAITopicsAndEntities(t *testing.T) {
-	result := ExtractTopics(ExtractionInput{
-		Title:        "OpenAI pushes GPT-5 agent workflow",
-		Summary:      "OpenAI is shipping a new AI agent workflow around GPT-5 with multimodal planning and coding automation.",
-		FeedName:     "Latent Space",
-		CategoryName: "AI",
+// retire-heuristic-tag-fallback 守护：规则词（heuristic）兜底打标整体退役——
+// 规则词表文件必须不存在，tagmanagement 域内生产代码不得再出现
+// source="heuristic" 写入点。兜底吞掉错误会让打标任务被误标 completed、
+// 文章永不重打，正是本次报障的病根。
+func TestNoHeuristicFallbackPathRemains(t *testing.T) {
+	require.NoFileExists(t, "extractor_heuristic.go", "规则词表文件必须随本 change 整文件删除")
+
+	// 从本包出发扫 tagmanagement 域（internal/tagmanagement）全部生产 .go 文件。
+	err := filepath.WalkDir(filepath.Join("..", ".."), func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(data), `"heuristic"`) {
+			t.Errorf("生产代码不得再出现 heuristic 来源写入点：%s", path)
+		}
+		return nil
 	})
-
-	require.GreaterOrEqual(t, len(result), 3)
-	require.Contains(t, topicLabels(result), "OpenAI")
-	require.Contains(t, topicLabels(result), "AI Agent")
-	require.Contains(t, topicLabels(result), "GPT-5")
-	require.Contains(t, topicSlugs(result), "openai")
-	require.Contains(t, topicSlugs(result), "ai-agent")
-	require.Contains(t, topicSlugs(result), "gpt-5")
-}
-
-func TestExtractTopicsDeduplicatesAliases(t *testing.T) {
-	result := ExtractTopics(ExtractionInput{
-		Title:        "OpenAI API update",
-		Summary:      "OpenAI says the Open AI API now supports agent memory. OPENAI tooling remains the focus.",
-		FeedName:     "OpenAI Blog",
-		CategoryName: "AI",
-	})
-
-	labels := topicLabels(result)
-	require.Equal(t, 1, countMatches(labels, "OpenAI"))
-	openAI := findTopic(result, "OpenAI")
-	require.NotNil(t, openAI)
-	require.Greater(t, openAI.Score, 0.0)
-}
-
-func TestExtractTopicsFallsBackToFeedAndCategoryWhenTextIsSparse(t *testing.T) {
-	result := ExtractTopics(ExtractionInput{
-		Title:        "Daily Brief",
-		Summary:      "Short update.",
-		FeedName:     "NVIDIA Research",
-		CategoryName: "Infra",
-	})
-
-	require.Contains(t, topicLabels(result), "NVIDIA")
-	require.Contains(t, topicLabels(result), "Infra")
+	require.NoError(t, err)
 }
 
 func TestParseMergedExtractionTagsAcceptsWrappedDoubleArrays(t *testing.T) {
@@ -141,8 +127,9 @@ func TestParseMergedExtractionTagsRejectsObjectWithoutTargetKeys(t *testing.T) {
 	}
 }
 
-func TestExtractTagsRetriesThenFallsBackToHeuristicOnUnparsableResponse(t *testing.T) {
-	// parse err 分支：错形态响应 ×3 重试耗尽 → heuristic 兜底（区别于 router err 分支）。
+func TestExtractTagsReturnsErrorAfterRetriesOnUnparsableResponse(t *testing.T) {
+	// parse err 分支：错形态响应 ×3 重试耗尽 → 返回错误、不产出任何标签
+	// （retire-heuristic-tag-fallback：规则词兜底整体退役，失败即失败）。
 	router := newFakeTagChatRouter()
 	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: `{"foo":"bar"}`})
 	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: `{"foo":"bar"}`})
@@ -154,10 +141,9 @@ func TestExtractTagsRetriesThenFallsBackToHeuristicOnUnparsableResponse(t *testi
 		Summary: "OpenAI is shipping a new AI agent workflow around GPT-5 with coding automation.",
 	})
 
-	require.NoError(t, err)
-	require.Equal(t, "heuristic", result.Source)
-	require.NotEmpty(t, result.Tags)
-	require.Contains(t, strings.Join(result.Errors, "\n"), "parse extraction result failed")
+	require.Error(t, err, "extraction failure must be surfaced, not swallowed")
+	require.Nil(t, result, "failed extraction must not produce any result (no fallback candidates)")
+	require.Contains(t, err.Error(), "parse extraction result failed")
 	require.Equal(t, 3, router.callCount("tag_extraction_merged"))
 }
 
@@ -235,33 +221,6 @@ func topicLabels(items []TopicTag) []string {
 	return labels
 }
 
-func topicSlugs(items []TopicTag) []string {
-	slugs := make([]string, 0, len(items))
-	for _, item := range items {
-		slugs = append(slugs, item.Slug)
-	}
-	return slugs
-}
-
-func countMatches(items []string, needle string) int {
-	count := 0
-	for _, item := range items {
-		if item == needle {
-			count++
-		}
-	}
-	return count
-}
-
-func findTopic(items []TopicTag, label string) *TopicTag {
-	for _, item := range items {
-		if item.Label == label {
-			return &item
-		}
-	}
-	return nil
-}
-
 func TestParseExtractedTagsFromRealOllamaResponse(t *testing.T) {
 	input := "```json\n[\n  {\n    \"label\": \"李飞飞\",\n    \"category\": \"person\",\n    \"aliases\": [\"AI 教母\"],\n    \"auxiliary_labels\": [{\"label\": \"李飞飞\", \"description\": \"人工智能领域学者\"}, {\"label\": \"World Labs\", \"description\": \"空间智能创业公司\"}, {\"label\": \"空间智能\", \"description\": \"三维世界理解技术方向\"}]\n  }\n]\n```"
 	eventParsed, keywordParsed, err := parseMergedExtractionTags(input)
@@ -283,7 +242,9 @@ func TestParseExtractedTagsWithUnescapedQuotes(t *testing.T) {
 func TestBuildExtractionSystemPromptLimitsAndOrdersTags(t *testing.T) {
 	prompt := buildMergedExtractionPrompt()
 
-	require.LessOrEqual(t, len([]rune(prompt)), 1500, "merged system prompt must stay within the 1500-rune budget")
+	// 2000 = 旧 1500 基线 + add-event-story-heat 事件指纹节与正例扩展（design §3.1
+	// 预算 token 增量；指纹字段随标签同一次调用产出，不新增第二次调用）
+	require.LessOrEqual(t, len([]rune(prompt)), 2000, "merged system prompt must stay within the 2000-rune budget")
 	require.Contains(t, prompt, "最多返回 3 个 keyword")
 	require.Contains(t, prompt, "按优先级从高到低排序")
 }
@@ -381,7 +342,7 @@ func TestMergeExtractedTagsKeepsHigherPriorityDuplicate(t *testing.T) {
 }
 
 func TestExtractTagsKeepsKeywordBranchWhenEventPersonFails(t *testing.T) {
-	// 单次调用成功但 event/person 数组为空 → 数组级缺失：保 keyword、不触发 heuristic。
+	// 单次调用成功但 event/person 数组为空 → 数组级缺失：保 keyword、不回填规则词。
 	router := newFakeTagChatRouter()
 	router.enqueue("tag_extraction_merged", fakeTagChatResponse{
 		content: `{"event_person_tags":[],"keyword_tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库管理系统"}]}`,
@@ -391,7 +352,6 @@ func TestExtractTagsKeepsKeywordBranchWhenEventPersonFails(t *testing.T) {
 	result, err := extractor.ExtractTags(context.Background(), ExtractionInput{Title: "PostgreSQL update", Summary: "PostgreSQL releases a new version."})
 
 	require.NoError(t, err)
-	require.Equal(t, "llm", result.Source)
 	require.Len(t, result.Tags, 1)
 	require.Equal(t, "PostgreSQL", result.Tags[0].Label)
 	require.Contains(t, strings.Join(result.Errors, "\n"), "event/person extraction: empty event/person array (accepted as-is)")
@@ -399,12 +359,13 @@ func TestExtractTagsKeepsKeywordBranchWhenEventPersonFails(t *testing.T) {
 }
 
 // 旧用例 TestExtractTagsFallsBackToHeuristicKeywordWhenKeywordBranchFails（空
-// keyword 数组→heuristic 回填）已随 fix-tagging-pollution 契约变更删除：新契约
-// 下空 keyword 是合法结论、不回填，改由 extractor_enhanced_test.go 的
+// keyword 数组→规则词回填）已随 fix-tagging-pollution 契约变更删除；空 keyword
+// 是合法结论、不回填，由 extractor_enhanced_test.go 的
 // TestExtractTagsKeepsLLMResultWhenKeywordArrayEmpty 守护。
 
-func TestExtractTagsFallsBackToHeuristicWhenMergedCallFails(t *testing.T) {
-	// spec Scenario: 单次调用重试耗尽仍失败 → 整体回退 heuristic，错误信息保留。
+func TestExtractTagsReturnsErrorWhenMergedCallFails(t *testing.T) {
+	// spec Scenario（改）：单次调用重试耗尽仍失败 → 返回错误、不产出任何标签，
+	// 错误信息保留（retire-heuristic-tag-fallback：失败即失败，不回退规则词）。
 	router := newFakeTagChatRouter()
 	router.enqueue("tag_extraction_merged", fakeTagChatResponse{err: errors.New("model down")})
 	router.enqueue("tag_extraction_merged", fakeTagChatResponse{err: errors.New("model down")})
@@ -416,10 +377,9 @@ func TestExtractTagsFallsBackToHeuristicWhenMergedCallFails(t *testing.T) {
 		Summary: "OpenAI is shipping a new AI agent workflow around GPT-5 with coding automation.",
 	})
 
-	require.NoError(t, err)
-	require.Equal(t, "heuristic", result.Source)
-	require.NotEmpty(t, result.Tags)
-	require.Contains(t, strings.Join(result.Errors, "\n"), "AI extraction failed")
+	require.Error(t, err, "extraction failure must be surfaced, not swallowed")
+	require.Nil(t, result, "failed extraction must not produce any result (no fallback candidates)")
+	require.Contains(t, err.Error(), "AI extraction failed")
 	require.Equal(t, 3, router.callCount("tag_extraction_merged"))
 }
 
@@ -429,10 +389,9 @@ func TestExtractTagsMakesExactlyOneMergedCall(t *testing.T) {
 	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: `{"event_person_tags":[{"label":"OpenAI发布GPT-5","category":"event","auxiliary_labels":[{"label":"OpenAI","description":"人工智能研究公司"},{"label":"GPT-5","description":"大语言模型版本"},{"label":"模型发布","description":"产品发布行为"}]}],"keyword_tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库管理系统"}]}`})
 	extractor := &TagExtractor{router: router}
 
-	result, err := extractor.ExtractTags(context.Background(), ExtractionInput{Title: "OpenAI pushes GPT-5", Summary: "OpenAI is shipping GPT-5."})
+	result, err := extractor.ExtractTags(context.Background(), ExtractionInput{Title: "OpenAI pushes GPT-5", Summary: "OpenAI is shipping GPT-5 with a PostgreSQL memory backend."})
 
 	require.NoError(t, err)
-	require.Equal(t, "llm", result.Source)
 	require.Len(t, result.Tags, 2)
 	require.Equal(t, 1, router.callCount("tag_extraction_merged"), "merged extraction must make exactly one Chat call")
 	require.Equal(t, "tagmanagement.extractor_enhanced", router.lastOperation)
@@ -523,4 +482,67 @@ func TestParseKeywordTagsToleratesTrailingCommas(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, keywordParsed, 1)
 	require.Equal(t, "PostgreSQL", keywordParsed[0].Label)
+}
+
+// ── schema 外壳形态容错（tolerate-schema-envelope-extraction-output）──
+//
+// 本地小模型在 JSON-schema 引导下有时把 schema 骨架当输出：数组值被塞进
+// "properties" 下。解析器必须能解包，且不得把缺目标键的坏数据当合法结果。
+
+func TestParseMergedExtractionTagsAcceptsSchemaEnvelope(t *testing.T) {
+	content := `{"type":"object","properties":{"event_person_tags":[{"label":"某国央行上调基准利率","category":"event","description":"政策事件","auxiliary_labels":[{"label":"央行","description":"货币当局"},{"label":"基准利率","description":"政策利率"},{"label":"加息","description":"利率上调"}]}],"keyword_tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库"}]},"required":["event_person_tags","keyword_tags"]}`
+
+	eventParsed, keywordParsed, err := parseMergedExtractionTags(content)
+	require.NoError(t, err)
+	require.Len(t, eventParsed, 1)
+	require.Equal(t, "某国央行上调基准利率", eventParsed[0].Label)
+	require.Len(t, eventParsed[0].AuxiliaryLabels, 3)
+	require.Len(t, keywordParsed, 1)
+	require.Equal(t, "PostgreSQL", keywordParsed[0].Label)
+}
+
+func TestParseMergedExtractionTagsSchemaEnvelopeWithEmptyArraysIsLegalZero(t *testing.T) {
+	content := `{"type":"object","properties":{"event_person_tags":[],"keyword_tags":[]},"required":["event_person_tags","keyword_tags"]}`
+
+	eventParsed, keywordParsed, err := parseMergedExtractionTags(content)
+	require.NoError(t, err, "外壳解开后双数组皆空是合法零结果，不是解析错误")
+	require.Empty(t, eventParsed)
+	require.Empty(t, keywordParsed)
+}
+
+func TestParseMergedExtractionTagsSchemaEnvelopeMissingTargetKeysStillFails(t *testing.T) {
+	content := `{"type":"object","properties":{"other":[{"label":"x"}]},"required":["other"]}`
+
+	_, _, err := parseMergedExtractionTags(content)
+	require.Error(t, err, "外壳解开后缺目标键必须报解析错误触发重试，不得当合法结果")
+}
+
+func TestParseRawTagObjectsAcceptsSchemaEnvelope(t *testing.T) {
+	content := `{"type":"object","properties":{"tags":[{"label":"某事件","category":"event","description":"事件描述"}]},"required":["tags"]}`
+
+	raw, err := parseRawTagObjects(content)
+	require.NoError(t, err)
+	require.Len(t, raw, 1)
+	require.Equal(t, "某事件", raw[0].Label)
+}
+
+func TestUnwrapSchemaEnvelopeLeavesNonEnvelopeContentUnchanged(t *testing.T) {
+	cases := []string{
+		`{"event_person_tags":[],"keyword_tags":[]}`,     // 规范双数组
+		`{"tags":[{"label":"x","category":"event"}]}`,    // 既有 wrapper
+		`[{"label":"x","category":"event"}]`,             // legacy 裸数组
+		`{"properties":{"a":1}}`,                         // 有 properties 但无 schema 特征
+		`{"type":"object","properties":"not-an-object"}`, // properties 不是对象
+		`not json at all`,                                // 非 JSON
+	}
+	for _, c := range cases {
+		require.Equal(t, c, unwrapSchemaEnvelope(c), "非外壳内容必须原样返回")
+	}
+}
+
+func TestUnwrapSchemaEnvelopeIsIdempotent(t *testing.T) {
+	envelope := `{"type":"object","properties":{"event_person_tags":[],"keyword_tags":[]},"required":["event_person_tags","keyword_tags"]}`
+	once := unwrapSchemaEnvelope(envelope)
+	require.JSONEq(t, `{"event_person_tags":[],"keyword_tags":[]}`, once)
+	require.Equal(t, once, unwrapSchemaEnvelope(once), "解包必须幂等")
 }

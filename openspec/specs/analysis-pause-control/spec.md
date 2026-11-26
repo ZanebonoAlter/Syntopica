@@ -1,3 +1,5 @@
+<!-- domain: scheduler -->
+
 # analysis-pause-control Specification
 
 ## Purpose

@@ -1,3 +1,5 @@
+<!-- domain: ai-summary -->
+
 ## Purpose
 
 在 OpenTelemetry trace 中注入业务上下文（capability、operation），使 LLM 调用可按业务流程区分；将 AICallLog 与 trace 链路关联；为关键 tag-processing 流程建立端到端 span 父子拓扑。

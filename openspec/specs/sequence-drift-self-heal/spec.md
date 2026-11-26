@@ -1,3 +1,5 @@
+<!-- domain: db -->
+
 # sequence-drift-self-heal Specification
 
 ## Purpose

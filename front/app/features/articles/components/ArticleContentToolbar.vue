@@ -35,6 +35,8 @@ const emit = defineEmits<{
   'manual-firecrawl': []
   'manual-summary': []
   'manual-tagging': []
+  'manual-ai-detection': [status: 'suspect' | 'not_ai']
+  'recheck-ai-detection': []
   'set-content-source': [source: string]
 }>()
 </script>
@@ -92,6 +94,8 @@ const emit = defineEmits<{
         @manual-firecrawl="emit('manual-firecrawl')"
         @manual-summary="emit('manual-summary')"
         @manual-tagging="emit('manual-tagging')"
+        @manual-ai-detection="emit('manual-ai-detection', $event)"
+        @recheck-ai-detection="emit('recheck-ai-detection')"
         @update:active-content-source="emit('set-content-source', $event)"
       />
     </div>

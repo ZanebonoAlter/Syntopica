@@ -1,3 +1,5 @@
+<!-- domain: daily-report, db -->
+
 ## Purpose
 
 TBD — Manage independent storage of narrative threads extracted from daily report sections.

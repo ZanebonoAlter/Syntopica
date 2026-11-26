@@ -1,12 +1,12 @@
 package handler
 
 import (
-	"regexp"
-	"strconv"
 	"strings"
 	"unicode"
 
 	"gorm.io/gorm"
+
+	"syntopica-backend/internal/platform/htmltext"
 )
 
 // excerptMaxRunes bounds the list-row lede length (spec: ≤200 字符).
@@ -17,12 +17,6 @@ const excerptMaxRunes = 200
 // postgres, so 2000 runes is always enough to fill excerptMaxRunes even when
 // the head of the document is mostly markup.
 const excerptSourceLimit = 2000
-
-var (
-	excerptScriptStyleRe = regexp.MustCompile(`(?is)<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>`)
-	excerptTagRe         = regexp.MustCompile(`<[^>]*>`)
-	excerptEntityRe      = regexp.MustCompile(`(?i)&(?:nbsp|amp|lt|gt|quot|apos|#\d+|#x[0-9a-f]+);`)
-)
 
 // buildExcerpt derives the list lede from an article's HTML sources: it tries
 // description first and falls back to content. Returns "" when neither source
@@ -38,6 +32,16 @@ func buildExcerpt(description, content string, noFirecrawlBody bool) string {
 		return ""
 	}
 	return lede
+}
+
+// BuildArticleSearchExcerpt re-exports buildExcerpt for the /api/search
+// handler wiring (add-article-search 2.6). The search package cannot import
+// reader/handler（反向：handler 经 2.8 消费 search，会成环），so its
+// Service takes this builder as an injected ExcerptFunc, wired at route
+// assembly (reader/routes.go). Shares the same ≤200-rune plain-text lede
+// contract as the articles list (article-list-projection).
+func BuildArticleSearchExcerpt(description, content string, noFirecrawlBody bool) string {
+	return buildExcerpt(description, content, noFirecrawlBody)
 }
 
 // excerptRepeatsBody reports whether the candidate lede repeats the article
@@ -92,31 +96,30 @@ func excerptRepeatsBody(description, lede, content string, noFirecrawlBody bool)
 
 // normalizeForLedeCompare reduces a raw HTML source to the form used for
 // lede/body dedupe: the same cleaning as cleanExcerptSource (script/style
-// removal, tag stripping, entity decoding, whitespace folding) plus case
-// folding. Unlike cleanExcerptSource it keeps the full text (no 200-rune
-// truncation, no substantive-text floor) and MUST NOT be used for display.
+// removal, hidden subtree removal, tag stripping, entity decoding, whitespace
+// folding) plus case folding. Unlike cleanExcerptSource it keeps the full
+// text (no 200-rune truncation, no substantive-text floor) and MUST NOT be
+// used for display.
 func normalizeForLedeCompare(raw string) string {
-	return strings.ToLower(stripExcerptMarkup(raw))
+	return strings.ToLower(htmltext.PlainText(raw))
 }
 
-// stripExcerptMarkup removes script/style blocks and tags, decodes common
-// entities and folds Unicode whitespace into single spaces.
-func stripExcerptMarkup(raw string) string {
-	s := excerptScriptStyleRe.ReplaceAllString(raw, " ")
-	s = excerptTagRe.ReplaceAllString(s, " ")
-	s = decodeHTMLEntities(s)
-	return strings.Join(strings.Fields(s), " ")
-}
-
-// cleanExcerptSource strips script/style blocks and HTML tags, decodes common
-// entities, collapses Unicode whitespace, drops text without any letter or
-// number, then truncates to excerptMaxRunes runes (no ellipsis).
+// cleanExcerptSource strips script/style blocks and hidden subtrees, decodes
+// common entities, collapses Unicode whitespace, drops text without any
+// letter or number, then truncates to excerptMaxRunes runes (no ellipsis).
+//
+// The cleaning itself lives in internal/platform/htmltext so that the list
+// lede and the stored article summary (reader/service/feed_service.go) share
+// one implementation — two regex pipelines would drift and give the same
+// article two different ledes. Only the length cap differs (excerpt ≤200 /
+// summary ≤300); the excerpt keeps its historical no-ellipsis truncation and
+// its substantive-text floor.
 func cleanExcerptSource(raw string) string {
 	if raw == "" {
 		return ""
 	}
 
-	s := stripExcerptMarkup(raw)
+	s := htmltext.PlainText(raw)
 
 	if !hasSubstantiveText(s) {
 		return ""
@@ -135,42 +138,6 @@ func hasSubstantiveText(s string) bool {
 		}
 	}
 	return false
-}
-
-// decodeHTMLEntities resolves the entity set relevant to excerpt text in a
-// single pass (so "&amp;lt;" never double-decodes into "<").
-func decodeHTMLEntities(s string) string {
-	return excerptEntityRe.ReplaceAllStringFunc(s, func(entity string) string {
-		lower := strings.ToLower(entity)
-		switch lower {
-		case "&nbsp;":
-			return " "
-		case "&amp;":
-			return "&"
-		case "&lt;":
-			return "<"
-		case "&gt;":
-			return ">"
-		case "&quot;":
-			return `"`
-		case "&apos;", "&#39;":
-			return "'"
-		}
-
-		var (
-			code int64
-			err  error
-		)
-		if strings.HasPrefix(lower, "&#x") {
-			code, err = strconv.ParseInt(lower[3:len(lower)-1], 16, 32)
-		} else {
-			code, err = strconv.ParseInt(lower[2:len(lower)-1], 10, 32)
-		}
-		if err != nil || code <= 0 || code > unicode.MaxRune {
-			return entity
-		}
-		return string(rune(code))
-	})
 }
 
 type excerptSourceRow struct {

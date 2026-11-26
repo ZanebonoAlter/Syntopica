@@ -66,6 +66,7 @@ job 内部：`prepare`（周期材料装配，历史期只取当时归属板块�
 | `period` | 是 | 形状随粒度，不匹配 400 |
 | `before_id` | 否 | 候选 id 游标（排他），非法 400 |
 | `limit` | 否 | 默认 20，>100 截断为 100，非法 400 |
+| `visibility` | 否 | `visible\|ignored\|all`（redesign-enrichment-research-workbench）：按忽略标记筛选；**省略 = all（旧客户端兼容语义）**，新工作台显式传 visible；非法 400 |
 
 **响应示例**
 
@@ -109,6 +110,34 @@ job 内部：`prepare`（周期材料装配，历史期只取当时归属板块�
 | `status` | **服务端派生，前端只读**：`pending`（待研究）/ `researching`（该候选有 live research job；不持久化，重启不残留）/ `reported`（已有成功报告） |
 | `latest_result_id` | 仅 `reported` 有值，其余 `null`（可直接打开报告） |
 | `last_research_progress` | 上次研究进展摘要（tasks 4.7「断了不能白跑」）：`rounds_done`/`source_calls`/`calculation_calls` 计数 + `status`（`running\|abandoned\|superseded`）+ `stop_reason`（仅失败行：`timeout`/error_stage/`failed`/`orphaned_by_restart`〔启动收敛的孤儿行，tasks 4.10〕，其余 `null`）+ `updated_at`；候选从未研究 → `null`。完整进展（含 ledger 账本）走进展端点 |
+| `ignored_at` | 忽略标记时间（独立处理标记表 `board_signal_disposition`，redesign-enrichment-research-workbench D1）；未忽略 `null`。visible 视图恒为 null，ignored 视图非 null |
+
+---
+
+## GET /signals/:candidateId
+
+候选详情（redesign-enrichment-research-workbench 2.2）：列表字段全量 + 忽略标记 + 派生状态/最新报告 + 最近研究进展 + 冻结边界 + 相关话题。只加载当前项（分页外选中项用）；**零 LLM**。
+
+- 跨板块/不存在 → 404（不泄露存在性）。
+- `cutoff`/`analysis_mode`/`discovery_created_at` 来自批次（冻结边界）；`related_topics` 由候选依据对冻结 input_snapshot 机械解析（SectionID→LaneID）并经当前话题表存在性/归属校验，归档话题照常返回；`related_gaps` 如实列出无法验证的引用/已删除或迁移话题（不猜回填）。
+- `related_topics[]` 行：`{topic_id, label（当前名）, frozen_label, frozen_status, section_ids[]}`。
+
+---
+
+## PUT /signals/:candidateId/disposition
+
+候选忽略/恢复（redesign-enrichment-research-workbench 2.2/D1）：幂等、零 LLM，不改候选内容/score/快照/报告。
+
+**body** `{"ignored": boolean}`（必填；字符串布尔、未知字段（score/signal 等）一律 400——本端点永远改不了候选内容）。
+
+| 状态 | 语义 |
+|------|------|
+| 200 | `{candidate_id, ignored, ignored_at}`（恢复时 ignored_at=null） |
+| 400 | 缺 ignored / 类型错 / 未知字段 |
+| 404 | 候选不存在或跨板块 |
+| 409 | **同板块任一任务在跑**（discovery/research/旧 brief/investigation 共享互斥；运行中的忽略不可达，body 携 running 身份） |
+
+幂等语义：重复忽略保留首次 `ignored_at`；恢复=删除标记行（未忽略时恢复也成功）。已忽略候选的旧报告 GET 不受限；新研究/显式重研 409（reason=`candidate_ignored`）要求先恢复，但无 running 且已有报告的默认 research 仍 200 幂等返回原 result（零新 LLM）。
 
 ---
 
@@ -215,11 +244,13 @@ signal job 专用字段（全部 `omitempty`，旧 kind 输出零变化）：
 
 ---
 
-## sectors payload（`schema_version=2`）
+## sectors payload（`schema_version=2` 存量 / `schema_version=3` 新产物）
+
+新报告一律 schema_version=3（redesign-enrichment-research-workbench 3.1/D4）：sections 携受控块；`text` 为代码生成的兼容四段文本（旧 reader 可读，不重复计入篇幅预算）；顶层新增 `data_freshness` 机械分源时效。schema2 存量载荷不重编、不改写，按原四段文本兼容阅读；未知/损坏载荷显式兼容错误，不伪装空报告、不触发 AI 修复。
 
 ```jsonc
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "signal_snapshot": {
     "candidate_id": 3, "discovery_id": 2,
     "signal": "…", "why_it_matters": "…", "research_question": "…",
@@ -231,9 +262,16 @@ signal job 专用字段（全部 `omitempty`，旧 kind 输出零变化）：
   "report": {
     "title": "判断式标题",
     "sections": [                       // 恰四段、按序唯一
-      { "kind": "thesis", "text": "…" },
-      { "kind": "facts", "text": "…" },
-      { "kind": "causal", "text": "…" },
+      { "kind": "thesis", "text": "…", "blocks": [ // schema3 受控块（三种平面类型，不嵌套）
+        // {"type":"paragraph","text":"…（引用占位符）"}
+        // {"type":"evidence_table","title":"关键观测","rows":[{"label":"同口径观测组","refs":["c1:o1","c1:o2"]}]}
+        // {"type":"chart","chart_id":"ch1"}
+        // 规则：thesis/implication 只放单 paragraph；表/图只置于 facts/causal；
+        // 行内同口径（同单位）；行 label 不得复制账本数值；chart 块挂已定义
+        // chart_id 且每图最多挂一处；未知块类型/未知字段整稿拒绝回注
+      ] },
+      { "kind": "facts", "text": "…（代码生成兼容文本）", "blocks": [ /* … */ ] },
+      { "kind": "causal", "text": "…", "blocks": [ /* … */ ] },
       { "kind": "implication", "text": "…", "verdict": "…",
         "direction": "up|down|diverge|conditional",
         "horizon": "…", "trigger_condition": "…", "self_doubt": "…" }
@@ -256,11 +294,33 @@ signal job 专用字段（全部 `omitempty`，旧 kind 输出零变化）：
     "calculation_calls": 0,             // 计算执行次数
     "stop_reason": "finished",          // finished | budget_exhausted（耗尽≠失败，正文披露缺口）
     "analysis_mode": "current", "cutoff": "2026-09-01T03:05:00Z"
+  },
+  "data_freshness": {                   // 仅 schema3：机械分源时效（代码生成，非模型产物）
+    "sources": [ { "tool": "eia_wpsr_table1", "latest": "2026-07" },
+                 { "tool": "yahoo_finance", "latest": "2026-10-01" } ],
+    "cutoff": "2026-09-01T03:05:00Z",  // 研究时点（材料边界），不混报告生成时间
+    "generated_at": "2026-10-02T03:05:00Z",
+    "has_observations": true            // 零观测 → 如实 false，不用 cutoff 冒充数据期
   }
 }
 ```
 
-**引用渲染约定**：正文/图题中的 `[[data:c1:o2]]`（原值观测）、`[[calc:k1]]`（代码计算）、`[[news:<切片ID>]]`（新闻背景）token 原样存储；展示数值由前端从 appendix 查表渲染——观测行有 `value`/`unit`/`raw_value`/`missing_reason`，计算行有 `value`（规范十进制字符串）/`unit`。**模型永不提供展示数值**。标题+正文+图题+后果段结构化字段合计 <3000 非空白字符（附录不计）。
+**引用渲染约定**：正文/图题中的 `[[data:c1:o2]]`（原值观测）、`[[calc:k1]]`（代码计算）、`[[news:<切片ID>]]`（新闻背景）token 原样存储；展示数值由前端从 appendix 查表渲染（阅读层短格式，原值/raw 在核查区逐项保留）——观测行有 `value`/`unit`/`raw_value`/`missing_reason`，计算行有 `value`（规范十进制字符串）/`unit`。**模型永不提供展示数值**。篇幅预算：标题+段落+证据表标题/行标签+图题+后果段结构化字段合计 <3000 非空白字符（兼容 text 不重复计数，附录/UI 不计）。
+
+> schema3 时效口径：不再强制 facts 重复全局「数据截至」句（系统已生成分源时效）；模型若写了期值仍校验不得编造。schema2 的旧 facts 文字原样保留，读取层补分源提示并注明「各源最大期」口径。
+
+## GET /history（旧研究只读列表）
+
+按板块列出可验证归属的旧研究（redesign-enrichment-research-workbench 5.1）：`result_kind ∈ board_brief | board_investigation | legacy_board_analysis | topic_analysis`（topic scope 经所属话题归属校验，含已归档话题）；**绝不混入 signal_report**。读取零 LLM，增强开关关闭不阻止。
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `kind` | 否 | 按上述四种过滤；非法 400 |
+| `topic_id` | 否 | 按所属话题过滤；非法 400 |
+| `before_id` | 否 | 结果 id 排他游标 |
+| `limit` | 否 | 默认 20，上限 100 |
+
+行：`{id, result_kind, analysis_scope, persistent_topic_id, semantic_board_id, created_at, session_id}`（不带 sectors 大载荷）。详情/QA/辩论/review 复用既有 GET；跨板块不泄露；单条坏载荷前端降级不吞列表。
 
 ## 计算字段（appendix.calculations[]）
 

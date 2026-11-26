@@ -43,7 +43,13 @@ go run cmd/server/main.go
 
 后端默认运行在 `http://localhost:5100`（避开 Windows 5000 端口的 WSD/svchost 保留段冲突），首次启动会自动连接 PostgreSQL 数据库并执行版本化迁移。
 
-开发时日志现在按级别分流：常规运行日志和 warning 走 `stdout`，error / fatal / panic 走 `stderr`。如果你在 PowerShell、Docker 或 systemd 里单独收集错误输出，可以直接利用这条分流。
+运行日志默认写入 `backend-go/logs/app.log`（lumberjack 轮转：50MB 切分 × 30 份 × 30 天，gzip 压缩），不再写 stdout。`backend-go/nohup.out` 只剩启动横幅与进程级崩溃兜底，正常情况下是 KB 级。
+
+- 查看后端日志：`tail -f backend-go/logs/app.log`
+- 临时回到 stdout（调试用）：启动前设 `LOG_CONSOLE=true`
+- 调整级别：改 `configs/config.yaml` 的 `log.level`（默认 `info`，排查时改 `debug`）后重启
+
+详见 [配置指南](configuration.md)「日志」节。
 
 1. **再启动前端**（新终端）：
 

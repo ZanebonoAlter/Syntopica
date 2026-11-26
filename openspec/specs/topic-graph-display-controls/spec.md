@@ -1,3 +1,5 @@
+<!-- domain: topic-graph, ui -->
+
 ## Purpose
 
 主题图（TopicGraphCanvas）的用户交互增强：显示设置面板（视图缩放、节点/标签尺寸控制）、节点拖拽和响应式刷新。

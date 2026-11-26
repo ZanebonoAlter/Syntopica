@@ -8,6 +8,7 @@ import (
 	"time"
 
 	repository "syntopica-backend/internal/admin/repository"
+	dataenrichment "syntopica-backend/internal/dataenrichment"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/aisettings"
 	"syntopica-backend/internal/platform/articlerefs"
@@ -33,50 +34,146 @@ var (
 	releaseDailyReportGate    = daily_report.ReleaseDailyReportGeneration
 )
 
-// Notification seams (add-notification-center, 白盒 B): package-level vars so
-// tests can capture adjudication calls without a notification database
-// (same seam as generateAndSaveReport).
-var (
-	notifyDailyReportSuccess       = notification.DailyReportSuccess
-	notifyDailyReportFailedSummary = notification.DailyReportFailedSummary
-)
+// Notification seam (add-notification-center 白盒 B; add-radar-pipeline-status
+// D12 三态口径): package-level var so tests can capture the adjudication call
+// without a notification database (same seam as generateAndSaveReport).
+//
+// 定时调度路径与手动 / 集合路径共用同一个三态写入口
+// notification.DailyReportTerminal：文案里的「共 N 个版面」的 N == 本次运行
+// 涉及的板块总数（**含**当日无内容的板块），成功数 == 产出日报的板块数、
+// 失败数 == 生成报错的板块数；当日无内容的板块既不进成功数也不进失败数，
+// 以「其中 M 个当日无内容」显式给出。
+var notifyDailyReportTerminal = notification.DailyReportTerminal
+
+// boardHealthCheckupBudget 是体检尾步的整轮预算（design D4）：10 分钟硬编
+// 在 12 板 7.8 分钟的实测面前太紧（10-30 出现过 context deadline exceeded
+// 把后面的板直接砍掉），放宽到 30 分钟。
+const boardHealthCheckupBudget = 30 * time.Minute
 
 // runPostReportBoardHealthCheckup is the board-health tail-step seam
 // (add-board-health-checkup design D3): package-level var so tests can
 // capture the call / inject failures without a real checkup. The real
-// implementation bounds the checkup with its own 10-minute budget carved
-// from the caller's context so a slow LLM cannot eat the backfill sweep's
-// budget.
-var runPostReportBoardHealthCheckup = func(parent context.Context) {
-	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
-	defer cancel()
+// implementation runs a full round with zero freshness guard (the tail step
+// is the day's primary checkup). The 30-minute budget is carved by the
+// CALLER (runBoardHealthCheckupTailStep) so it is observable in tests.
+var runPostReportBoardHealthCheckup = func(ctx context.Context) {
 	tagging.RunBoardHealthCheckupWrapped(ctx, repository.Repo.DB())
+}
+
+// runPostBackfillBoardHealthCheckup is the backfill-triggered checkup seam
+// (fix-board-health-triage-degrade D3): package-level var so tests can
+// capture the call / inject failures. Unlike the tail step it carries the
+// freshness guard, so a night whose main round already checked every board
+// costs one SQL instead of a second LLM round.
+var runPostBackfillBoardHealthCheckup = func(ctx context.Context) {
+	tagging.RunBoardHealthCheckupWithOptions(ctx, repository.Repo.DB(), tagging.BoardHealthOptions{
+		MinInterval: tagging.BoardHealthDefaultMinInterval,
+	})
 }
 
 // runBoardHealthCheckupTailStep invokes the seam with panic isolation AT THE
 // CALL SITE: even a replaced/panicking seam must never take down the
 // daily-report job (design D3 — 体检 panic 仅日志不影响日报 job 返回值).
+// The 30-minute round budget is derived here (from the caller's context, not
+// the generation budget) so the tail step never inherits an exhausted
+// deadline.
 func runBoardHealthCheckupTailStep(parent context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			logging.Errorf("board-health: post-report checkup panicked (daily-report result untouched): %v", r)
 		}
 	}()
-	runPostReportBoardHealthCheckup(parent)
+	ctx, cancel := context.WithTimeout(parent, boardHealthCheckupBudget)
+	defer cancel()
+	runPostReportBoardHealthCheckup(ctx)
 }
+
+// runBoardHealthCheckupAfterBackfill invokes the backfill checkup seam with
+// the same panic isolation + budget discipline as the tail step, but in its
+// own goroutine (spec: 「手动端点与回填的触发 SHALL 异步执行」——回填触发
+// MUST NOT 把日报 job 的返回拖住：主轮有失败版面时尾步被跳过，回填这一轮
+// 会真跑最多 30 分钟 LLM，不能算在 job 时长里）。
+func runBoardHealthCheckupAfterBackfill(parent context.Context) {
+	// parent 仅用于日志/测试注入；goroutine 内自派生 budget，避免继承
+	// 已结束的 job ctx。
+	_ = parent
+	//nolint:gosec // G118: 体检是跨请求的后台任务，必须活过 job ctx（回填写完 job 就返回）
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("board-health: post-backfill checkup panicked (daily-report result untouched): %v", r)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), boardHealthCheckupBudget)
+		defer cancel()
+		runPostBackfillBoardHealthCheckup(ctx)
+	}()
+}
+
+// ── Lifeline heal tail step（daily-report-lifeline-heal 决策①③⑤）──
+//
+// 日报成功生成本身就证明 LLM 通路健康，是月/年归档缺口自愈的天然挂载点：
+// 断供窗口从「一个月/一年」（定时 job 被不健康窗口 skip 即丢整期）缩到「一天」。
+// 失败语义与 backfillMissingReports 对齐：顺延不丢（当日没补上的缺口次日
+// 日报成功后再试）、不阻塞日报 job、单点失败不扩散（HealMissingTolerant 逐
+// (topic, period) 容错）。稳态零成本：归档行齐全时扫描零缺口零 LLM 调用。
+var (
+	// lifelineHealGranularities 每轮扫描的粒度：month+year 各一轮。week 维持
+	// 禁用不动（Non-Goal），不进每日补齐。
+	lifelineHealGranularities = []string{
+		dataenrichment.GranularityMonth,
+		dataenrichment.GranularityYear,
+	}
+	// runLifelineHealRound 同步跑一轮 month+year 缺口扫描补齐。无全局超时上限
+	// （回填量不定，首轮回填可达 10-30 分钟；单次 LLM 超时由 airouter 自管），
+	// 进程优雅停机中断回填靠「只补缺行」幂等 + 次日重试覆盖（设计决策①④）。
+	// 包级 seam 供测试注入 fake（不接真实 dataenrichment 单例）。
+	runLifelineHealRound = func() {
+		svc := dataenrichment.GetLifelineService()
+		lister := dataenrichment.GetTopicLister()
+		if svc == nil || lister == nil {
+			logging.Warnf("lifeline heal: dataenrichment service/lister not wired; skipping this round")
+			return
+		}
+		now := time.Now()
+		for _, gran := range lifelineHealGranularities {
+			started := time.Now()
+			healed, failed, err := svc.HealMissingTolerant(context.Background(), gran, now, lister)
+			if err != nil {
+				logging.Errorf("lifeline heal: %s sweep aborted after %s: %v", gran, time.Since(started).Round(time.Second), err)
+				continue
+			}
+			logging.Infof("lifeline heal: %s sweep finished in %s (healed=%d failed=%d)", gran, time.Since(started).Round(time.Second), healed, failed)
+		}
+	}
+	// launchLifelineHealAsync 把 heal 轮放进独立 goroutine：recover 在
+	// goroutine 边界兑底，任何 panic 都不影响日报 job 返回值；异步启动即返回，
+	// 不等待结果（设计决策①⑤）。
+	launchLifelineHealAsync = func() {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logging.Errorf("lifeline heal: panicked (daily-report result untouched): %v", r)
+				}
+			}()
+			runLifelineHealRound()
+		}()
+	}
+)
 
 // adjudicateDailyReportTerminal is the single adjudication point for the
 // scheduled daily-report terminal-state notification (白盒 B):
-// failedCount>0 → ONE failure summary (success/failed counts in the copy);
-// failedCount==0 → one completion notification. Mutually exclusive — never
-// more than one notification per run. 成功口径 = 版面产出报告的计数；空版面
-// (report==nil) 算成功侧、不算失败（对齐 handler 路径口径：版面无内容≠失败）。
-func adjudicateDailyReportTerminal(date time.Time, totalBoards, successCount, failedCount int) {
-	if failedCount > 0 {
-		notifyDailyReportFailedSummary(date, successCount, failedCount)
-		return
-	}
-	notifyDailyReportSuccess(date, totalBoards, successCount)
+// 一次运行至多一条终态通知——有失败板块 → 一条失败汇总，无失败板块 → 一条
+// 完成通知，两条通道互斥（互斥规则由 notification.DailyReportTerminal 按
+// Failed>0 单点实现，调度路径与手动 / 集合路径同一入口）。
+//
+// 计数口径与 daily_report_done 终态消息同源（add-radar-pipeline-status D12）：
+// TotalBoards == 本次运行的板块总数（**含**当日无内容的板块），
+// Saved == 产出日报的板块数、Failed == 生成报错的板块数、
+// Empty == 当日无内容的板块数。当日无内容的板块（report==nil）计入总版面数，
+// 但既不算成功也不算失败（版面无内容≠失败）。
+func adjudicateDailyReportTerminal(date time.Time, counts notification.DailyReportCounts) {
+	notifyDailyReportTerminal(date, counts)
 }
 
 // backfillScanTimeout bounds the backfill pass on its own budget. The main pass
@@ -274,8 +371,16 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 
 		boardIDs, err := daily_report.CollectBoardIDsForDate(date)
 		if err != nil {
-			// 收集阶段即失败：一条失败汇总（fail-open，不改变作业本身的错误返回）
-			notifyDailyReportFailedSummary(date, 0, 1)
+			// 收集阶段即失败：一条失败汇总（fail-open，不改变作业本身的错误返回）。
+			// 三态口径与手动路径同源：这次收集失败记作「共 1 个版面，0 成功
+			// 1 失败」（TotalBoards=1 / Saved=0 / Failed=1 / Empty=0），
+			// 恒等式 Saved+Failed+Empty == TotalBoards 仍成立。
+			notifyDailyReportTerminal(date, notification.DailyReportCounts{
+				TotalBoards: 1,
+				Saved:       0,
+				Failed:      1,
+				Empty:       0,
+			})
 			return nil, fmt.Errorf("failed to collect board IDs: %w", err)
 		}
 
@@ -285,8 +390,13 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 		defer cancel()
 
+		// 三态计数（add-radar-pipeline-status D12）：每个板块恰好落入
+		// saved（产出日报）/ failed（生成报错）/ empty（当日无内容）之一，
+		// 三者互斥且穷尽于本次运行的板块集合——reportCount + failedCount +
+		// emptyCount == len(boardIDs) 恒成立，与终态通知、WS 终态消息同口径。
 		reportCount := 0
 		failedCount := 0
+		emptyCount := 0
 		for _, boardID := range boardIDs {
 			report, genErr := generateAndSaveReport(ctx, boardID, date)
 			if genErr != nil {
@@ -295,12 +405,19 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 				continue
 			}
 			if report == nil {
-				continue // 当日无内容正常返回 (nil, nil)：空版面不算失败（对齐 handler 口径），计入成功侧
+				// 当日无内容正常返回 (nil, nil)：既不算成功也不算失败，
+				// 但计入总版面数（对齐 handler 路径口径：版面无内容≠失败）。
+				emptyCount++
+				continue
 			}
 			reportCount++
 		}
 
-		// Broadcast completion
+		// Broadcast completion.
+		// 协议不变（不扩字段）：report_count == 产出日报的板块数（成功侧），
+		// 与手动路径的 daily_report_done 是两种消息类型（本消息当前无消费方）。
+		// 三态计数只在终态通知里给出——通知与 WS 终态消息的口径已由
+		// notification.DailyReportTerminal 统一（见 adjudicateDailyReportTerminal）。
 		msg := map[string]interface{}{
 			"type":         "daily_report_complete",
 			"report_count": reportCount,
@@ -310,22 +427,37 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 		data, _ := json.Marshal(msg)
 		ws.GetHub().BroadcastRaw(data)
 
+		healTriggered := false
 		// Terminal-state notification (add-notification-center, 白盒 B): the
 		// scheduled run is the 定时日报 users miss overnight — notify here.
 		// The backfill sweep below is deliberately silent (no per-day spam).
 		// failed 口径 = genErr != nil 的版面数（非 totalBoards-reportCount：
-		// 空版面不是失败）。失败汇总与完成通知互斥（adjudicateDailyReportTerminal）。
+		// 空版面不是失败）。总版面数含当日无内容的板块（== len(boardIDs)），
+		// 失败汇总与完成通知互斥（adjudicateDailyReportTerminal → 三态写入口）。
 		if totalBoards := len(boardIDs); totalBoards > 0 {
-			adjudicateDailyReportTerminal(date, totalBoards, reportCount, failedCount)
+			adjudicateDailyReportTerminal(date, notification.DailyReportCounts{
+				TotalBoards: totalBoards,
+				Saved:       reportCount,
+				Failed:      failedCount,
+				Empty:       emptyCount,
+			})
 
 			// Board-health checkup tail step (add-board-health-checkup design D3):
 			// chained synchronously after the SUCCESS adjudication only — the
 			// daily report owns this run's outcome, the checkup is a best-effort
 			// follow-up whose errors/panics are logged and never alter the job
-			// result. Manual TriggerNowWithDate flows through DailyReportJob too,
-			// so the manual path triggers the checkup with no separate wiring.
+			// result.
+			//
+			// 口径边界（fix-board-health-triage-degrade 4.6）：本尾步只覆盖
+			// 「调度器触发的日报主轮」。HTTP 手动端点 POST
+			// /api/daily-reports/generate 走的是 topicgraph handler 的
+			// generate* 路径（不经过本尾步），它在自己的路径上异步触发体检。
 			if failedCount == 0 {
 				runBoardHealthCheckupTailStep(baseCtx)
+				// Lifeline heal tail step（daily-report-lifeline-heal 决策①）：
+				// 同步 tail steps 之后异步启动，日报成功=模型通路健康的隐含判断。
+				launchLifelineHealAsync()
+				healTriggered = true
 			}
 		}
 
@@ -347,9 +479,22 @@ func DailyReportJob(targetDate ...time.Time) scheduler.JobFunc {
 				resultData[key] = value
 			}
 			summary = fmt.Sprintf("%s (backfilled %d)", summary, backfilled)
+			// 回填补出日报 → 追加一次体检（fix-board-health-triage-degrade D3）：
+			// 补出来的日报是用户可见的新依据，体检必须跟上。该触发带新鲜度
+			// 守卫 —— 同一晚主轮已经体检过的板全部跳过（成本≈一次 SQL），
+			// 没体检过的板才真跑一轮。
+			if backfilled > 0 {
+				runBoardHealthCheckupAfterBackfill(baseCtx)
+			}
 		}
 		// Set last so the scheduled merge above cannot be overwritten by it.
 		resultData["backfilled_count"] = backfilled
+
+		// 痕迹字段（决策⑤）：异步启动即记 triggered，不等 heal 结果；调度
+		// scheduler_tasks 的 last_execution_result 由此可查当日是否触发过补齐轮。
+		if healTriggered {
+			resultData["lifeline_heal"] = map[string]interface{}{"triggered": true}
+		}
 
 		// Article references dangle when a delete path runs against an already
 		// written report, or when a path nobody wired runs at all. Read-only

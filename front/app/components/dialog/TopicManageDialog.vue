@@ -1,6 +1,16 @@
 <script setup lang="ts">
+/**
+ * 泳道管理弹窗（原「话题管理」；change `lane-manual-correction-loop` 6.4）。
+ *
+ * 更名理由（契约 `lane-correction-surface`「入口接线」）：本面板管理的是**泳道实体**，
+ * 候选人工激活只是其中一个子能力——入口与标题统一叫「泳道管理」。
+ *
+ * 行内「编辑」入口 → `editLane` 事件（上抛给壳层）→ 进泳道修正工作面（画布）。
+ * 窄屏（<768px）该入口**禁用**并说明原因（画布 SHALL NOT 画残缺两栏）。
+ */
 import { Icon } from '@iconify/vue'
 import { useDailyReportsApi, type BoardTopicListItem } from '~/api/dailyReports'
+import { useIsNarrowViewport } from '~/composables/useMediaQuery'
 
 const props = defineProps<{
   modelValue: boolean
@@ -10,6 +20,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
   changed: []
+  /** 「编辑泳道」→ 泳道修正工作面（画布）。 */
+  editLane: [topicId: number]
 }>()
 
 const {
@@ -26,6 +38,8 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const filter = ref<'all' | 'active' | 'candidate' | 'archived'>('all')
 const search = ref('')
+/** 窄屏（<768px）：泳道修正画布入口禁用（只提示宽屏/横屏）。 */
+const isNarrow = useIsNarrowViewport()
 
 // --- In-flight op guard (shared across topic rows) ---
 const busyId = ref<number | null>(null)
@@ -247,7 +261,7 @@ function close() {
 <template>
   <AppDialog
     :model-value="modelValue"
-    title="话题管理"
+    title="泳道管理"
     width="720px"
     @update:model-value="emit('update:modelValue', $event)"
   >
@@ -260,7 +274,7 @@ function close() {
       </div>
       <AppButton variant="ghost" size="sm" :loading="backfilling" @click="runBackfill">
         <Icon icon="mdi:database-refresh-outline" width="14" />
-        <span>{{ backfilling ? '提交中…' : '回刷历史话题' }}</span>
+        <span>{{ backfilling ? '提交中…' : '回刷历史泳道' }}</span>
       </AppButton>
     </div>
 
@@ -280,7 +294,7 @@ function close() {
           @click="filter = opt[0]"
         >{{ opt[1] }}</button>
       </div>
-      <AppInput v-model="search" type="text" placeholder="搜索话题名…" class="tm-search" />
+      <AppInput v-model="search" type="text" placeholder="搜索泳道名…" class="tm-search" />
     </div>
 
     <!-- Error banner -->
@@ -294,9 +308,10 @@ function close() {
 
     <!-- List -->
     <div class="tm-list">
+      <p v-if="isNarrow" class="tm-narrow-note" data-testid="topic-edit-narrow-note">泳道修正需要宽屏或横屏</p>
       <div v-if="loading" class="tm-empty">加载中…</div>
       <div v-else-if="filtered.length === 0" class="tm-empty">
-        {{ topics.length === 0 ? '本板块尚无持久话题。' : '无匹配话题。' }}
+        {{ topics.length === 0 ? '本板块尚无泳道。' : '无匹配泳道。' }}
       </div>
       <div
         v-for="t in filtered"
@@ -324,6 +339,15 @@ function close() {
             @click="activateTarget = t"
           >确认启用</AppButton>
           <AppButton variant="ghost" size="sm" :disabled="busyId !== null" @click="startRename(t)">重命名</AppButton>
+          <AppButton
+            v-if="t.status !== 'archived'"
+            variant="ghost"
+            size="sm"
+            :disabled="busyId !== null || isNarrow"
+            :title="isNarrow ? '泳道修正需要宽屏或横屏' : undefined"
+            data-testid="topic-edit-lane"
+            @click="emit('editLane', t.id)"
+          >编辑</AppButton>
           <AppButton variant="ghost" size="sm" :disabled="busyId !== null" @click="startMerge(t)">合并</AppButton>
           <AppButton
             v-if="t.status !== 'archived'"
@@ -348,15 +372,15 @@ function close() {
     </template>
   </AppDialog>
 
-  <!-- Rename sub-dialog -->
+  <!-- Rename sub-dialog（次要路径；主路径是修正工作面标题就地编辑） -->
   <AppDialog
     :model-value="renameOpen"
-    title="重命名话题"
-    width="440px"
+    title="重命名泳道"
+    size="sm"
     @update:model-value="renameOpen = $event"
   >
     <div class="tm-sub-body">
-      <label class="tm-field-label">话题名称</label>
+      <label class="tm-field-label">泳道名称</label>
       <AppInput
         v-model="renameLabel"
         type="text"
@@ -376,13 +400,13 @@ function close() {
   <!-- Merge sub-dialog -->
   <AppDialog
     :model-value="mergeOpen"
-    title="合并话题"
+    title="合并泳道"
     width="460px"
     @update:model-value="mergeOpen = $event"
   >
     <div class="tm-sub-body">
       <p class="tm-hint">
-        将「{{ mergeTarget?.label }}」合并进以下哪个话题？源话题将被归档，其 section 全部改指目标。
+        将「{{ mergeTarget?.label }}」合并进以下哪个泳道？源泳道将被归档，其 section 全部改指目标。
       </p>
       <div class="tm-merge-list">
         <button
@@ -413,7 +437,7 @@ function close() {
   <!-- Archive confirm -->
   <AppDialog
     :model-value="archiveOpen"
-    title="归档话题"
+    title="归档泳道"
     width="420px"
     @update:model-value="archiveOpen = $event"
   >
@@ -429,12 +453,12 @@ function close() {
   <!-- Activate confirm -->
   <AppDialog
     :model-value="activateOpen"
-    title="启用为持久话题"
+    title="启用为泳道"
     width="420px"
     @update:model-value="activateOpen = $event"
   >
     <p class="tm-confirm-body">
-      确定将「{{ activateTarget?.label }}」启用为持久话题？启用后参与话题泳道与新归属。
+      确定将「{{ activateTarget?.label }}」启用为泳道？启用后参与话题泳道与新归属。
     </p>
     <template #footer>
       <AppButton variant="secondary" @click="activateTarget = null">取消</AppButton>
@@ -445,16 +469,16 @@ function close() {
   <!-- Delete confirm (type-to-confirm) -->
   <AppDialog
     :model-value="deleteOpen"
-    title="删除话题"
+    title="删除泳道"
     width="440px"
     @update:model-value="deleteOpen = $event"
   >
     <div class="tm-sub-body">
       <div class="tm-danger-banner">
         <Icon icon="mdi:alert" width="18" />
-        <span>硬删除不可恢复。话题「{{ deleteTarget?.label }}」下的 {{ deleteTarget?.section_count }} 条 section 将解除归属但保留内容。</span>
+        <span>硬删除不可恢复。泳道「{{ deleteTarget?.label }}」下的 {{ deleteTarget?.section_count }} 条 section 将解除归属但保留内容。</span>
       </div>
-      <label class="tm-field-label">输入话题名称「{{ deleteTarget?.label }}」以确认</label>
+      <label class="tm-field-label">输入泳道名称「{{ deleteTarget?.label }}」以确认</label>
       <AppInput v-model="deleteConfirmText" type="text" placeholder="话题名称" />
     </div>
     <template #footer>
@@ -539,6 +563,11 @@ function close() {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+.tm-narrow-note {
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--color-text-muted);
 }
 .tm-empty {
   padding: 24px;

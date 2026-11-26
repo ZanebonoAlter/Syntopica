@@ -136,3 +136,95 @@ func TestGetBoardHealthCheckup(t *testing.T) {
 		require.Equal(t, before, after, "read-only endpoint must not write snapshots")
 	})
 }
+
+// 用例来源：board-health-triage-advice test-cases 主链路 A4 —— triage 随快照
+// 透传；旧快照（metrics 无 triage 字段）按旧形态返回不报错。
+func TestGetBoardHealthCheckupTriagePassthrough(t *testing.T) {
+	db, r := setupBoardHealthCheckupTest(t)
+	board := models.SemanticLabel{Label: "分诊透传板", Slug: "bh-handler-triage", LabelType: "board", Status: "active"}
+	require.NoError(t, db.Create(&board).Error)
+
+	// 新形态快照：metrics 携带 triage + 信号字段。
+	score := 66.0
+	newShape := tagmodels.BoardHealthMetrics{
+		Board: tagmodels.BoardHealthBoardMetrics{
+			MatchedTags: 1, ReasonDist: map[string]int{}, GhostMatches: 1,
+			MagnetFlow: &tagmodels.BoardHealthMagnetFlow{FailedTags: 5, FlowTags: 0},
+		},
+		Labels: []tagmodels.BoardHealthLabelMetrics{{
+			AuxID: 42, Label: "上海", Description: "上海知名商业综合体",
+			LabelType: "auxiliary",
+			Magnet:    &tagmodels.BoardHealthMagnetSignal{AllSamples: 400, FailedSamples: 40, Suspicious: true},
+			Neighbors: []tagmodels.BoardHealthNeighbor{{AuxID: 9, Label: "举办地点", Cosine: 0.796}},
+			DescFlags: []string{"此次"},
+		}, {
+			// 组合标签也进构成清单：label_type 必须逐条透出（前端据此标不可执行）。
+			AuxID: 43, Label: "上海 × 展会", LabelType: "composite",
+		}},
+		Triage: []tagmodels.BoardHealthTriageItem{{
+			AuxID: 42, Category: "rewrite", Evidence: "desc 预筛命中此次", Suggestion: "中国东部直辖市",
+		}},
+	}
+	require.NoError(t, db.Create(&tagmodels.BoardHealthSnapshot{
+		SemanticBoardID: board.ID, CheckedAt: time.Date(2026, 10, 29, 8, 0, 0, 0, time.Local),
+		Metrics: newShape, UncapturedCandidates: []tagmodels.BoardHealthCandidate{}, LLMScore: &score,
+	}).Error)
+
+	// 旧形态快照：2026-10 之前的历史 jsonb 无 triage/信号字段（原样 SQL 植入）。
+	require.NoError(t, db.Exec(`INSERT INTO board_health_snapshots
+		(semantic_board_id, checked_at, metrics, uncaptured_candidates, llm_score, llm_comment, created_at)
+		VALUES (?, ?, ?, '[]', 55, '旧评语', ?)`,
+		board.ID, time.Date(2026, 9, 1, 8, 0, 0, 0, time.Local),
+		`{"board":{"matched_tags":3,"reason_dist":{"direct_hit":3},"ghost_matches":0,"vector_missing":0},"labels":[{"aux_id":7,"label":"旧标签","samples":3,"cosine_mean":null,"cosine_median":null,"cosine_p25":null,"cosine_p75":null,"low_sim_ratio":null,"insufficient":true}]}`, time.Date(2026, 9, 1, 7, 0, 0, 0, time.Local)).Error)
+
+	w, body := getHealthCheckup(r, fmt.Sprintf("/api/semantic-boards/%d/health-checkup", board.ID))
+	require.Equal(t, http.StatusOK, w.Code)
+	data := body["data"].(map[string]any)
+	latest := data["latest"].(map[string]any)
+
+	// 新形态：triage 数组原样透出（category/evidence/suggestion）。
+	metrics := latest["metrics"].(map[string]any)
+	triage := metrics["triage"].([]any)
+	require.Len(t, triage, 1)
+	item := triage[0].(map[string]any)
+	require.Equal(t, float64(42), item["aux_id"])
+	require.Equal(t, "rewrite", item["category"])
+	require.Equal(t, "desc 预筛命中此次", item["evidence"])
+	require.Equal(t, "中国东部直辖市", item["suggestion"])
+	// 信号字段随 labels 透出。
+	labels := metrics["labels"].([]any)
+	label := labels[0].(map[string]any)
+	require.Equal(t, "上海知名商业综合体", label["description"])
+	require.NotNil(t, label["magnet"])
+	require.Equal(t, []any{"此次"}, label["desc_flags"])
+	// 4.1 M1：label_type 逐条透出（auxiliary / composite）——前端据此把组合标签的
+	// 「重写描述」标为不可执行（描述修复链只认 auxiliary）。
+	require.Equal(t, "auxiliary", label["label_type"])
+	require.Equal(t, "composite", labels[1].(map[string]any)["label_type"])
+	flow := metrics["board"].(map[string]any)["magnet_flow"]
+	require.NotNil(t, flow)
+	require.Nil(t, flow.(map[string]any)["top_board"], "无可靠流向显式未知")
+
+	// 历史快照（trend 第二点）不受影响；latest 缺 triage 字段时为 null。
+	w2, body2 := getHealthCheckup(r, fmt.Sprintf("/api/semantic-boards/%d/health-checkup?trend=2", board.ID))
+	require.Equal(t, http.StatusOK, w2.Code)
+	trend := body2["data"].(map[string]any)["trend"].([]any)
+	require.Len(t, trend, 2)
+
+	// 历史快照成为 latest 时：无 triage 字段 → 反序列化为零值 → JSON null，
+	// 统计与评分正常返回（spec「历史快照缺分诊字段兼容」）。
+	histBoard := models.SemanticLabel{Label: "旧板", Slug: "bh-handler-hist", LabelType: "board", Status: "active"}
+	require.NoError(t, db.Create(&histBoard).Error)
+	require.NoError(t, db.Exec(`INSERT INTO board_health_snapshots
+		(semantic_board_id, checked_at, metrics, uncaptured_candidates, llm_score, llm_comment, created_at)
+		VALUES (?, ?, ?, '[]', 55, '旧评语', ?)`,
+		histBoard.ID, time.Date(2026, 9, 1, 8, 0, 0, 0, time.Local),
+		`{"board":{"matched_tags":3,"reason_dist":{"direct_hit":3},"ghost_matches":0,"vector_missing":0},"labels":[{"aux_id":7,"label":"旧标签","samples":3,"cosine_mean":null,"cosine_median":null,"cosine_p25":null,"cosine_p75":null,"low_sim_ratio":null,"insufficient":true}]}`, time.Date(2026, 9, 1, 7, 0, 0, 0, time.Local)).Error)
+	_, body3 := getHealthCheckup(r, fmt.Sprintf("/api/semantic-boards/%d/health-checkup", histBoard.ID))
+	histLatest := body3["data"].(map[string]any)["latest"].(map[string]any)
+	require.InDelta(t, 55.0, histLatest["llm_score"].(float64), 1e-9, "旧评分正常返回")
+	histMetrics := histLatest["metrics"].(map[string]any)
+	require.Nil(t, histMetrics["triage"], "缺 triage 字段 → null，不报错")
+	histLabel := histMetrics["labels"].([]any)[0].(map[string]any)
+	require.Nil(t, histLabel["magnet"], "缺信号字段 → null")
+}

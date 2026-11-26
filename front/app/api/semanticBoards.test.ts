@@ -14,7 +14,7 @@ vi.mock('./client', async (importOriginal) => {
   return { apiClient: actual.apiClient }
 })
 
-import { useSemanticBoardsApi } from './semanticBoards'
+import { useBoardRadarApi, useSemanticBoardsApi } from './semanticBoards'
 
 describe('useSemanticBoardsApi - persisted upgrade suggestions', () => {
   beforeEach(() => {
@@ -86,5 +86,102 @@ describe('useSemanticBoardsApi - persisted upgrade suggestions', () => {
       auxiliary_label_ids: [1, 2],
       suggestion_id: 10,
     })
+  })
+})
+
+describe('useBoardRadarApi - Radar 客户端边界归一（8A/R-18）', () => {
+  beforeEach(() => {
+    getMock.mockReset()
+    postMock.mockReset()
+    vi.restoreAllMocks()
+  })
+
+  it('getOverview: 真实 raw snake_case 响应 → camelCase/字符串 ID 读模型', async () => {
+    // raw 形态对齐 GET /semantic-boards/overview 后端契约（snake_case + 数字 ID）
+    getMock.mockResolvedValue({
+      success: true,
+      data: {
+        date: '2026-10-24',
+        boards: [
+          {
+            board_id: 1974,
+            label: '中东地缘政治与美伊关系',
+            tag_count: 144,
+            report_date: '2026-10-24',
+            report_title: '伊朗警告打击海湾海底电缆',
+            report_article_count: 14,
+            report_event_count: 13,
+            anchor_date: '2026-10-22',
+            today_clues: 8,
+            last3_clues: 13,
+            prev3_clues: 10,
+            attention: 26,
+            data_delayed: true,
+            clue_days: Array.from({ length: 14 }, () => 1),
+            lanes: [
+              { topic_id: 1204, label: '美伊博弈', thread_count_14d: 40, clue_counts: Array.from({ length: 14 }, () => 1) },
+            ],
+          },
+          {
+            board_id: 50413,
+            label: '影视作品',
+            tag_count: 0,
+            report_date: '2026-10-24',
+            report_title: '本周剧集与行业动向',
+            report_article_count: 3,
+            report_event_count: 2,
+            today_clues: 0,
+            last3_clues: 0,
+            prev3_clues: 0,
+            attention: 0,
+            data_delayed: false,
+            clue_days: [],
+            lanes: [],
+          },
+        ],
+      },
+    })
+
+    const res = await useBoardRadarApi().getOverview()
+    expect(getMock).toHaveBeenCalledWith('/semantic-boards/overview')
+    expect(res.success).toBe(true)
+    // 判别联合显式 guard：expect(res.success) 不构成 TS 窄化，窄化后才可取归一化读模型字段
+    if (!res.success) throw new Error('预期成功响应')
+    const [board, coldBoard] = res.data.boards
+    expect(board?.boardId).toBe('1974')
+    expect(board?.todayClues).toBe(8)
+    expect(board?.last3Clues).toBe(13)
+    expect(board?.anchorDate).toBe('2026-10-22')
+    expect(board?.dataDelayed).toBe(true)
+    expect(board?.lanes[0]?.topicId).toBe('1204')
+    expect(board?.lanes[0]?.clueCounts).toHaveLength(14)
+    // 0 值/无锚日版块（影视形态）仍归一为合法读模型
+    expect(coldBoard?.boardId).toBe('50413')
+    expect(coldBoard?.anchorDate).toBeUndefined()
+    expect(coldBoard?.lanes).toEqual([])
+  })
+
+  it('getOverview: 失败响应原样透传，不做归一', async () => {
+    getMock.mockResolvedValue({ success: false, error: '接口挂了' })
+    const res = await useBoardRadarApi().getOverview()
+    expect(res).toEqual({ success: false, error: '接口挂了' })
+    expect(res.data).toBeUndefined()
+  })
+})
+
+describe('useSemanticBoardsApi - 标签辅助标签全集（归档层级视图）', () => {
+  beforeEach(() => {
+    getMock.mockReset()
+    postMock.mockReset()
+    vi.restoreAllMocks()
+  })
+
+  it('getTagAuxiliaryLabels → GET /tags/:id/auxiliary-labels', async () => {
+    const expected = { success: true, data: { items: [{ id: 31, label: '沙特' }], total: 1 } }
+    getMock.mockResolvedValue(expected)
+    const api = useSemanticBoardsApi()
+    const res = await api.getTagAuxiliaryLabels(238319)
+    expect(getMock).toHaveBeenCalledWith('/tags/238319/auxiliary-labels')
+    expect(res).toEqual(expected)
   })
 })

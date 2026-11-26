@@ -1,7 +1,7 @@
 # SPA 加载体验（Loading Experience）
 
 > **权威源**：本文件是 SPA 首屏加载/路由切换/加载失败兜底的唯一权威（change `spa-loading-ux` 建立）。
-> 互补：`theming.md`（主题令牌，模板色值的取值来源）；`layout.md`（页面布局契约，本文件的全屏 fallback 不属于 page shell 四模式）。
+> 互补：`theming.md`（主题令牌，模板色值的取值来源）；`layout.md`（页面布局契约，本文件的全屏 fallback 不属于 page shell 四模式）；[prototype-content.md](prototype-content.md)（空态/加载/错误态的通用口径——**SPA 首屏与路由加载以本文件为准**，那边的「加载态须说清在加载什么」不适用于本节四层）。
 
 doc-impact-applies: front/app/spa-loading-template.html, front/app/app.vue, front/app/composables/useFakeProgress.ts, front/app/error.vue, front/app/plugins/chunk-error-fallback.ts, front/app/assets/css/main.css, front/nuxt.config.ts | section=全部
 

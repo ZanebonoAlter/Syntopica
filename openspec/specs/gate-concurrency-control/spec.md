@@ -1,3 +1,5 @@
+<!-- domain: harness -->
+
 # gate-concurrency-control Specification
 
 ## Purpose

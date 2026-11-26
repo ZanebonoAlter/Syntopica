@@ -26,6 +26,13 @@ import (
 
 type Runtime struct {
 	Registry *admin.SchedulerRegistry
+	// appCtx is the APPLICATION lifetime context of the background workers.
+	// The description-repair worker runs on it (never on the context of the
+	// HTTP request that created a task — closing the page must not cancel a
+	// confirmed task). It is cancelled during the graceful shutdown, BEFORE
+	// the database is released.
+	appCtx    context.Context
+	appCancel context.CancelFunc
 }
 
 func resetStaleStates() {
@@ -84,6 +91,19 @@ func resetStaleStates() {
 	if tagJobResult.RowsAffected > 0 {
 		logging.Infof("Reset %d tag job(s) stuck in 'leased' state", tagJobResult.RowsAffected)
 	}
+
+	// 判定作业与 tag job 同款启动收敛：租约最长 10min，不重置的话崩溃重启后
+	// 残留作业要等租约自然过期才能重领（add-ai-generated-article-detection）。
+	detectionJobResult := database.DB.Model(&models.DetectionJob{}).
+		Where("status = ?", "leased").
+		Updates(map[string]interface{}{
+			"status":           "pending",
+			"leased_at":        nil,
+			"lease_expires_at": nil,
+		})
+	if detectionJobResult.RowsAffected > 0 {
+		logging.Infof("Reset %d detection job(s) stuck in 'leased' state", detectionJobResult.RowsAffected)
+	}
 }
 
 func StartRuntime() *Runtime {
@@ -128,6 +148,23 @@ func StartRuntime() *Runtime {
 	})
 
 	tagging.StartAllWorkers()
+
+	// 疑似 AI 判定 worker（add-ai-generated-article-detection task 3.2）：独立队列 +
+	// 独立 worker 循环，与标签打标互不影响。启动失败只记日志（作业表持久化，不丢
+	// 作业）；不阻塞应用启动。
+	if err := content.StartAIDetectionWorker(); err != nil {
+		logging.Warnf("Failed to start the AI detection worker: %v", err)
+	}
+
+	// 辅助标签描述修复链的后台执行器（board-health-triage-advice tasks 2.6）：
+	// worker 绑**应用生命周期** ctx（不是提交请求的 ctx——关页面不取消已确认
+	// 任务）；关停时先 cancel 再 join，DB 释放前必须收束。
+	appCtx, appCancel := context.WithCancel(context.Background())
+	if err := startRepairExecutorFn(appCtx); err != nil {
+		// 初始化错误不静默：记错误日志（app 启动路径的链初始化失败已在
+		// InitDescriptionRepairChain 处 Fatalf，这里只剩 ctx/配置类的启动失败）。
+		logging.Errorf("Failed to start the description-repair executor: %v", err)
+	}
 
 	registry := admin.NewSchedulerRegistry()
 
@@ -330,7 +367,7 @@ func StartRuntime() *Runtime {
 
 	registry.StartAll()
 
-	return &Runtime{Registry: registry}
+	return &Runtime{Registry: registry, appCtx: appCtx, appCancel: appCancel}
 }
 
 // registerDiscoveryV2Jobs 注册发现 v2 的三个后台任务（improve-discovery-recommendations 4.6,
@@ -397,6 +434,7 @@ func registerDiscoveryV2Jobs(registry *admin.SchedulerRegistry, enabled bool) {
 type shutdownTimings struct {
 	HTTP     time.Duration
 	Registry time.Duration
+	Repair   time.Duration
 	Workers  time.Duration
 	Total    time.Duration
 }
@@ -406,11 +444,23 @@ var (
 	httpShutdownTimeout     = 5 * time.Second
 	registryShutdownTimeout = 30 * time.Second
 	workersShutdownTimeout  = 10 * time.Second
+	// repairShutdownTimeout bounds the join of the description-repair worker
+	// (the same order of magnitude as the workers step): a worker stuck in a
+	// call that ignores the context must not block the shutdown forever.
+	repairShutdownTimeout = 10 * time.Second
 )
 
 var (
 	// stopWorkersFn 是工作队列停止的注入缝（D4）：真身依赖 DB 单例，单测替换为记录型 fake 即可无 DB 运行。
-	stopWorkersFn = tagging.StopAllWorkers
+	// 两族 worker 相互独立，串行停下（打标/嵌入族 + 疑似 AI 判定 worker）。
+	stopWorkersFn = func() {
+		tagging.StopAllWorkers()
+		content.StopAIDetectionWorker()
+	}
+	// startRepairExecutorFn / stopRepairExecutorFn 是描述修复 worker 生命周期的注入缝：
+	// 真身走 tagmanagement 域门面（域根持有 service+executor 单例），单测替换为记录型 fake 即可无 DB 运行。
+	startRepairExecutorFn = tagging.StartDescriptionRepairExecutor
+	stopRepairExecutorFn  = func() { tagging.StopDescriptionRepairExecutor() }
 	// stopRegistryFn 是调度器注册表停止的注入缝：单测据此注入同步 panic/阻塞，验证步级隔离。
 	stopRegistryFn = func(r *Runtime, timeout time.Duration) { r.Registry.StopAll(timeout) }
 	// shutdownHTTPStepFn 是 ① HTTP 摘端口步的注入缝（test-cases A2：TC-11 用缝注入 panic，
@@ -460,6 +510,33 @@ func runShutdownSequence(rt *Runtime, srv *http.Server) shutdownTimings {
 		})
 	}
 
+	// ② 描述修复 worker：先 cancel 应用生命周期 ctx，再 join worker——DB 释放前
+	// 不允许还有 worker 在写。demo 模式（rt==nil）时 worker 从未启动，这里是 no-op。
+	//
+	// join 有界：worker 可能卡在不响应 ctx 的外部调用里（引擎/Provider），
+	// 那时不能把关停无限挂住——超时只告警并继续后面的 registry/workers 步，
+	// 且**不谎称已 join**。
+	timings.Repair = runShutdownStep("repair", func() {
+		if rt != nil && rt.appCancel != nil {
+			rt.appCancel()
+		}
+		finished := make(chan struct{})
+		go func() {
+			defer close(finished)
+			defer func() {
+				if r := recover(); r != nil {
+					logging.Warnf("Repair worker shutdown panicked: %v", r)
+				}
+			}()
+			stopRepairExecutorFn()
+		}()
+		select {
+		case <-finished:
+		case <-time.After(repairShutdownTimeout):
+			logging.Warnf("Repair worker shutdown timed out after %v, continuing without retry", repairShutdownTimeout)
+		}
+	})
+
 	if rt != nil && rt.Registry != nil {
 		timings.Registry = runShutdownStep("registry", func() {
 			stopRegistryFn(rt, registryShutdownTimeout)
@@ -488,8 +565,9 @@ func runShutdownSequence(rt *Runtime, srv *http.Server) shutdownTimings {
 	})
 
 	timings.Total = time.Since(startedAt)
-	logging.Infof("shutdown steps: http=%.1fs registry=%.1fs workers=%.1fs total=%.1fs",
-		timings.HTTP.Seconds(), timings.Registry.Seconds(), timings.Workers.Seconds(), timings.Total.Seconds())
+	logging.Infof("shutdown steps: http=%.1fs repair=%.1fs registry=%.1fs workers=%.1fs total=%.1fs",
+		timings.HTTP.Seconds(), timings.Repair.Seconds(), timings.Registry.Seconds(),
+		timings.Workers.Seconds(), timings.Total.Seconds())
 	return timings
 }
 

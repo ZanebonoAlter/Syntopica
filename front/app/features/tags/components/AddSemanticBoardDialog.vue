@@ -5,7 +5,6 @@ import AuxiliaryLabelPicker from './AuxiliaryLabelPicker.vue'
 
 const props = defineProps<{
   visible: boolean
-  editMode?: boolean
   initialData?: {
     label: string
     description: string
@@ -62,7 +61,7 @@ function handleSubmit() {
 </script>
 
 <template>
-  <AppDialog v-model="show" :title="editMode ? '编辑板块' : '添加板块'" width="520px">
+  <AppDialog v-model="show" title="添加板块" width="520px">
     <!-- Step 1: Basic info -->
     <div v-if="step === 'form'" class="form-fields">
       <label class="form-field">

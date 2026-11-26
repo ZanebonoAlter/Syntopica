@@ -415,7 +415,7 @@ func TestSignalDiscovery_EndToEndDiscoveredPath(t *testing.T) {
 	}
 
 	llm := &signalLLMStub{content: fmt.Sprintf(
-		`{"signals":[{"signal":"炼厂开工与库存背离","why_it_matters":"改变补库判断","research_question":"开工下滑为何库存未降","evidence_refs":["%d"],"score":8,"rationale":"异动强度高"}]}`,
+		`{"signals":[{"signal":"炼厂开工与库存背离","why_it_matters":"改变补库判断","research_question":"开工下滑为何库存未降","unknown":"开工与库存背离的口径尚未确认","verification":"先读两篇原始报道核对口径","evidence_refs":["%d"],"score":8,"rationale":"异动强度高"}]}`,
 		section.ID)}
 	svc := service.NewSignalDiscoveryService(
 		llm,
@@ -466,6 +466,26 @@ func TestSignalDiscovery_EndToEndDiscoveredPath(t *testing.T) {
 	}
 	if _, has := row["discovery_created_at"]; !has {
 		t.Fatalf("discovery_created_at (发现时间来自批次) must be present: %v", row)
+	}
+	// M4（review）：question-v1 简报经列表透出（unknown/verification 冻结文案）。
+	brief, ok := row["research_brief"].(map[string]any)
+	if !ok || brief["unknown"] != "开工与库存背离的口径尚未确认" || brief["verification"] != "先读两篇原始报道核对口径" {
+		t.Fatalf("research_brief must surface frozen unknown/verification: %v", row["research_brief"])
+	}
+	if _, has := brief["source_ids"]; !has {
+		t.Fatalf("research_brief.source_ids must be present: %v", brief)
+	}
+	// 详情返回研究协议（客户端不可覆写）。
+	cid, _ := row["id"].(float64)
+	det := getJSON(t, r, fmt.Sprintf("/semantic-boards/5/enrichment/analysis/signals/%d", int(cid)))
+	var dresp struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(det.Body.Bytes(), &dresp); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if dresp.Data["research_contract"] != "question-v1" {
+		t.Fatalf("detail must expose research_contract=question-v1: %v", dresp.Data["research_contract"])
 	}
 	if row["latest_result_id"] != nil {
 		t.Fatalf("pending candidate has no result: %v", row["latest_result_id"])

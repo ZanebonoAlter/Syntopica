@@ -981,7 +981,7 @@ func TestRunServer_NilServeErrorNotReported(t *testing.T) {
 // ── TC-20 汇总日志唯一性 + 字段完整 + 位置 ──
 
 var shutdownSummaryRe = regexp.MustCompile(
-	`shutdown steps: http=([0-9.]+)s registry=([0-9.]+)s workers=([0-9.]+)s total=([0-9.]+)s`)
+	`shutdown steps: http=([0-9.]+)s repair=([0-9.]+)s registry=([0-9.]+)s workers=([0-9.]+)s total=([0-9.]+)s`)
 
 func TestShutdownSequence_SummaryLineContract(t *testing.T) {
 	f := newShutdownTestFixture(t)
@@ -1020,16 +1020,22 @@ func TestShutdownSequence_SummaryLineContract(t *testing.T) {
 	require.NotNil(t, m, "汇总行格式必须匹配 %s", shutdownSummaryRe.String())
 	httpSec, err := strconv.ParseFloat(m[1], 64)
 	require.NoError(t, err)
-	registrySec, err := strconv.ParseFloat(m[2], 64)
+	repairSec, err := strconv.ParseFloat(m[2], 64)
 	require.NoError(t, err)
-	workersSec, err := strconv.ParseFloat(m[3], 64)
+	registrySec, err := strconv.ParseFloat(m[3], 64)
 	require.NoError(t, err)
-	totalSec, err := strconv.ParseFloat(m[4], 64)
+	workersSec, err := strconv.ParseFloat(m[4], 64)
+	require.NoError(t, err)
+	totalSec, err := strconv.ParseFloat(m[5], 64)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, httpSec, 0.0)
+	require.GreaterOrEqual(t, repairSec, 0.0)
 	require.GreaterOrEqual(t, registrySec, 0.0)
 	require.GreaterOrEqual(t, workersSec, 0.0)
 	maxStep := httpSec
+	if repairSec > maxStep {
+		maxStep = repairSec
+	}
 	if registrySec > maxStep {
 		maxStep = registrySec
 	}
@@ -1046,18 +1052,21 @@ func TestShutdownTimeoutVars_Defaults(t *testing.T) {
 	require.Equal(t, 5*time.Second, httpShutdownTimeout)
 	require.Equal(t, 30*time.Second, registryShutdownTimeout)
 	require.Equal(t, 10*time.Second, workersShutdownTimeout)
+	require.Equal(t, 10*time.Second, repairShutdownTimeout)
 
-	origHTTP, origRegistry, origWorkers := httpShutdownTimeout, registryShutdownTimeout, workersShutdownTimeout
+	origHTTP, origRegistry, origWorkers, origRepair := httpShutdownTimeout, registryShutdownTimeout, workersShutdownTimeout, repairShutdownTimeout
 	t.Cleanup(func() {
-		httpShutdownTimeout, registryShutdownTimeout, workersShutdownTimeout = origHTTP, origRegistry, origWorkers
+		httpShutdownTimeout, registryShutdownTimeout, workersShutdownTimeout, repairShutdownTimeout = origHTTP, origRegistry, origWorkers, origRepair
 	})
 
 	httpShutdownTimeout = 111 * time.Millisecond
 	registryShutdownTimeout = 222 * time.Millisecond
 	workersShutdownTimeout = 333 * time.Millisecond
+	repairShutdownTimeout = 444 * time.Millisecond
 	require.Equal(t, 111*time.Millisecond, httpShutdownTimeout, "必须可覆写（var 非 const）")
 	require.Equal(t, 222*time.Millisecond, registryShutdownTimeout)
 	require.Equal(t, 333*time.Millisecond, workersShutdownTimeout)
+	require.Equal(t, 444*time.Millisecond, repairShutdownTimeout)
 }
 
 // ── TC-22 单测禁 DB 自检（grep 等价实现，不调 shell） ──

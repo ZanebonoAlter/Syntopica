@@ -19,6 +19,10 @@
 # 六段故障视角 + ⑦效能看板（harness-effectiveness-metrics）：① 门禁失败聚类 ② 回归翻转 ③ harness 自身故障 ④ 软提醒失效 ⑤ 重复失败热点 ⑥ 注入面健康 ⑦ 效能看板（A 插件 ROI / B 效率基线（session.rollup 驱动）/ C 返工信号；分布为 nearest-rank 分位，禁止综合总分）
 # ⑦ 另含 D 测试欠账巡检子组（test-debt-patrol）：patrol.check 流水频次 + test_debt 台账 open/fixed/waived 趋势；
 #   窗口内无 patrol.check 或库内无 test_debt 表（老库/未初始化）时降级为「无巡检数据」，不影响退出码。
+# ⑦ 另含 G 派发带域子组（add-dispatch-constraint-digest）：subagent.dispatch 的 constraintDigest 三态
+#   （present / absent / 未知）；比例分母 = present + absent，改造前无该字段的历史记录计「未知」并剔除分母
+#   （不回溯记 absent，否则把改造前数据算成遗漏）；统计窗口内全部派发记录（含失败派发）；
+#   无可判定派发时不除零，显式输出「无可判定派发」。
 #
 # 分母口径（与 harness-fact-log 的 gate.check 采样记账协议一致）：
 #   ok=false 计 1；ok=true 无采样标记（会话首成功/转绿锚点）计 1；
@@ -46,7 +50,7 @@ HOTSPOT_DEFAULT_THR=5
 # 发现误归类时修白名单，不放宽缺省）。
 # attribution-degraded（add-foreign-gate-steer-attribution）：归因信号缺席/判定异常而保守
 # 回退本会话失败的告知性记账——考古"为何判 mine"用，不构成催修指令。
-INFORMATIVE_REASONS="concurrent-mixed concurrent-dirty-tree foreign-breakage attribution-degraded"
+INFORMATIVE_REASONS="concurrent-mixed concurrent-dirty-tree foreign-breakage attribution-degraded ui-stage-missing ui-stage-invalid ui-stage-scope-out"
 # SQL IN 字面量（仅含 [a-z0-9-]，无需引号转义）：'concurrent-mixed','…','…'
 INFORMATIVE_SQL_LIST="$(printf "'%s'," $INFORMATIVE_REASONS | sed 's/,$//')"
 
@@ -403,6 +407,210 @@ CHGPY
 fi
 CHG_LIT="'$(printf '%s' "$CHG_JSON" | sed "s/'/''/g")'"
 
+# F design 决策落点（design-anchor-tax）：只读扫描活跃 + 窗口内归档 change 的 design.md，
+# 聚合 m7.design_* 指标。口径同 design D1/D3：落点四选一（仓库文件 / 任务 id / Scenario 标题 /
+# 无代码落点 + 承接理由）且必须可解析；空泛表述与同名 basename 歧义不计。不写账本、不新增事件。
+# HARNESS_RETRO_CHANGES_DIR / HARNESS_RETRO_ARCHIVE_DIR 供 smoke 注入 fixture。
+DESIGN_JSON='{}'
+if [ -d "$CHG_DIR" ]; then
+	design_tmp="$(python3 - "$CHG_DIR" "$ARCH_DIR" "$SINCE_DATE" "$REPO_ROOT" <<'DESIGNPY'
+import json, os, re, sys
+
+chg_root, arch_root, since, repo = sys.argv[1:5]
+VAGUE = ('见 tasks', '见tasks', '后续补', '待定', '待补充', 'TBD')
+SKIP_DIRS = {'.git', 'node_modules', 'data', '.nuxt', '.output', 'dist', 'coverage',
+             '.venv', 'venv', '__pycache__', '.pytest_cache', '.cache'}
+_basename_index = None
+
+
+def read(path):
+    try:
+        with open(path, encoding='utf-8') as fh:
+            return fh.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def decision_blocks(text):
+    m = re.search(r'(?m)^##\s+Decisions\s*$', text)
+    if not m:
+        return []
+    rest = text[m.end():]
+    nxt = re.search(r'(?m)^##\s+', rest)
+    if nxt:
+        rest = rest[:nxt.start()]
+    return re.split(r'(?m)^###\s+', rest)[1:]
+
+
+def task_ids(change_dir):
+    text = read(os.path.join(change_dir, 'tasks.md')) or ''
+    ids = set()
+    for line in text.split('\n'):
+        m = re.match(r'^\s*-\s\[[ x]\]\s*(\d+(?:\.\d+)+)\b', line)
+        if m:
+            ids.add(m.group(1))
+    return ids
+
+
+def scenario_titles(change_dir):
+    titles = set()
+    specs = os.path.join(change_dir, 'specs')
+    for root, _dirs, files in os.walk(specs):
+        for fn in files:
+            if not fn.endswith('.md'):
+                continue
+            text = read(os.path.join(root, fn)) or ''
+            for m in re.finditer(r'(?m)^#{2,6}\s+Scenario:\s*(.+?)\s*$', text):
+                titles.add(m.group(1).strip())
+    return titles
+
+
+def basename_index():
+    global _basename_index
+    if _basename_index is None:
+        idx = {}
+        for root, dirs, files in os.walk(repo):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            for fn in files:
+                full = os.path.join(root, fn)
+                if within_repo(full):
+                    idx.setdefault(fn, []).append(full)
+        _basename_index = idx
+    return _basename_index
+
+
+def within_repo(full):
+    root = os.path.realpath(repo)
+    target = os.path.realpath(full)
+    return target == root or target.startswith(root + os.sep)
+
+
+def resolve_file(tok):
+    path, _, symbol = tok.partition(':')
+    path = path.strip('`\'"()[]{}<>，。；、,;!?！？*_')
+    if not path or path in VAGUE:
+        return False
+    if os.path.isabs(path):
+        cands = [path] if within_repo(path) and os.path.isfile(path) else []
+    elif os.path.isfile(os.path.join(repo, path)) and within_repo(os.path.join(repo, path)):
+        cands = [os.path.join(repo, path)]
+    elif '/' not in path:
+        cands = basename_index().get(path, [])
+    else:
+        cands = []
+    if len(cands) != 1:
+        return False
+    if symbol:
+        body = read(cands[0])
+        if body is None or symbol not in body:
+            return False
+    return True
+
+
+def landing_resolves(text, tids, scenes):
+    """落点行是否至少有一个可解析的承接物（四选一）。"""
+    if not text:
+        return False
+    concrete = False
+    code = re.search(r'无代码落点\s*[:：]?\s*(.*)$', text)
+    if code:
+        body = code.group(1).strip()
+        for marker in ('因为', '理由'):
+            if marker in body:
+                artifact, reason = body.split(marker, 1)
+                reason = reason.strip(' ：:，,。.')
+                if artifact.strip(' ：:，,。.') and len(reason) >= 2:
+                    return True
+    for tok in (re.findall(r'[A-Za-z0-9_./:\-]+', text)
+                + re.findall(r'[A-Za-z0-9_./:\-\u4e00-\u9fff]+', text)):
+        if resolve_file(tok):
+            concrete = True
+            break
+    if not concrete:
+        for tid in re.findall(r'(?<![\d.])(\d+\.\d+)(?![\d.])', text):
+            if tid in tids:
+                concrete = True
+                break
+    if not concrete:
+        for title in re.findall(r'Scenario\s*[「“"]([^」”"]+)[」”"]', text):
+            if title.strip() in scenes:
+                concrete = True
+                break
+    return concrete
+
+
+changes = []
+try:
+    entries = sorted(os.listdir(chg_root))
+except OSError:
+    entries = []
+for e in entries:
+    if e == 'archive' or not os.path.isdir(os.path.join(chg_root, e)):
+        continue
+    changes.append((e, os.path.join(chg_root, e)))
+try:
+    arch_entries = sorted(os.listdir(arch_root))
+except OSError:
+    arch_entries = []
+for e in arch_entries:
+    m = re.match(r'^(\d{4}-\d{2}-\d{2})-(.+)$', e)
+    if m and m.group(1) >= since:
+        changes.append((m.group(2), os.path.join(arch_root, e)))
+
+designs = 0
+decisions = 0
+landed = 0
+alt = 0
+words = []
+for name, cdir in changes:
+    text = read(os.path.join(cdir, 'design.md'))
+    if text is None:
+        continue
+    designs += 1
+    tids = task_ids(cdir)
+    scenes = scenario_titles(cdir)
+    for blk in decision_blocks(text):
+        decisions += 1
+        body = blk.split('\n', 1)[1] if '\n' in blk else ''
+        words.append(len(re.sub(r'\s+', '', body)))
+        ltxt = None
+        atxt = None
+        for line in blk.split('\n'):
+            m = re.match(r'^\s*[-*]?\s*\*{0,2}落点\*{0,2}\s*[:：]\s*(.*)$', line)
+            if m and ltxt is None:
+                ltxt = m.group(1).strip()
+            m = re.match(r'^\s*[-*]?\s*\*{0,2}取舍\*{0,2}\s*[:：]\s*(.*)$', line)
+            if m and atxt is None:
+                atxt = m.group(1).strip()
+        if landing_resolves(ltxt if ltxt is not None else body, tids, scenes):
+            landed += 1
+        if atxt or re.search(r'替代方案|备选方案|备选|rather than|instead of|否决', body):
+            alt += 1
+
+def nearest_rank(values, pct):
+    if not values:
+        return None
+    ordered = sorted(values)
+    idx = max(0, (len(ordered) * pct + 99) // 100 - 1)
+    return ordered[min(idx, len(ordered) - 1)]
+
+out = {
+    'designs': designs,
+    'decisions': decisions,
+    'landed': landed,
+    'alt': alt,
+    'words_p50': nearest_rank(words, 50),
+    'words_p75': nearest_rank(words, 75),
+}
+print(json.dumps(out, ensure_ascii=False))
+DESIGNPY
+)"
+	case "$design_tmp" in
+	'{'*'}') DESIGN_JSON="$design_tmp" ;;
+	esac
+fi
+DESIGN_LIT="'$(printf '%s' "$DESIGN_JSON" | sed "s/'/''/g")'"
+
 # 测试欠账巡检（test-debt-patrol）：test_debt 表可能不存在（老库/纯净库）或列结构变动——
 # 只读 SQL 引用缺表会让整段统计报错，故先用 pragma_table_info 探列，再决定用真表还是占位常量（降级不报错）。
 PATROL_DEBT_OK=0
@@ -471,8 +679,9 @@ term AS (
     (SELECT COUNT(*) FROM events WHERE kind='change.abandon' AND COALESCE(NULLIF(change,''), json_extract(payload,'$.name')) = ${NAME_LIT}) AS abandon_n
 ),
 sess AS (SELECT COUNT(DISTINCT session_id) n, MAX(ts) last_ts FROM ev),
-mode_seq AS (SELECT ts, session_id, json_extract(payload,'$.mode') m, json_extract(payload,'$.source') src FROM ev WHERE kind='mode.set' ORDER BY id),
-mode_by AS (SELECT json_extract(payload,'$.mode') m, COUNT(*) n FROM ev WHERE kind='mode.set' GROUP BY 1),
+stage_seq AS (SELECT ts, session_id, json_extract(payload,'$.stage') st, json_extract(payload,'$.stageFamily') fam, json_extract(payload,'$.source') src FROM ev WHERE kind='stage.set' AND json_extract(payload,'$.stage') IS NOT NULL ORDER BY id),
+stage_by AS (SELECT json_extract(payload,'$.stage') st, COUNT(*) n FROM ev WHERE kind='stage.set' AND json_extract(payload,'$.stage') IS NOT NULL GROUP BY 1),
+stage_legacy_unknown AS (SELECT COUNT(*) n FROM ev WHERE kind='mode.set'),
 inj AS (SELECT COALESCE(json_extract(payload,'$.reason'),'(无 reason)') reason, COUNT(*) n, IFNULL(SUM(CAST(json_extract(payload,'$.bytes') AS INTEGER)),0) b FROM ev WHERE kind='constraint.inject' GROUP BY 1 ORDER BY n DESC),
 pinw AS (SELECT COUNT(*) n FROM ev WHERE kind='pin.write'),
 pinr AS (SELECT COUNT(*) n FROM ev WHERE kind='pin.read'),
@@ -520,7 +729,8 @@ disp_e AS (SELECT d.id, d.ts, d.session_id FROM events d JOIN chg_sess s ON d.se
 arch_e AS (SELECT id, ts FROM events WHERE kind='change.archive' AND COALESCE(NULLIF(change,''), json_extract(payload,'$.name')) = ${NAME_LIT}),
 pb AS (SELECT id, ts, session_id, json_extract(payload,'$.policy') policy FROM ev WHERE kind='policy.decision' AND json_valid(payload)
   AND json_extract(payload,'$.action') IN ('block','warn')
-  AND json_extract(payload,'$.policy') IN ('ui-design-gate','quota-gate','spec-gate')),
+  AND json_extract(payload,'$.policy') IN ('ui-design-gate','quota-gate','spec-gate')
+  AND COALESCE(json_extract(payload,'$.reasonCode'),'') NOT IN ('ui-stage-missing','ui-stage-invalid','ui-stage-scope-out')),
 uipass AS (SELECT id, ts FROM uip WHERE action='pass'),
 pr AS (SELECT b.policy,
     CASE b.policy
@@ -541,15 +751,16 @@ q_rep AS (SELECT v, ROW_NUMBER() OVER (ORDER BY v) rn, COUNT(*) OVER () n FROM (
 rv_disp AS (SELECT json_extract(payload,'$.type') typ, json_extract(payload,'$.desc') dsc
   FROM ev WHERE kind='subagent.dispatch' AND json_valid(payload)),
 rv_cls AS (SELECT CASE WHEN dsc IS NOT NULL AND dsc LIKE '%修复%' THEN 'repair'
-    WHEN typ = 'change-review-glm' OR (dsc LIKE '%review%' OR dsc LIKE '%审查%') THEN 'review'
+    WHEN typ IN ('change-review-glm', 'change-review') OR (dsc LIKE '%review%' OR dsc LIKE '%审查%') THEN 'review'
     ELSE 'other' END cls FROM rv_disp)
 SELECT json_object(
   'name', ${NAME_LIT},
   'terminal', json_object('arch_ts',(SELECT arch_ts FROM term),'arch_n',(SELECT arch_n FROM term),'abandon_ts',(SELECT abandon_ts FROM term),'abandon_n',(SELECT abandon_n FROM term)),
   'sessions', json_object('total',(SELECT n FROM sess),'last_activity',(SELECT last_ts FROM sess)),
   'flow', json_object(
-    'mode_seq', (SELECT json_group_array(json_object('ts',ts,'session',session_id,'mode',m,'source',src)) FROM mode_seq),
-    'mode_by', (SELECT json_group_array(json_object('mode',m,'n',n)) FROM mode_by),
+    'stage_seq', (SELECT json_group_array(json_object('ts',ts,'session',session_id,'stage',st,'stageFamily',fam,'source',src)) FROM stage_seq),
+    'stage_by', (SELECT json_group_array(json_object('stage',st,'n',n)) FROM stage_by),
+    'stage_legacy_unknown', (SELECT IFNULL(n,0) FROM stage_legacy_unknown),
     'inject', (SELECT json_group_array(json_object('reason',reason,'n',n,'bytes',b)) FROM inj),
     'pin', json_object('write',(SELECT n FROM pinw),'read',(SELECT n FROM pinr)),
     'emap', json_object('paths',(SELECT n FROM emap_last),'snaps',(SELECT n FROM emap_snaps),'last_ts',(SELECT ts FROM emap_last)),
@@ -786,14 +997,20 @@ if empty:
     out.append('该 change 名下无任何事件且无终态锚点：各段降级为缺席标注（可能从未启动，或事件已过 TTL 30 天保留期）。')
 else:
     # ---- 一、流程规范段 ----
-    out.append('一、流程规范段（档位绑定 → 约束注入 → pin 接力 → 编辑归属 → 门禁执行 → 终态锚点）')
-    ms = flow.get('mode_seq') or []
+    out.append('一、流程规范段（阶段绑定 → 约束注入 → pin 接力 → 编辑归属 → 门禁执行 → 终态锚点）')
+    # 阶段统计口径（stage-driven-constraint-injection D7/4.5）：读 stage.set 的
+    # stage/stageFamily 字段；**历史 mode.set 行计「未知」并从分母剔除**（写侧已停写，
+    # 30 天保留期自然消退）。
+    ms = flow.get('stage_seq') or []
+    legacy_unknown = flow.get('stage_legacy_unknown') or 0
+    legacy_note = '（另有 %d 次历史 mode.set 计「未知」，不计分母）' % legacy_unknown if legacy_unknown else ''
     if ms:
-        out.append('   档位绑定        : %d 次 mode.set（%s）' % (
+        out.append('   阶段绑定        : %d 次 stage.set%s（%s）' % (
             len(ms),
-            ' / '.join('%s@%s' % ((it.get('mode') or '?'), (it.get('ts') or '')[5:16]) for it in ms[:6]) + (' …' if len(ms) > 6 else '')))
+            legacy_note,
+            ' / '.join('%s@%s' % ((it.get('stage') or '?'), (it.get('ts') or '')[5:16]) for it in ms[:6]) + (' …' if len(ms) > 6 else '')))
     else:
-        out.append('   档位绑定        : 无 mode.set 记录（requirements 档未激活，或已过保留期）')
+        out.append('   阶段绑定        : 无 stage.set 记录（阶段未激活，或已过保留期）%s' % legacy_note)
     inj = flow.get('inject') or []
     if inj:
         _n = sum(it['n'] for it in inj)
@@ -1074,6 +1291,35 @@ inj_raw AS (SELECT COALESCE(change,'') chg,
 inj_sess AS (SELECT session_id, IFNULL(SUM(CAST(CASE WHEN json_valid(payload) THEN json_extract(payload,'$.bytes') END AS INTEGER)),0) b
   FROM win WHERE kind='constraint.inject' GROUP BY 1), -- 混合通道下同 path 不重复记，直接求和（win 直取：inj CTE 无 session_id 列）
 inj_deg AS (SELECT COUNT(*) n FROM win WHERE kind='constraint.inject' AND json_valid(payload) AND json_extract(payload,'$.degraded')=1),
+/* ⑦H 无档 JIT（enable-unbound-jit-injection D5）：reason=jit-path 且 tier=none 的编辑路径命中注入。
+   口径：按 tier 分组不与有档 JIT 混算；历史无 tier 字段计「未知」并剔除分母；
+   compact 重发（source=compact-resend）计入注入条数但不重复计会话；
+   域名只取 path 以 docs/reference/flow/ 开头的条目（standard 文档计非业务域）；
+   同一会话同一 path 只计一次（去重后算域数）；bytes 为**送达字节**（不统计原始字节）。 */
+uj_raw AS (
+  SELECT session_id,
+         CASE WHEN json_valid(payload) THEN json_extract(payload,'$.path') END     AS path,
+         CASE WHEN json_valid(payload) THEN json_extract(payload,'$.bytes') END    AS bytes,
+         CASE WHEN json_valid(payload) THEN json_extract(payload,'$.degraded') END AS degraded,
+         CASE WHEN json_valid(payload) THEN json_extract(payload,'$.source') END   AS source,
+         CASE WHEN json_valid(payload) THEN json_extract(payload,'$.tier') END     AS tier
+  FROM win WHERE kind='constraint.inject' AND json_valid(payload)
+    AND json_extract(payload,'$.reason')='jit-path'
+),
+uj_none AS (SELECT * FROM uj_raw WHERE tier='none'),
+uj_sum AS (SELECT COUNT(*) n FROM uj_none),
+uj_sess AS (SELECT COUNT(DISTINCT session_id) n FROM uj_none),
+uj_bytes AS (SELECT IFNULL(SUM(CAST(bytes AS INTEGER)),0) b FROM uj_none),
+uj_deg AS (SELECT COUNT(*) n FROM uj_none WHERE degraded IN (1,'true')),
+uj_unknown AS (SELECT COUNT(*) n FROM uj_raw WHERE tier IS NULL OR tier=''),
+uj_tier AS (SELECT COALESCE(NULLIF(tier,''),'(未知)') tier, COUNT(*) n FROM uj_raw GROUP BY 1),
+uj_sess_dom AS (
+  SELECT s.session_id, COUNT(DISTINCT u.path) n
+  FROM (SELECT DISTINCT session_id FROM uj_none) s
+  LEFT JOIN uj_none u ON u.session_id=s.session_id AND u.path LIKE 'docs/reference/flow/%'
+  GROUP BY s.session_id
+),
+uj_dom_avg AS (SELECT CASE WHEN COUNT(*)>0 THEN SUM(n)*1.0/COUNT(*) ELSE 0 END v FROM uj_sess_dom),
 pw AS (SELECT COUNT(*) n FROM win WHERE kind='pin.write'),
 prd AS (SELECT COUNT(*) n FROM win WHERE kind='pin.read'),
 gseq AS (SELECT session_id, cmd, ok, ts,
@@ -1088,7 +1334,8 @@ repair_gate AS (SELECT (julianday(nts)-julianday(ts))*86400.0 AS sec FROM gseq W
 pb AS (SELECT id, ts, session_id, change, json_extract(payload,'$.policy') policy
   FROM win WHERE kind='policy.decision' AND json_valid(payload)
   AND json_extract(payload,'$.action') IN ('block','warn')
-  AND json_extract(payload,'$.policy') IN ('ui-design-gate','quota-gate','spec-gate')),
+  AND json_extract(payload,'$.policy') IN ('ui-design-gate','quota-gate','spec-gate')
+  AND COALESCE(json_extract(payload,'$.reasonCode'),'') NOT IN ('ui-stage-missing','ui-stage-invalid','ui-stage-scope-out')),
 pass_e AS (SELECT id, ts, change FROM win WHERE kind='policy.decision' AND json_valid(payload)
   AND json_extract(payload,'$.policy')='ui-design-gate' AND json_extract(payload,'$.action')='pass'),
 disp_e AS (SELECT id, ts, session_id FROM win WHERE kind='subagent.dispatch' AND json_valid(payload)
@@ -1139,6 +1386,19 @@ sub_one AS (SELECT aid, (SELECT x.t FROM sub_pairs x WHERE x.aid=s.aid AND x.t I
       ORDER BY CASE WHEN x.kind='subagent.complete' THEN 1 ELSE 0 END DESC, x.id DESC LIMIT 1) t
   FROM (SELECT DISTINCT aid FROM sub_pairs) s),
 sub_sum AS (SELECT IFNULL(SUM(t),0) s, COUNT(t) n FROM sub_one WHERE t IS NOT NULL),
+/* 派发带域比例（add-dispatch-constraint-digest D5/D7）：present/(present+absent)。
+   三态解析：payload 非法 / 缺 constraintDigest 键 / 值不在枚举内 → 一律计「未知」并剔除分母，
+   绝不回溯记 absent（否则把改造前的历史派发算成「遗漏」）；ratio 与报告其余百分比同口径（整数百分比）。 */
+disp_dig_raw AS (SELECT CASE WHEN json_valid(payload) THEN json_extract(payload,'\$.constraintDigest') END AS digest
+  FROM win WHERE kind='subagent.dispatch'),
+disp_dig AS (SELECT
+    IFNULL(SUM(CASE WHEN digest='present' THEN 1 ELSE 0 END),0) AS present,
+    IFNULL(SUM(CASE WHEN digest='absent' THEN 1 ELSE 0 END),0) AS absent,
+    IFNULL(SUM(CASE WHEN digest IS NULL OR digest NOT IN ('present','absent') THEN 1 ELSE 0 END),0) AS unknown
+  FROM disp_dig_raw),
+disp_dig_x AS (SELECT present, absent, unknown, (present+absent) AS decidable,
+    CASE WHEN (present+absent) > 0 THEN (present*200 + (present+absent)) / (2*(present+absent)) END AS ratio
+  FROM disp_dig),
 ru_sum AS (SELECT IFNULL(SUM(tok),0) s FROM ru_t),
 ru_chg AS (SELECT chg, SUM(tok) tok, SUM(cost) cost, SUM(turns) turns FROM ru_t WHERE chg != '' GROUP BY 1),
 top_chg AS (SELECT chg, tok, cost FROM ru_chg ORDER BY tok DESC LIMIT 5),
@@ -1296,6 +1556,13 @@ SELECT json_object(
       'samples', (SELECT n FROM sub_sum),
       'rollup_tokens', (SELECT s FROM ru_sum)
     ),
+    'dispatch_digest', json_object(
+      'present', (SELECT present FROM disp_dig_x),
+      'absent', (SELECT absent FROM disp_dig_x),
+      'unknown', (SELECT unknown FROM disp_dig_x),
+      'decidable', (SELECT decidable FROM disp_dig_x),
+      'ratio', (SELECT ratio FROM disp_dig_x)
+    ),
     'waves', json_object(
       'items', (SELECT json_group_array(json_object('path', p, 'sessions', n)) FROM wave)
     ),
@@ -1343,7 +1610,18 @@ SELECT json_object(
           'waves', IFNULL((SELECT w.n FROM chg_wave w WHERE w.chg = j.name), 0)))
         FROM (SELECT json_extract(je.value,'$.name') name, json_extract(je.value,'$.state') state,
               json_extract(je.value,'$.fb') fb FROM json_each(${CHG_LIT}) je) j)
-    )
+    ),
+    'unbound_jit', json_object(
+      'injects', (SELECT IFNULL(n,0) FROM uj_sum),
+      'sessions', (SELECT IFNULL(n,0) FROM uj_sess),
+      'avg_domains', (SELECT IFNULL(v,0) FROM uj_dom_avg),
+      'bytes', (SELECT IFNULL(b,0) FROM uj_bytes),
+      'degraded', (SELECT IFNULL(n,0) FROM uj_deg),
+      'degraded_pct', (SELECT CASE WHEN (SELECT IFNULL(n,0) FROM uj_sum)>0 THEN ((SELECT IFNULL(n,0) FROM uj_deg)*100.0)/(SELECT IFNULL(n,0) FROM uj_sum) ELSE 0 END),
+      'unknown_tier', (SELECT IFNULL(n,0) FROM uj_unknown),
+      'by_tier', (SELECT json_group_array(json_object('tier', tier, 'n', n)) FROM (SELECT tier, n FROM uj_tier ORDER BY tier))
+    ),
+    'design', json(${DESIGN_LIT})
   )
 );
 SQL
@@ -1487,11 +1765,31 @@ metrics.update({
     'm7.sub_samples': _e('subagent.samples'),
     'm7.wave_files': len(_e('waves.items') or []),
     'm7.archive_retry_changes': len(_e('archive_retry.items') or []),
+    # ⑦H 无档 JIT（enable-unbound-jit-injection D5）：按 tier 分组的无档编辑路径命中
+    'm7.unbound_jit_injects': _e('unbound_jit.injects'),
+    'm7.unbound_jit_sessions': _e('unbound_jit.sessions'),
+    'm7.unbound_jit_avg_domains': _e('unbound_jit.avg_domains'),
+    'm7.unbound_jit_bytes': _e('unbound_jit.bytes'),
+    'm7.unbound_jit_degraded_pct': _e('unbound_jit.degraded_pct'),
+    'm7.unbound_jit_unknown_tier': _e('unbound_jit.unknown_tier'),
+})
+
+# 派发带域比例（add-dispatch-constraint-digest D5/D7）：分母=present+absent，未知剔除分母；
+# 嵌套键 m7.dispatch_digest 含 present/absent/unknown/decidable/ratio，另出扁平标量键供基线差值可比。
+_ddg = _e('dispatch_digest') or {}
+metrics.update({
+    'm7.dispatch_digest': _ddg if _ddg else None,
+    'm7.dispatch_digest_present': _ddg.get('present'),
+    'm7.dispatch_digest_absent': _ddg.get('absent'),
+    'm7.dispatch_digest_unknown': _ddg.get('unknown'),
+    'm7.dispatch_digest_decidable': _ddg.get('decidable'),
+    'm7.dispatch_digest_ratio': _ddg.get('ratio'),
 })
 
 # B' 每任务成本（task-cost-metrics）：分布 + 分桶 + 不可归因披露；旧库无 task_cost 段时全 None
 _tc = _e('task_cost') or {}
 _lc = _e('lifecycle.changes') or []
+_ds = _e('design') or {}
 _by_model = {it['model']: it.get('cost') for it in (_tc.get('by_model') or [])}
 if _tc.get('unmodel_cost') is not None:
     _by_model['(未分模型)'] = _tc.get('unmodel_cost')
@@ -1511,6 +1809,10 @@ metrics.update({
 'm7.lifecycle_fb': sum(1 for c in _lc if c.get('fb')),
 'm7.lifecycle_fb_open': sum((c.get('fb') or {}).get('open') or 0 for c in _lc),
 'm7.lifecycle_miss_signals': sum(1 for c in _lc if (c.get('waves') or 0) >= 3 and not c.get('fb')),
+'m7.design_decisions': _ds.get('decisions'),
+'m7.design_landing_rate': _pct(_ds.get('landed') or 0, _ds.get('decisions') or 0),
+'m7.design_words_per_decision': _ds.get('words_p50'),
+'m7.design_alt_rate': _pct(_ds.get('alt') or 0, _ds.get('decisions') or 0),
 })
 
 # ⑧/D 组：测试欠账巡检（test-debt-patrol；patrol.check 流水 + test_debt 台账，缺表/零事件时 None）
@@ -1884,6 +2186,63 @@ else:
         out.append('     漏采信号          : 无（高波次 change 均有反馈账或无 ≥3 波次 change）')
     if bad_n:
         out.append('     格式异常          : %s 条（词表外/缺状态行，单列披露不炸段）' % bad_n)
+
+    # F design 决策落点（design-anchor-tax：模板/review 改动前后准 A/B；只读，不做硬门禁）
+    out.append('   F design 决策落点（准 A/B，只读：活跃 + 窗口内归档 change 的 design.md）')
+    _dds = _ds.get('decisions') or 0
+    out.append('     样本              : %s 份 design / %s 条 Decision' % (_ds.get('designs') or 0, _dds))
+    if _dds:
+        _lr = _pct(_ds.get('landed') or 0, _dds)
+        _ar = _pct(_ds.get('alt') or 0, _dds)
+        out.append('     落点率            : %s%%（可解析 %s / %s；空泛落点与同名歧义不计）'
+                   % ('—' if _lr is None else _lr, _ds.get('landed') or 0, _dds))
+        out.append('     每决策字数        : P50 %s / P75 %s（Decision 正文非空白字符数）'
+                   % (_ds.get('words_p50'), _ds.get('words_p75')))
+        out.append('     取舍率            : %s%%（显式取舍行或正文替代方案表述 %s / %s）'
+                   % ('—' if _ar is None else _ar, _ds.get('alt') or 0, _dds))
+    else:
+        out.append('     落点率 / 字数     : —（窗口内无 Decision，不用 0% 冒充）')
+    out.append('     回检键            : m7.design_decisions / m7.design_landing_rate / m7.design_words_per_decision / m7.design_alt_rate')
+    out.append('     口径              : 落点=文件（全路径/唯一 basename，符号可检索）/任务 id/Scenario 标题/无代码落点+承接理由；只用于准 A/B，不合成 KPI')
+
+    # G 派发带域比例（add-dispatch-constraint-digest D7）：present/(present+absent)，未知剔除分母
+    _dp = _ddg.get('present') or 0
+    _da = _ddg.get('absent') or 0
+    _du = _ddg.get('unknown') or 0
+    _dd = _ddg.get('decidable')
+    if _dd is None:
+        _dd = _dp + _da
+    _dr = _ddg.get('ratio')
+    if _dr is None and _dd:
+        _dr = _pct(_dp, _dd)
+    out.append('   G 派发带域比例（subagent.dispatch 约束摘要 present / absent / 未知 三态）')
+    if _dd:
+        out.append('     派发带域比例        : %d%%（present %s / 可判定 %s，未知 %s 条）'
+                   % (_dr, _dp, _dd, _du))
+    else:
+        out.append('     派发带域比例        : 无可判定派发（present %s / 可判定 %s，未知 %s 条）'
+                   % (_dp, _dd, _du))
+    out.append('     口径                : 窗口内全部 subagent.dispatch 记录（含失败派发）；分母=present+absent（未知不计分母）；未知=改造前无 constraintDigest 字段的历史记录')
+    out.append('     回检键            : m7.dispatch_digest_ratio / m7.dispatch_digest_present / m7.dispatch_digest_unknown')
+
+    # H 无档 JIT（enable-unbound-jit-injection D5）：未激活档按编辑路径自愈的注入面
+    _uj = _e('unbound_jit') or {}
+    _uj_n = _uj.get('injects') or 0
+    _uj_deg = _uj.get('degraded') or 0
+    _uj_pct = _uj.get('degraded_pct') or 0
+    out.append('   H 无档 JIT（reason=jit-path 且 tier=none 的编辑路径命中注入）')
+    out.append('     注入条数            : %d 条' % _uj_n)
+    out.append('     会话数              : %d 个' % (_uj.get('sessions') or 0))
+    out.append('     平均域数            : %s 域/会话' % (_uj.get('avg_domains') or 0))
+    out.append('     送达字节            : %d B' % (_uj.get('bytes') or 0))
+    out.append('     降级占比            : %d%%（%d / %d 条）' % (int(_uj_pct), _uj_deg, _uj_n))
+    out.append(
+        '     口径                : 按 tier 分组不与有档 JIT 混算；历史无 tier 计「未知」并剔除分母（本窗口 %s 条）；'
+        'compact 重发计入条数不重计会话；域数只算 path 以 docs/reference/flow/ 开头的条目（standard 计非业务域），'
+        '同一会话同一 path 只计一次；字节为**送达字节**（payload bytes，非原始字节）'
+        % (_uj.get('unknown_tier') or 0)
+    )
+    out.append('     回检键            : m7.unbound_jit_injects / m7.unbound_jit_sessions / m7.unbound_jit_avg_domains / m7.unbound_jit_bytes / m7.unbound_jit_degraded_pct')
     out.append('')
 
 if baseline_diff is not None:

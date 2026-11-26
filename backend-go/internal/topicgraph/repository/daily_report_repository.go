@@ -46,6 +46,31 @@ type ReportListItem struct {
 
 // ListReports returns recent reports for a board.
 
+// TodayReportBrief is a light projection for the reading-desk left queue
+// ("今天已有日报的版块") — no sections/threads payload.
+type TodayReportBrief struct {
+	ReportID        uint   `json:"report_id"`
+	SemanticBoardID uint   `json:"semantic_board_id"`
+	PeriodDate      string `json:"period_date"`
+	Title           string `json:"title"`
+	Status          string `json:"status"`
+}
+
+// ListTodayReportBriefs returns one row per board that has a report on `date`
+// (YYYY-MM-DD, local calendar day). Read-only.
+func (r *TopicGraphRepository) ListTodayReportBriefs(date string) ([]TodayReportBrief, error) {
+	var rows []TodayReportBrief
+	err := r.db.Model(&BoardDailyReport{}).
+		Select("id AS report_id, semantic_board_id, to_char(period_date, 'YYYY-MM-DD') AS period_date, title, status").
+		Where("period_date = ?", date).
+		Order("semantic_board_id ASC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("list today report briefs: %w", err)
+	}
+	return rows, nil
+}
+
 // ListReportsForAllBoards returns reports for all boards within a date range.
 
 func NormalizeReportDate(date time.Time) time.Time {
@@ -69,8 +94,12 @@ type SectionTimelineNode struct {
 	QualityBreakdown json.RawMessage `json:"quality_breakdown"`
 	// Persistent topic assignment. All optional so historical / unmatched
 	// sections (persistent_topic_id IS NULL) still serialize cleanly.
-	PersistentTopicID    *uint                 `json:"persistent_topic_id,omitempty"`
-	TopicMatchDistance   float64               `json:"topic_match_distance,omitempty"`
+	PersistentTopicID *uint `json:"persistent_topic_id,omitempty"`
+	// TopicMatchDistance is the anchor distance to the topic centroid. It is
+	// NOT omitempty: a distance of exactly 0 is a legal result (perfect
+	// anchor), and dropping the field would turn it into “unknown” on the
+	// client side (fix-lane-metric-provenance D11).
+	TopicMatchDistance   float64               `json:"topic_match_distance"`
 	TopicMatchConfidence string                `json:"topic_match_confidence,omitempty"`
 	PersistentTopic      *PersistentTopicBrief `json:"persistent_topic,omitempty"`
 }
@@ -105,6 +134,11 @@ type SectionRelationResult struct {
 type SectionTimelineResponse struct {
 	Sections  []SectionTimelineNode   `json:"sections"`
 	Relations []SectionRelationResult `json:"relations"`
+	// KeyEvents carries the topic's CONFIRMED key-event markers (lifeline
+	// optional nodes — add-topic-key-event-markers persistent-topic spec).
+	// Optional for backward compatibility: only GetTopicLifeline fills it;
+	// snapshot nodes never occupy real section IDs or alter relations.
+	KeyEvents []TopicKeyEventMarker `json:"key_events,omitempty"`
 }
 
 // DeriveSectionStatuses computes status for each section based on its relation graph.
@@ -178,6 +212,21 @@ func DeriveSectionStatuses(sectionIDs []uint, relations []SectionRelationResult,
 // Daily Report Repository
 // =============================================================================
 
+// dailyReportSaveXactKey derives the (board, date)-scoped transaction-level
+// advisory-lock key for SaveReport (fix-daily-report-cross-process-gate
+// D4/D5): boardID<<32 | epochDay. Same board+date serializes (a concurrent
+// writer waits, then takes the Updates-overwrite path); different boards or
+// dates never contend. The key value domain is disjoint in practice from
+// the generation-gate session key (0x1E8AB706E13C7691) — reaching it would
+// require boardID ≈ 5.1e8, far beyond the ~2.5e5 live IDs.
+// Assumes boardID < 2^31 (declared range assumption; enforced by nothing —
+// revisit if board IDs ever approach 2^31).
+func dailyReportSaveXactKey(boardID uint, date time.Time) int64 {
+	epochDay := date.Unix() / 86400
+	//nolint:gosec // G115: boardID < 2^31 (declared range assumption above), so boardID<<32 fits int64
+	return int64(uint64(boardID)<<32 | (uint64(epochDay) & 0xFFFFFFFF))
+}
+
 // SaveReport saves a daily report and its sections, replacing any existing
 // report for the same board and date.
 func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []DailyReportSection, threadBatches [][]DailyReportThread) error {
@@ -186,7 +235,25 @@ func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []D
 	// centroid/vacuum refresh (which reads via r.db and must see committed
 	// sections) knows which topics changed.
 	var touchedTopicIDs []uint
+	// Story identity is permanently retired (retire-story-adopt-event-metrics
+	// review R-1/R-2): this path no longer collects the story lines whose
+	// threads disappear on a rebuild, and no longer recomputes story_signals /
+	// participant_count after commit. board_stories / story_signals are read-only
+	// history now — a rerun of a pre-retirement report must not touch them.
 	err := r.db.Transaction(func(tx *gorm.DB) error {
+		// (board, date)-scoped serialization (fix-daily-report-cross-process-
+		// gate D4): the generation gate (D1) already prevents double-runs; this
+		// transaction-level advisory lock is defense in depth for the gate's
+		// failure windows (DB-unreachable fallback / crashed-instance overlap)
+		// — a concurrent same-board-same-date writer waits here instead of
+		// racing the find-then-insert below into the unique constraint
+		// (idx_board_daily_reports_board_period, the 2026-10-23 duplicate-key
+		// incident). The lock auto-releases with the transaction commit/roll-
+		// back; different boards/dates never block each other.
+		if lockErr := tx.Exec("SELECT pg_advisory_xact_lock(?)",
+			dailyReportSaveXactKey(report.SemanticBoardID, report.PeriodDate)).Error; lockErr != nil {
+			return fmt.Errorf("acquire save advisory lock: %w", lockErr)
+		}
 		// Upsert report: find existing by (semantic_board_id, period_date)
 		var existing BoardDailyReport
 		findErr := tx.Where("semantic_board_id = ? AND period_date = ?",
@@ -301,6 +368,22 @@ func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []D
 			}
 		}
 
+		// Key-event marker re-anchoring (add-topic-key-event-markers D1): the
+		// rebuild above deleted old threads/sections (marker source FKs went
+		// NULL via ON DELETE SET NULL). Markers whose source fingerprint
+		// matches a newly inserted thread EXACTLY re-anchor onto it; anything
+		// else stays a detached snapshot. Same transaction as the rebuild —
+		// failure aborts the save (no half-linked state).
+		if err := ReAttachKeyEventMarkers(tx, report.SemanticBoardID, report.PeriodDate, sections, threadBatches); err != nil {
+			return fmt.Errorf("re-attach key event markers: %w", err)
+		}
+
+		var revision struct{ UpdatedAt time.Time }
+		if err := tx.Model(&BoardDailyReport{}).Select("updated_at").Where("id = ?", report.ID).Take(&revision).Error; err != nil {
+			return err
+		}
+		report.UpdatedAt = revision.UpdatedAt
+
 		logging.Infof("daily-report: saved report %d for board %d on %s (%d sections)",
 			report.ID, report.SemanticBoardID, report.PeriodDate.Format("2006-01-02"), len(sections))
 		return nil
@@ -309,14 +392,22 @@ func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []D
 		return err
 	}
 
+	// Retired (review R-2): the post-commit story_signals / participant_count
+	// recompute for lines whose threads were deleted by this rebuild is gone.
+	// It was the last non-test writer of story-derived data; keeping it would let
+	// a rerun of a pre-retirement report rewrite the read-only history.
+
 	// Post-commit refresh: centroids + vacuum stats. Both read via r.db, so they
 	// must run AFTER the transaction commits (sections + persistent_topic_id
 	// are otherwise invisible to ComputeTopicCentroid's r.db query). Best-effort:
 	// a failure degrades to a stale centroid/vacuum flag, not a save failure.
-	for _, tid := range touchedTopicIDs {
-		if cerr := r.UpdateCentroidOnSectionChange(nil, tid); cerr != nil {
-			logging.Warnf("SaveReport: centroid refresh failed for topic %d: %v", tid, cerr)
-		}
+	//
+	// 质心刷新范围 =「当日 touched 话题 ∪ centroid_pending_recompute=true 的话题」
+	// （lane-manual-correction D2）：人工修正过的泳道即使当天没有新内容命中，
+	// 也会被纳入本轮重算——否则改了首义/剔除了节点的泳道永远等不到重算，
+	// 修正落不下去。重算成功清标记，失败保留待下次重试，单话题失败不中断其余。
+	if updated, failed := r.RefreshBoardCentroids(report.SemanticBoardID, touchedTopicIDs); failed > 0 {
+		logging.Warnf("SaveReport: centroid refresh failed for %d of %d topic(s) on board %d", failed, updated+failed, report.SemanticBoardID)
 	}
 	if verr := r.RecomputeVacuumStats(report.SemanticBoardID); verr != nil {
 		logging.Warnf("SaveReport: vacuum stats recompute failed for board %d: %v", report.SemanticBoardID, verr)
@@ -325,11 +416,22 @@ func (r *TopicGraphRepository) SaveReport(report *BoardDailyReport, sections []D
 }
 
 // GetReportByID retrieves a single daily report by its primary key.
+//
+// Threads preload is body-only (add-event-story-heat tasks 6.2: 本期选择
+// 「丢弃」): cross-period 重述 threads carry display_tier='flash' and stay
+// out of the body render — spec allows 快讯或丢弃, the flash lane UI is
+// future work, the column stays queryable for it. Callers were audited
+// before filtering here: the report detail handler (the reader this filter
+// targets), key-event markers handler + margin-notes handler (existence
+// checks only, threads unused), and tests. Threads read by OTHER paths
+// (matrix / heat / key-event recommendation via their own SQL, watch text
+// lookups) are deliberately NOT tier-filtered — identity and heat never
+// depend on the display tier.
 func (r *TopicGraphRepository) GetReportByID(id uint) (*BoardDailyReport, error) {
 	var report BoardDailyReport
 	err := r.db.Where("id = ?", id).
 		Preload("Sections.Threads", func(db *gorm.DB) *gorm.DB {
-			return db.Order("id ASC")
+			return db.Where("display_tier = ?", ThreadDisplayTierBody).Order("id ASC")
 		}).
 		Preload("Sections", func(db *gorm.DB) *gorm.DB {
 			return db.Order("cluster_index ASC")
@@ -353,7 +455,149 @@ func (r *TopicGraphRepository) GetReportByID(id uint) (*BoardDailyReport, error)
 			report.Sections[i].Threads = []DailyReportThread{}
 		}
 	}
+	// 读路径折叠同内容副本（dedupe-thread-article-copies D1/D4）：同一篇内容
+	// 被两个 feed 各抓一份时，线索的 related_article_ids 会挂两行，读者看到
+	// 「同一篇稿出现两次」。折叠只作用于响应投影，落库值仍是 tag_ids 对应文章
+	// 的并集（红线 45）。
+	report.Sections = r.foldSectionArticleCopies(report.Sections)
+	// 线索文章的判定字段投影（add-ai-generated-article-detection 4.6）：展开线索文章
+	// 时前端要呈现「疑似 AI 生成」标记。投影只读、只补字段，成员与顺序跟
+	// related_article_ids 一致（红线 45）。
+	r.attachThreadArticleProjections(report.Sections)
+	// Same contract for highlights: rows written before the array contract
+	// (2026-11-03 and earlier) hold a JSON null scalar or SQL NULL, which the
+	// frontend reads as "no content" and hides the whole "今日重点" block.
+	normalizeHighlightsArray(&report.Highlights)
+	if err := r.resolveReportHighlightClusters(&report); err != nil {
+		return nil, err
+	}
 	return &report, nil
+}
+
+// foldSectionArticleCopies 把各 section 线索下的「同一篇内容副本」折叠掉
+// （dedupe-thread-article-copies D1/D4）：一次批量取回本报告引用的全部文章
+// link，在内存里按归一 link 折叠，只留首个出现（保序）。
+//
+// link 取不到时降级为原样返回（不折叠、不阻断详情接口）——详情页宁可多显示
+// 一条重复，也不整页失败。
+func (r *TopicGraphRepository) foldSectionArticleCopies(sections []DailyReportSection) []DailyReportSection {
+	articleIDs := collectThreadArticleIDs(sections)
+	if len(articleIDs) == 0 {
+		return sections
+	}
+	linkByArticleID, err := loadArticleLinksByID(r.db, articleIDs)
+	if err != nil {
+		logging.Warnf("GetReportByID: load article links for thread copy folding failed: %v", err)
+		return sections
+	}
+	for i := range sections {
+		sections[i].Threads = FoldThreadArticleCopies(sections[i].Threads, linkByArticleID)
+	}
+	return sections
+}
+
+// attachThreadArticleProjections 给每条线索挂上「文章标题 + 疑似 AI 判定字段」的
+// 读路径投影（add-ai-generated-article-detection 4.6）。
+//
+// 投影严格跟随 related_article_ids：顺序一致、不增删成员（daily-report 红线 45，
+// 「N 篇」计数仍是 related_article_ids 的长度）；库里查不到的越界 id 仍保留投影项
+// （标题空、判定 unknown），不静默丢掉成员。
+//
+// 一次批量查询；失败降级为不挂投影（详情接口照常返回）——判定标记是展示增强，
+// 无权让日报详情失败。
+func (r *TopicGraphRepository) attachThreadArticleProjections(sections []DailyReportSection) {
+	articleIDs := collectThreadArticleIDs(sections)
+	if len(articleIDs) == 0 {
+		return
+	}
+
+	type detectionRow struct {
+		ID                uint    `gorm:"column:id"`
+		Title             string  `gorm:"column:title"`
+		AIDetectionStatus string  `gorm:"column:ai_detection_status"`
+		AIDetectionScore  float64 `gorm:"column:ai_detection_score"`
+	}
+	var rows []detectionRow
+	if err := r.db.Model(&models.Article{}).
+		Select("id, title, ai_detection_status, ai_detection_score").
+		Where("id IN ?", articleIDs).
+		Find(&rows).Error; err != nil {
+		logging.Warnf("GetReportByID: load thread article detection fields failed: %v", err)
+		return
+	}
+	byID := make(map[uint]ThreadArticleRef, len(rows))
+	for _, row := range rows {
+		byID[row.ID] = ThreadArticleRef{
+			ID:                row.ID,
+			Title:             row.Title,
+			AIDetectionStatus: models.NormalizeAIDetectionStatus(row.AIDetectionStatus),
+			AIDetectionScore:  row.AIDetectionScore,
+		}
+	}
+
+	for si := range sections {
+		for ti := range sections[si].Threads {
+			thread := &sections[si].Threads[ti]
+			ids, ok := decodeArticleIDArray(thread.RelatedArticleIDs)
+			if !ok || len(ids) == 0 {
+				continue
+			}
+			articles := make([]ThreadArticleRef, 0, len(ids))
+			for _, id := range ids {
+				if ref, found := byID[id]; found {
+					articles = append(articles, ref)
+					continue
+				}
+				articles = append(articles, ThreadArticleRef{
+					ID:                id,
+					AIDetectionStatus: models.AIDetectionStatusUnknown,
+				})
+			}
+			thread.Articles = articles
+		}
+	}
+}
+
+// loadArticleLinksByID 批量取文章的 link（折叠键的来源）。
+// 按 ID 反查豁免 archived 过滤（红线 10）：归档只是 feed 活跃窗口轮转，不是
+// 撤回——日报线索引用的文章必须永久可读。
+func loadArticleLinksByID(db *gorm.DB, articleIDs []uint) (map[uint]string, error) {
+	links := make(map[uint]string, len(articleIDs))
+	if len(articleIDs) == 0 {
+		return links, nil
+	}
+	var articles []models.Article
+	if err := db.Model(&models.Article{}).
+		Select("id, link").
+		Where("id IN ?", articleIDs).
+		Find(&articles).Error; err != nil {
+		return nil, fmt.Errorf("load article links: %w", err)
+	}
+	for _, article := range articles {
+		links[article.ID] = article.Link
+	}
+	return links, nil
+}
+
+// collectThreadArticleIDs 收集本报告全部线索引用过的文章 id（去重、升序）。
+func collectThreadArticleIDs(sections []DailyReportSection) []uint {
+	seen := make(map[uint]bool)
+	for _, section := range sections {
+		for _, thread := range section.Threads {
+			for _, id := range jsonUintIDs(thread.RelatedArticleIDs) {
+				seen[id] = true
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	ids := make([]uint, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
 }
 
 // ListReports returns recent reports for a board.
@@ -374,6 +618,11 @@ func (r *TopicGraphRepository) ListReports(boardID uint, days int) ([]ReportList
 	if err != nil {
 		return nil, fmt.Errorf("list reports for board %d: %w", boardID, err)
 	}
+	// NOTE: no highlights normalization here — this read path projects into
+	// ReportListItem, which carries no Highlights field at all, so normalizing
+	// the discarded BoardDailyReport copy would be a no-op. The highlights
+	// contract ("always an array") is enforced on the two read paths that
+	// actually expose highlights: GetReportByID and ListReportsForAllBoards.
 
 	summariesByReport := make(map[uint][]ActiveWatchSummary, len(reports))
 	if len(reports) > 0 {
@@ -460,12 +709,39 @@ func (r *TopicGraphRepository) ListReportsForAllBoards(days int) ([]BoardDailyRe
 				reports[i].Sections[j].Threads = []DailyReportThread{}
 			}
 		}
+		// Keep the API contract "highlights is always an array" (see GetReportByID).
+		normalizeHighlightsArray(&reports[i].Highlights)
 	}
 	return reports, nil
 }
 
+// normalizeHighlightsArray rewrites a highlights column holding a JSON null
+// scalar (4 bytes "null") or SQL NULL into an empty JSON array. Rows written
+// before the highlights array contract store a bare "null", which the frontend
+// treats as "no content" and silently hides the whole "今日重点" block.
+// Non-null arrays pass through untouched (the stored content is never rewritten).
+func normalizeHighlightsArray(highlights *JSON) {
+	if highlights == nil {
+		return
+	}
+	switch strings.TrimSpace(string(*highlights)) {
+	case "", "null":
+		*highlights = JSON("[]")
+	}
+}
+
 // CollectBoardIDsForDate returns all board IDs that have active event tags on a date.
 func (r *TopicGraphRepository) CollectBoardIDsForDate(date time.Time) ([]uint, error) {
+	// SQLite test databases that migrate only the daily-report tables have no
+	// tag/article tables (same degradation contract as SaveThreads' scope
+	// derivation in story_repository.go): a missing dependency table means
+	// "no event tags today" — return empty instead of failing the whole
+	// generation path with a raw SQL error.
+	for _, table := range []string{"topic_tags", "topic_tag_board_labels", "article_topic_tags", "articles"} {
+		if !r.db.Migrator().HasTable(table) {
+			return []uint{}, nil
+		}
+	}
 	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
@@ -494,11 +770,23 @@ func (r *TopicGraphRepository) CollectBoardIDsForDate(date time.Time) ([]uint, e
 
 // SaveThreads persists a batch of DailyReportThread rows using the given DB handle.
 // Accepts *gorm.DB so it can participate in an outer transaction.
+// Scope is derived HERE — the single point (add-event-story-heat task 3.2):
+// >=2 event tags in tag_ids => composite (综合稿，不建事件身份), else single.
+// Every caller (orchestrator / watch materialization / rebuild) inherits it.
 func (r *TopicGraphRepository) SaveThreads(tx *gorm.DB, reportID, sectionID uint, threads []DailyReportThread) error {
 	for i := range threads {
 		threads[i].ReportID = reportID
 		threads[i].SectionID = sectionID
+		// retire-story-adopt-event-metrics 2.3：新生成 / 重建的日报恒为
+		// story_id=NULL、story_manual=false、display_tier=body。归属判定是唯一
+		// 合法的 story_id 写入方（行插入之后的 UPDATE），跨期去重是唯一合法的
+		// display_tier 写入方；两者停写后，插入路径本身就是这些列的收口点。
+		// 历史行只读保留（重建 = 删旧行 + 建新行，旧值不会回填到新行）。
+		threads[i].StoryID = nil
+		threads[i].StoryManual = false
+		threads[i].DisplayTier = ThreadDisplayTierBody
 	}
+	deriveThreadScope(tx, threads)
 	// Watch-materialized threads carry no embedding: GORM's zero-value "" is
 	// an invalid pgvector literal, so blank-embedding threads insert with the
 	// column omitted (NULL) — same treatment as blank-embedding sections
@@ -515,6 +803,17 @@ func (r *TopicGraphRepository) SaveThreads(tx *gorm.DB, reportID, sectionID uint
 	if len(withEmb) > 0 {
 		if err := tx.Create(&withEmb).Error; err != nil {
 			return err
+		}
+		// Copy generated IDs back into the caller's slice (mirrors the
+		// withoutEmb branch below; withEmb holds struct copies after the
+		// split, so Create's back-fill does not reach the caller otherwise —
+		// ReAttachKeyEventMarkers reads the persisted IDs).
+		idx := 0
+		for i := range threads {
+			if threads[i].Embedding != "" {
+				threads[i].ID = withEmb[idx].ID
+				idx++
+			}
 		}
 	}
 	if len(withoutEmb) > 0 {
@@ -789,6 +1088,13 @@ func AttachTopicBriefsToReport(db *gorm.DB, report *BoardDailyReport) {
 	attachBriefsToSections(db, report.Sections)
 }
 
+// AttachTopicBriefsToSections fills the transient PersistentTopic brief in
+// place for an arbitrary section slice (rebucket responses, which are not a
+// whole report). Mirrors AttachTopicBriefsToReport's read-path contract.
+func AttachTopicBriefsToSections(db *gorm.DB, sections []DailyReportSection) {
+	attachBriefsToSections(db, sections)
+}
+
 // AttachWatchLabelsToReport fills the transient WatchLabel on each
 // materialized (watch_*) section so the UI badge can show the tracking
 // source next to the LLM daily title (watch-materialize-llm-adjudication).
@@ -976,7 +1282,16 @@ func (r *TopicGraphRepository) GetTopicLifeline(topicID uint) (SectionTimelineRe
 	if relations == nil {
 		relations = []SectionRelationResult{}
 	}
-	return SectionTimelineResponse{Sections: nodes, Relations: relations}, nil
+	// Confirmed key-event nodes (lifeline optional field — add-topic-key-
+	// event-markers persistent-topic spec): snapshots read independently of
+	// live sections so a rebuilt source still returns its confirmed node
+	// (无 section 仍能查确认快照); never fabricated into sections/relations.
+	keyEvents, kerr := r.ListTopicKeyEventMarkers(topicID, 0, KeyEventStateConfirmed)
+	if kerr != nil {
+		logging.Warnf("GetTopicLifeline: load key events for topic %d failed: %v", topicID, kerr)
+		keyEvents = []TopicKeyEventMarker{}
+	}
+	return SectionTimelineResponse{Sections: nodes, Relations: relations, KeyEvents: keyEvents}, nil
 }
 
 // BackfillSectionEmbeddings regenerates section embeddings using the
@@ -1308,11 +1623,16 @@ func (r *TopicGraphRepository) BackfillAllRelations() (map[uint]int, error) {
 
 // ListTopicRecentBriefs fetches, for every active AND candidate persistent
 // topic on the board (candidate-topic-l2-gate: candidates now flow through L2
-// adjudication and need content to judge), sections from the last `sinceDays`
-// days with up to 5 active tag labels per section — the section's actual
-// tag-label fact fingerprint resolved from cluster_tag_ids. Sections are
-// sorted by period_date DESC and trimmed to `perTopicLimit` per topic.
-// Returns map[topicID][]TopicRecentBrief.
+// adjudication and need content to judge), sections from the `sinceDays` days
+// BEFORE the report day, with up to 5 active tag labels per section — the
+// section's actual tag-label fact fingerprint resolved from cluster_tag_ids.
+// Sections are sorted by period_date DESC and trimmed to `perTopicLimit` per
+// topic. Returns map[topicID][]TopicRecentBrief.
+//
+// 窗口与同日排除都以**报告日**（reportDate）为基准，不看执行时刻：补 5 天前的
+// 日报时，不能把之后 5 天发生的章节当成「近期内容」注入 prompt，也不能看到
+// 报告日自己的章节。这与「补档产物与当天按时生成等价」的不变量同源
+// （add-daily-report-gap-backfill D7）。
 //
 // The tag labels replace the old cluster_label source (frozen by the
 // orchestrator's topic-label overwrite → zero information) and the old
@@ -1322,13 +1642,17 @@ func (r *TopicGraphRepository) BackfillAllRelations() (map[uint]int, error) {
 // Degradation contract: when the query fails (DB down etc.), the caller SHALL
 // fall back to label-only injection — the briefs are purely an information
 // enrichment layer and SHALL NOT block ClusterTags.
-func (r *TopicGraphRepository) ListTopicRecentBriefs(boardID uint, sinceDays int, perTopicLimit int) (map[uint][]TopicRecentBrief, error) {
-	cutoff := time.Now().AddDate(0, 0, -sinceDays).Truncate(24 * time.Hour)
-	// Same-day exclusion: briefs inject only facts from BEFORE today. A same-day
-	// rerun would otherwise feed back the current run's own (possibly wrong)
-	// attachments as "recent content" evidence — the self-corroboration loop
-	// behind the Kalibaf candidate case. Yesterday becomes evidence tomorrow.
-	today := NormalizeReportDate(time.Now())
+func (r *TopicGraphRepository) ListTopicRecentBriefs(boardID uint, reportDate time.Time, sinceDays int, perTopicLimit int) (map[uint][]TopicRecentBrief, error) {
+	// 报告日（UTC 正午）：窗口下界 = 报告日 - sinceDays（UTC 零点），上界 =
+	// 报告日（排除同日）。两者都相对报告日，与执行时刻无关。
+	reportDay := NormalizeReportDate(reportDate)
+	cutoff := time.Date(reportDay.Year(), reportDay.Month(), reportDay.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -sinceDays)
+	// Same-day exclusion: briefs inject only facts from BEFORE the report day.
+	// A same-day rerun would otherwise feed back the current run's own
+	// (possibly wrong) attachments as "recent content" evidence — the
+	// self-corroboration loop behind the Kalibaf candidate case. Yesterday
+	// becomes evidence tomorrow.
+	today := reportDay
 
 	// 1) Collect anchorable topic IDs (active + candidate) on this board.
 	type topicRow struct {

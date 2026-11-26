@@ -1,7 +1,7 @@
 # 前端交互约定（Interaction Conventions）
 
 > **权威源**：本文件是前端"交互友好性 / 可观测性展示分层"约定的唯一权威。`front/AGENTS.md` 速查深链指向本文件。
-> 互补：[theming.md](./theming.md)（视觉 token）、[code-style.md](./code-style.md)（代码结构）。
+> 互补：[theming.md](./theming.md)（视觉 token）、[code-style.md](./code-style.md)（代码结构）、[interaction.md](./interaction.md)（交互模式选择判据 / 界面文字职责边界 / 原型预算）。分工：本文件管「状态与数字怎么摆」，`interaction.md` 管「选哪个模式」。
 >
 > 这些约定源自真实评审踩坑，非凭空设计——每条都附案例。
 
@@ -52,7 +52,18 @@
 
 **案例**：历史 thread 无 `fit_distance`（本 change 上线前生成的），`isThreadFitDemoted(undefined) === false`，按正常 thread 渲染。见 `app/utils/threadFit.ts`。
 
+## 5. 报告数值/日期呈现：阅读短格式与原值分层（redesign-enrichment-research-workbench）
+
+报告里的数值展示分两层，**不许混**：
+
+- **阅读层短格式**（`formatReadingValue`）：常规值最多两位小数；极小非零保留量级绝不显示成 0；空串/null → 显式「缺失」不转 0；非法/超安全大数保留原样。用于正文引用按钮、证据表单元格。
+- **核查层原值**：源精度 `raw_value`/代码计算原值/公式/precision 在引用 title 与附录逐项保留，原字符串永不变更。
+- 图表横轴按真实日期距离（`buildChartLayout`），null 断点不补零不连线，相邻间隔极不均匀（最大者 >10× 最小者）降离散点并标观测数；对比柱从 0 起。
+- schema3 分源时效（`data_freshness`）按源展示；schema2 派生口径须标注「各源最大期」，零观测如实「无可用数据期」。
+
+案例：`100.19999694824219` → 阅读层 `100.2`、核查区保留原值；`0.0000012` 不得显示成 `0`。落地点：`features/tags/components/signalReport.ts` / `reportPresentation.ts`。
+
 ## 关联
 
 - 可观测性三系列的业务设计 → [daily-report.md](../../flow/daily-report.md) §可观测性
-- 验证这些交互（opencli 按需验证 / 视觉子代理验证；major UI 对照已批准 ui-design.md 基线 + 双视口）→ `.agents/skills/ui-verify/`、[ui-navigation.md](../../architecture/ui-navigation.md)、[layout.md](layout.md)
+- 验证这些交互（agent-browser 按需验证 / 视觉子代理验证；major UI 对照已批准 ui-design.md 基线 + 双视口）→ `.agents/skills/agent-browser/`、[ui-navigation.md](../../architecture/ui-navigation.md)、[layout.md](layout.md)

@@ -1,3 +1,5 @@
+<!-- domain: topic-graph, daily-report -->
+
 ## Purpose
 
 日报 section embedding 的内容化生成与历史回刷：section 向量基于所聚 tag 的事实信息（label/description/代表文章摘录）而非 cluster_label 标题文本，打破「lane 命中 section 标题冻结 → 质心永不漂移 → 同域 tag 无限吸附」的回声闭环。

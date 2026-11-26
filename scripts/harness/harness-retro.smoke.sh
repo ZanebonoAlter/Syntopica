@@ -15,6 +15,8 @@
 #   H1 巡检段数字正确 / H2 JSON effectiveness.patrol 键 / H3 无表无巡检事件降级 / H4 有台账零巡检事件降级
 #   I1 截断域名修复后 join 命中（substr 差一回归，harness-retro-sql-fixes）/ I2 jit-path 通道计入命中率 / I3 未识别通道显式计数且非 flow-doc 合法通道不误标 / I4 命中率=fixture 复算值（2/3=67%）
 #   J1 diag 含 command not found 归环境族（先于 %lint% 关键词族）/ J2 真实 lint 失败仍归 lint 族（两族并存各归各族）
+#   P1 派发带域比例：全 present / 全 absent / 混合历史（未知剔除分母）/ 无派发不除零 + JSON 键值
+#     （add-dispatch-constraint-digest 5.2）
 #
 # 用法：bash scripts/harness/harness-retro.smoke.sh   退出码：0 全过；1 有失败
 set -u
@@ -292,6 +294,34 @@ done
 for i in 1 2 3 4 5 6; do
 	ins "$FL" policy.decision probe-L '{"policy":"test-scope-guard","action":"warn","reasonCode":"full-go-test"}'
 done
+
+# ---------- fixture P：派发约束摘要三态（add-dispatch-constraint-digest 5.2） ----------
+# P1 全 present / P2 全 absent / P3 混合历史（含改造前无键记录 + 非法 payload）/ P4 窗口内无派发
+FP1="$TMP/p1.db"
+mk_db "$FP1"
+for i in 1 2 3; do
+	ins "$FP1" subagent.dispatch cP '{"desc":"d","promptChars":120,"constraintDigest":"present","constraintDomains":["daily-report"]}' sP
+done
+
+FP2="$TMP/p2.db"
+mk_db "$FP2"
+for i in 1 2; do
+	ins "$FP2" subagent.dispatch cP '{"desc":"d","promptChars":120,"constraintDigest":"absent","constraintDomains":[]}' sP
+done
+
+FP3="$TMP/p3.db"
+mk_db "$FP3"
+ins "$FP3" subagent.dispatch cP '{"desc":"d","promptChars":120,"constraintDigest":"present","constraintDomains":["daily-report"]}' sP
+ins "$FP3" subagent.dispatch cP '{"desc":"d","promptChars":120,"constraintDigest":"present","constraintDomains":["ai-summary"]}' sP
+ins "$FP3" subagent.dispatch cP '{"desc":"d","promptChars":120,"constraintDigest":"absent","constraintDomains":[]}' sP
+# 改造前历史：无 constraintDigest 键 → 未知（不计 absent，不入分母）
+ins "$FP3" subagent.dispatch cP '{"desc":"d","promptChars":120}' sP
+# payload 非法 → 未知（同上，抽取失败不得回退成 absent）
+ins "$FP3" subagent.dispatch cP '{not json' sP
+
+FP4="$TMP/p4.db"
+mk_db "$FP4"
+ins "$FP4" gate.check cP '{"cmd":"go test","ok":true}'
 
 # ---------- K. B' 每任务成本四场景（task-cost-metrics） ----------
 HARNESS_RETRO_ARCHIVE_DIR="$TMP/arch" run_retro --db "$FK" --days 7
@@ -629,8 +659,10 @@ FM="$TMP/m.db"
 mk_db "$FM"
 # life-ui（已归档、事件完整）：双锚点（事件+目录）、成本主 1.0+子 0.5、ui 卡点×2→pass、
 # spec-gate 归档重试 30min、lint 红→绿 40min（quality-gate 口径）
-ins "$FM" mode.set life-ui '{"mode":"implementation","boundChange":"life-ui","source":"command"}' s-m1 "$(MT '-200 min')"
-ins "$FM" mode.set life-ui '{"mode":"implementation","boundChange":"life-ui","source":"recover"}' s-m2 "$(MT '-30 min')"
+	ins "$FM" stage.set life-ui '{"stage":"implement","stageFamily":"implementation","boundChange":"life-ui","source":"command"}' s-m1 "$(MT '-200 min')"
+	ins "$FM" stage.set life-ui '{"stage":"implement","stageFamily":"implementation","boundChange":"life-ui","source":"recover"}' s-m2 "$(MT '-30 min')"
+	# 历史 mode.set 行 → 计「未知」并从分母剔除（写侧已停写，30 天保留期自然消退）
+	ins "$FM" mode.set life-ui '{"mode":"implementation","boundChange":"life-ui","source":"recover"}' s-m2 "$(MT '-25 min')"
 ins "$FM" constraint.inject life-ui '{"path":"docs/reference/flow/daily-report.md","mode":"section","reason":"declaration","bytes":800}' s-m1 "$(MT '-190 min')"
 ins "$FM" constraint.inject life-ui '{"path":"docs/reference/flow/reading.md","mode":"section","reason":"keyword","bytes":900}' s-m2 "$(MT '-29 min')"
 ins "$FM" pin.write life-ui '{"title":"t","file":"x.md"}' s-m1 "$(MT '-180 min')"
@@ -645,9 +677,10 @@ ins "$FM" policy.decision life-ui '{"policy":"ui-design-gate","action":"pass","r
 ins "$FM" policy.decision life-ui '{"policy":"spec-gate","action":"block","reasonCode":"archive-check-failed","target":"doc-impact"}' s-m1 "$(MT '-35 min')"
 ins "$FM" policy.decision life-ui '{"policy":"quality-gate","action":"fail-open","reasonCode":"interop-down"}' s-m1 "$(MT '-60 min')"
 ins "$FM" subagent.dispatch life-ui '{"type":"explore","model":"glm-5.3","ms":100,"status":"completed","isError":false}' s-m1 "$(MT '-10 min')"
-# review 覆盖段 fixture（add-review-trace-gate）：带归属 dispatch 三条——explore(other)/
-# change-review-glm(review 类)/desc 含「修复」(repair 类优先，desc 含 review 不误计)
+# review 覆盖段 fixture（add-review-trace-gate）：带归属 dispatch 四条——explore(other)/
+# change-review-glm + change-review(新旧两代 review 档名，均 review 类)/desc 含「修复」(repair 类优先，desc 含 review 不误计)
 ins "$FM" subagent.dispatch life-ui '{"type":"change-review-glm","model":"zai-coding-cn/glm-5.3","desc":"change-review-glm 审查","ms":5000,"status":"completed","isError":false}' s-m1 "$(MT '-9 min')"
+ins "$FM" subagent.dispatch life-ui '{"type":"change-review","model":"minimax-cn/MiniMax-M3.1-Flash","desc":"change-review 审查","ms":4000,"status":"completed","isError":false}' s-m1 "$(MT '-9 min')"
 ins "$FM" subagent.dispatch life-ui '{"type":"general-purpose","desc":"修复 review R-1 并归档","ms":3000,"status":"completed","isError":false}' s-m1 "$(MT '-8 min')"
 ins "$FM" session.rollup life-ui '{"turns":8,"toolCalls":30,"cost":1.0,"durationSec":600,"models":{"glm-5.3":{"tokens":{"total":8000},"cost":1.0}},"final":true}' s-m1 "$(MT '-6 min')"
 ins "$FM" session.rollup '' '{"turns":3,"toolCalls":10,"cost":0.5,"durationSec":200,"models":{"glm-5.3":{"tokens":{"total":3000},"cost":0.5}},"parentSessionId":"s-m1","final":true}' s-c1 "$(MT '-5 min')"
@@ -747,7 +780,7 @@ check 0 "L1 已归档 change 四段齐备 + 归档目录声明元数据（日期
 	"声明元数据: ui-impact=major / complexity=moderate / constraint-domains=daily-report, reading" \
 	"终态      : 已归档"
 check 0 "L1b 流程规范段指标（档位/注入/pin/编辑/门禁）" \
-	"档位绑定        : 2 次 mode.set" "约束注入        : 2 条 / 1700 B" "declaration×1" "keyword×1" \
+	"阶段绑定        : 2 次 stage.set（另有 1 次历史 mode.set 计「未知」，不计分母）" "约束注入        : 2 条 / 1700 B" "declaration×1" "keyword×1" \
 	"pin 接力        : write 1 条 / read 3 条" "编辑归属        : 2 个路径（edit.map 快照 2 次" "门禁执行        : 1 次执行 / 1 次失败（还原口径；Top：lint 1/1）"
 check 0 "L1c UI 工作流：卡点链 + pass 直读口径" \
 	"卡点链          : ui-prototype-missing ×2" "放行态          : 已放行（pass ui-design-satisfied"
@@ -805,8 +838,8 @@ assert hf['bad'] == 0, hf
 rv = d['review']
 assert rv['state'] == 'review_md' and rv['entries'] == 2, rv
 assert rv['waived'] is False and rv['no_finding'] is False, rv
-assert rv['dispatch']['dispatch_total'] == 3, rv
-assert rv['dispatch']['review_disp'] == 1 and rv['dispatch']['repair_disp'] == 1, rv
+assert rv['dispatch']['dispatch_total'] == 4, rv
+assert rv['dispatch']['review_disp'] == 2 and rv['dispatch']['repair_disp'] == 1, rv
 FMLPY
 then
 	echo "  ✓ L9 lifecycle --json 结构与数值可复算（terminal/cost 1.5/repair 30min/反馈 3 条）"
@@ -845,7 +878,7 @@ fi
 Menv --lifecycle life-ui
 check 0 "L15 建账 change 覆盖段展示（archive 路径 + 条目计数 + 派发分类参考口径）" \
 	"六、review 覆盖段" "痕迹形态        : review.md 建账（2 条）" \
-	"review 类派发   : 1 次（参考口径" "修复类派发      : 1 次（参考口径"
+	"review 类派发   : 2 次（参考口径" "修复类派发      : 1 次（参考口径"
 
 Menv --lifecycle c-q
 check 0 "L16 waived 形态 + 无带归属派发 → 归属改造前无数据（不输出误导性 0）" \
@@ -1006,6 +1039,241 @@ fi
 HARNESS_RETRO_CHANGES_DIR="$TMP/chg-empty" run_retro --db "$FM2" --days 7
 check 0 "M8 零反馈数据降级（空 changes 目录不静默省略）" \
 	"E 生命周期面" "有账 0 / 无账 0" "无反馈记录（窗口内无 human-feedback.md 条目）"
+
+# ================= N. design 决策落点指标（design-anchor-tax 4.2） =================
+# 三态 fixture：空 design（0 decisions）/ 有落点（文件+任务+Scenario+无代码）/ 空泛落点（不计）。
+NDES="$TMP/design"
+NCH="$NDES/chg"; NARCH="$NDES/arch"; NCH_E="$NDES/chg-empty"
+mkdir -p "$NCH/n-empty" "$NCH/n-mixed/specs/design-decision-landing" "$NCH/n-vague" "$NARCH" "$NCH_E/n-empty"
+
+cat >"$NCH/n-empty/design.md" <<'EOF'
+# Design: n-empty
+
+## Decisions
+
+（无决策）
+EOF
+
+cat >"$NCH/n-mixed/design.md" <<'EOF'
+# Design: n-mixed
+
+## Decisions
+
+### D1. 落点指向真实文件
+
+- **结论**：选 X
+- **落点**：`scripts/harness/harness-retro.sh:resolve_file`
+- **取舍**：方案 Y 更贵 → 选 X
+
+### D2. 落点指向任务
+
+- **结论**：选 X
+- **落点**：任务 1.1
+- **取舍**：无备选：只能这样
+
+### D3. 落点指向 Scenario
+
+- **结论**：选 X
+- **落点**：Scenario「空泛落点不算」
+- **取舍**：方案 Y 有歧义 → 选 X
+
+### D4. 无代码落点
+
+- **结论**：选 X
+- **落点**：无代码落点：docs/reference/开发执行规范.md，因为流程规则
+- **取舍**：方案 Y 太贵 → 选 X
+
+### D5. 空泛落点
+
+- **结论**：选 X
+- **落点**：见 tasks
+
+### D6. 旧格式正文含路径（无落点行，走正文兜底）
+
+- **结论**：选 X
+- 参考 `docs/reference/开发执行规范.md`；**替代方案否决**：Y 更贵。
+
+### D7. 无扩展名的唯一 basename
+
+- **结论**：选 X
+- **落点**：Dockerfile
+EOF
+
+cat >"$NCH/n-mixed/tasks.md" <<'EOF'
+# Tasks: n-mixed
+
+- [ ] 1.1 示例任务
+EOF
+
+cat >"$NCH/n-mixed/specs/design-decision-landing/spec.md" <<'EOF'
+## ADDED Requirements
+
+### Requirement: 示例
+
+#### Scenario: 空泛落点不算
+
+- **WHEN** 落点为「见 tasks」
+- **THEN** 视为缺失
+EOF
+
+cat >"$NCH/n-vague/design.md" <<'EOF'
+# Design: n-vague
+
+## Decisions
+
+### D1. 空泛一
+
+- **结论**：选 X
+- **落点**：见 tasks
+
+### D2. 空泛二
+
+- **结论**：选 X
+- **落点**：待定
+
+### D3. 同名歧义（design.md 在仓库内不唯一）
+
+- **结论**：选 X
+- **落点**：design.md
+
+### D4. 只有「无代码落点」没有承接理由
+
+- **结论**：选 X
+- **落点**：无代码落点
+
+### D5. 符号在文件中找不到
+
+- **结论**：选 X
+- **落点**：scripts/harness/harness-retro.sh:NoSuchSymbolXYZ
+
+### D6. 仓库外绝对路径（不算仓库内落点）
+
+- **结论**：选 X
+- **落点**：__OUTSIDE__
+EOF
+
+: >"$NDES/outside.md"
+sed -i "s|__OUTSIDE__|$NDES/outside.md|" "$NCH/n-vague/design.md"
+
+cp "$NCH/n-empty/design.md" "$NCH_E/n-empty/design.md"
+
+FN="$TMP/fn.db"
+mk_db "$FN"
+ins "$FN" gate.check chgA '{"cmd":"go test","ok":true,"domain":"x"}'
+
+Nenv() { HARNESS_RETRO_CHANGES_DIR="$NCH" HARNESS_RETRO_ARCHIVE_DIR="$NARCH" run_retro --db "$FN" "$@"; }
+
+Nenv --days 7
+check 0 "N1 design 三态聚合（3 份 design / 13 条 Decision / 落点率 46% / 取舍率 38%）" \
+	"样本              : 3 份 design / 13 条 Decision" \
+	"落点率            : 46%（可解析 6 / 13" \
+	"取舍率            : 38%（显式取舍行或正文替代方案表述 5 / 13"
+
+HARNESS_RETRO_CHANGES_DIR="$NCH" HARNESS_RETRO_ARCHIVE_DIR="$NARCH" "$RETRO" --db "$FN" --days 7 --json >"$TMP/n2.json" 2>/dev/null
+if python3 - "$TMP/n2.json" <<'N2PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d['metrics']
+ds = d['effectiveness']['design']
+assert ds['designs'] == 3, ds
+assert ds['decisions'] == 13, ds
+assert ds['landed'] == 6, ds
+assert ds['alt'] == 5, ds
+assert m['m7.design_decisions'] == 13, m.get('m7.design_decisions')
+assert m['m7.design_landing_rate'] == 46, m.get('m7.design_landing_rate')
+assert m['m7.design_alt_rate'] == 38, m.get('m7.design_alt_rate')
+assert isinstance(m['m7.design_words_per_decision'], int) and m['m7.design_words_per_decision'] > 0, m.get('m7.design_words_per_decision')
+assert m['m7.design_words_per_decision'] == ds['words_p50']
+N2PY
+then
+	echo "  ✓ N2 JSON m7.design_* 键值（13 / 46% / 38% / words>0；空泛、歧义、坏符号、仓外路径与空壳无代码落点不计）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ N2 JSON design 指标断言失败"
+	failn=$((failn + 1))
+fi
+
+HARNESS_RETRO_CHANGES_DIR="$NCH_E" HARNESS_RETRO_ARCHIVE_DIR="$NARCH" run_retro --db "$FN" --days 7
+check 0 "N3 空 design 降级（0 decisions 不产出落点率/字数伪值）" \
+	"样本              : 1 份 design / 0 条 Decision" \
+	"落点率 / 字数     : —（窗口内无 Decision，不用 0% 冒充）"
+
+HARNESS_RETRO_CHANGES_DIR="$NCH_E" HARNESS_RETRO_ARCHIVE_DIR="$NARCH" "$RETRO" --db "$FN" --days 7 --json >"$TMP/n3.json" 2>/dev/null
+if python3 - "$TMP/n3.json" <<'N3PY'
+import json, sys
+m = json.load(open(sys.argv[1]))['metrics']
+assert m['m7.design_decisions'] == 0, m.get('m7.design_decisions')
+assert m['m7.design_landing_rate'] is None, m.get('m7.design_landing_rate')
+assert m['m7.design_words_per_decision'] is None, m.get('m7.design_words_per_decision')
+assert m['m7.design_alt_rate'] is None, m.get('m7.design_alt_rate')
+N3PY
+then
+	echo "  ✓ N4 空 design JSON 分母为 0 时不伪造 0%"
+	pass=$((pass + 1))
+else
+	echo "  ✗ N4 空 design JSON 断言失败"
+	failn=$((failn + 1))
+fi
+
+# ================= P. 派发带域比例（add-dispatch-constraint-digest 5.2） =================
+# 口径：比例 = present/(present+absent)；改造前无 constraintDigest 键的记录计「未知」并剔除分母
+run_retro --db "$FP1" --days 7
+check 0 "P1 全 present：比例 100%、未知 0 条（分母=3）" \
+	"G 派发带域比例" "派发带域比例        : 100%（present 3 / 可判定 3，未知 0 条）"
+
+run_retro --db "$FP2" --days 7
+check 0 "P2 全 absent：比例 0%、未知 0 条（分母=2，全是 absent）" \
+	"派发带域比例        : 0%（present 0 / 可判定 2，未知 0 条）"
+
+run_retro --db "$FP3" --days 7
+check 0 "P3 混合历史：未知剔除分母（present 2 / 可判定 3 → 67%），未知 2 条显式标注" \
+	"派发带域比例        : 67%（present 2 / 可判定 3，未知 2 条）" "未知 2 条"
+
+run_retro --db "$FP4" --days 7
+check 0 "P4 窗口内无派发：不除零，显式「无可判定派发」" \
+	"派发带域比例        : 无可判定派发（present 0 / 可判定 0，未知 0 条）"
+
+"$RETRO" --db "$FP3" --days 7 --json >"$TMP/fp3.json" 2>/dev/null
+if python3 - "$TMP/fp3.json" <<'FPPY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = d['metrics']
+dd = d['effectiveness']['dispatch_digest']
+# 三态：present 2 / absent 1 / unknown 2（无键 + 非法 payload 各 1）
+assert dd['present'] == 2 and dd['absent'] == 1 and dd['unknown'] == 2, dd
+assert dd['decidable'] == 3, dd
+# ratio=2/3=67%：若把 unknown 当 absent 计入分母会算成 2/5=40% → 67% 即证明未知被剔除
+assert dd['ratio'] == 67, dd
+assert m['m7.dispatch_digest']['present'] == 2, m.get('m7.dispatch_digest')
+assert m['m7.dispatch_digest']['unknown'] == 2, m.get('m7.dispatch_digest')
+assert m['m7.dispatch_digest_present'] == 2, m.get('m7.dispatch_digest_present')
+assert m['m7.dispatch_digest_absent'] == 1, m.get('m7.dispatch_digest_absent')
+assert m['m7.dispatch_digest_unknown'] == 2, m.get('m7.dispatch_digest_unknown')
+assert m['m7.dispatch_digest_decidable'] == 3, m.get('m7.dispatch_digest_decidable')
+assert m['m7.dispatch_digest_ratio'] == 67, m.get('m7.dispatch_digest_ratio')
+FPPY
+then
+	echo "  ✓ P5 JSON m7.dispatch_digest 键值（2/1/2/可判定 3/ratio 67%——未知剔除分母）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ P5 JSON 派发带域断言失败"
+	failn=$((failn + 1))
+fi
+
+"$RETRO" --db "$FP4" --days 7 --json >"$TMP/fp4.json" 2>/dev/null
+if python3 - "$TMP/fp4.json" <<'FP4PY'
+import json, sys
+m = json.load(open(sys.argv[1]))['metrics']
+assert m['m7.dispatch_digest_ratio'] is None, m.get('m7.dispatch_digest_ratio')
+assert m['m7.dispatch_digest_decidable'] == 0, m.get('m7.dispatch_digest_decidable')
+FP4PY
+then
+	echo "  ✓ P6 JSON 无可判定派发时 ratio=null（不伪造 0%）"
+	pass=$((pass + 1))
+else
+	echo "  ✗ P6 JSON 无可判定派发断言失败"
+	failn=$((failn + 1))
+fi
 
 # ================= 汇总 =================
 echo

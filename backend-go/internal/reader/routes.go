@@ -2,11 +2,26 @@ package reader
 
 import (
 	"github.com/gin-gonic/gin"
+	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/reader/handler"
+	"syntopica-backend/internal/reader/search"
 )
 
 // RegisterRoutes registers all reader module routes under the given router group.
 func RegisterRoutes(rg *gin.RouterGroup) {
+	// add-article-search 2.6：搜索聚合端点。Service 在装配层构造——excerpt
+	// 构建器在 reader/handler，search 包反向 import 会成环（2.8 后
+	// handler 消费 search），由本装配点接线。
+	searchRouter := airouter.NewRouter()
+	search.SetDefaultService(search.NewService(
+		database.DB,
+		search.NewSemanticSearcher(database.DB, &search.AirouterEmbedder{Router: searchRouter}),
+		&search.AirouterExpander{Router: searchRouter},
+		handler.BuildArticleSearchExcerpt,
+	))
+	rg.GET("/search", search.HandleSearch)
+
 	categories := rg.Group("/categories")
 	{
 		categories.GET("", handler.GetCategories)
@@ -36,6 +51,9 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 		articles.GET("/:article_id", handler.GetArticle)
 		articles.POST("/:article_id/tags", handler.RetagArticleHandler)
 		articles.PUT("/:article_id", handler.UpdateArticle)
+		// 疑似 AI 标记的显式重新判定（design D10 / task 4.7）：入队 manual_recheck
+		// 作业，绕过判定执行前的「人工结论优先」跳过。
+		articles.POST("/:article_id/ai-detection/recheck", handler.RecheckAIDetection)
 		articles.PUT("/bulk-update", handler.BulkUpdateArticles)
 	}
 

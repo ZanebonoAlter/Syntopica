@@ -1,3 +1,5 @@
+<!-- domain: dev, scheduler -->
+
 # demo-seed-sync Specification
 
 ## Purpose

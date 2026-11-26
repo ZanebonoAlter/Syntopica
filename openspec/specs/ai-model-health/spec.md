@@ -1,3 +1,5 @@
+<!-- domain: ai-summary -->
+
 # ai-model-health Specification
 
 ## Purpose

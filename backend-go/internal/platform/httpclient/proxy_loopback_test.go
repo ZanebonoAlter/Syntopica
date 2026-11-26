@@ -57,7 +57,7 @@ func TestProxyBypass_LoopbackTargetDirect(t *testing.T) {
 	}
 	defer func() { _ = SetProxy("") }()
 
-	client := New(WithTimeout(5 * time.Second))
+	client := New(WithTimeout(5*time.Second), WithCrawlScope())
 	resp, err := client.Get(target.URL + "/v1/models") // 127.0.0.1 -> loopback
 	if err != nil {
 		t.Fatalf("GET loopback target: %v", err)
@@ -89,7 +89,7 @@ func TestProxyBypass_ExternalTargetUsesProxy(t *testing.T) {
 	}
 	defer func() { _ = SetProxy("") }()
 
-	client := New(WithTimeout(5 * time.Second))
+	client := New(WithTimeout(5*time.Second), WithCrawlScope())
 	// example.com is not loopback; the request must be forwarded to the proxy
 	// (which answers 502 — we only assert the request reached it).
 	resp, err := client.Get("http://example.com/v1/models")
@@ -118,7 +118,7 @@ func TestProxyBypass_NoProxyConfigured_Direct(t *testing.T) {
 		t.Fatalf("SetProxy(\"\"): %v", err)
 	}
 
-	client := New(WithTimeout(5 * time.Second))
+	client := New(WithTimeout(5*time.Second), WithCrawlScope())
 	resp, err := client.Get(target.URL)
 	if err != nil {
 		t.Fatalf("GET: %v", err)

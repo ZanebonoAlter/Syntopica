@@ -1,0 +1,24 @@
+# 每 10 分钟触发一次 agent-browser 无主浏览器栈回收（add-browser-leak-guard）
+#   - OnBootSec=5min：开机/登录后 5 分钟首跑，避开开机瞬间的进程噪音
+#   - OnUnitActiveSec=10min：以「上次 service 激活完成」为基准滚周期（oneshot 用完即走，不堆积）
+#   - AccuracySec=30s：允许半小时内对齐窗口，省电省中断（树莓派不需要秒级精度）
+#   - 泄漏栈本身要「连续两轮 CPU 冻结（跨轮次状态文件）+ 无客户端」才动手，
+#     周期粒度不影响安全性（首次观测只取证，第二轮才回收）
+#
+# 装：      bash scripts/harness/browser-leak-guard.sh --install
+# 调周期：  改 OnUnitActiveSec（或加 OnCalendar）后
+#           systemctl --user daemon-reload && systemctl --user restart syntopica-browser-leak-guard.timer
+# 查日志：  journalctl --user -u syntopica-browser-leak-guard.service -n 50
+#           systemctl --user list-timers syntopica-browser-leak-guard.timer
+# 卸：      bash scripts/harness/browser-leak-guard.sh --uninstall
+[Unit]
+Description=10 分钟周期触发 agent-browser 无主栈回收
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+AccuracySec=30s
+Unit=syntopica-browser-leak-guard.service
+
+[Install]
+WantedBy=timers.target

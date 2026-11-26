@@ -40,6 +40,22 @@ const params = new URLSearchParams()
 params.set('page', '1')
 ```
 
+**字段映射（snake_case → camelCase 改名 + 枚举归一）只允许发生在 `api/normalizers/`**：实体正常化函数（如 `normalizeArticle` / `normalizeFeed`）负责把后端键改写成领域字段名，并对接口新增的枚举位做白名单归一（非法值返回 `undefined` 而不是原样透传）；组件、composable、store 的渲染层 MUST NOT 直接读 `payload.xxx_yyy` 或自建一份映射（组件写了映射，接口改名时就只会在 UI 静默空掉）。
+
+```typescript
+// ✅ 正确：normalizer 集中映射（后端 `ai_detection_status` → 前端 `aiDetectionStatus`）
+// front/app/api/normalizers/article.ts
+type AiDetectionStatus = 'unknown' | 'suspect' | 'not_ai'
+const AI_DETECTION_STATUSES: AiDetectionStatus[] = ['unknown', 'suspect', 'not_ai']
+const normalizeAiDetectionStatus = (v?: string): AiDetectionStatus | undefined =>
+  AI_DETECTION_STATUSES.includes(v as AiDetectionStatus) ? (v as AiDetectionStatus) : undefined
+
+aiDetectionStatus: normalizeAiDetectionStatus(payload?.ai_detection_status),
+
+// ❌ 错误：组件里自建映射
+const suspect = article.ai_detection_status === 'suspect'
+```
+
 API 模块中的 `as unknown as ApiResponse<T>` 应替换为 `mapApiResponse<T>()`。
 
 ## 4. Store 规则

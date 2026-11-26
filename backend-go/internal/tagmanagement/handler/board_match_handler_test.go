@@ -5,36 +5,27 @@ import (
 )
 
 func TestMatchTier(t *testing.T) {
+	// downgraded 标记已于 2026-11-12 退役：max_sim 统一 tier 2。
 	cases := []struct {
-		reason     string
-		downgraded bool
-		want       int
+		reason string
+		want   int
 	}{
 		// direct_hit → tier 0 (best)
-		{"direct_hit", false, 0},
-		{"direct_hit", true, 0}, // downgraded has no effect on direct_hit
-
+		{"direct_hit", 0},
 		// hit_rate → tier 1
-		{"hit_rate", false, 1},
-		{"hit_rate", true, 1},
-
-		// max_sim non-downgraded → tier 2
-		{"max_sim", false, 2},
-		// max_sim downgraded → tier 3 (fall to weakest)
-		{"max_sim", true, 3},
-
+		{"hit_rate", 1},
+		// max_sim → tier 2
+		{"max_sim", 2},
 		// weighted → tier 3 (weakest)
-		{"weighted", false, 3},
-		{"weighted", true, 3},
-
+		{"weighted", 3},
 		// unknown reason → tier 3 (safe fallback)
-		{"unknown", false, 3},
-		{"", false, 3},
+		{"unknown", 3},
+		{"", 3},
 	}
 	for _, c := range cases {
-		got := MatchTier(c.reason, c.downgraded)
+		got := MatchTier(c.reason)
 		if got != c.want {
-			t.Errorf("MatchTier(%q, %v) = %d, want %d", c.reason, c.downgraded, got, c.want)
+			t.Errorf("MatchTier(%q) = %d, want %d", c.reason, got, c.want)
 		}
 	}
 }

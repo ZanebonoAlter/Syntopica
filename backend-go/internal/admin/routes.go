@@ -60,7 +60,7 @@ func RegisterRoutes(rg *gin.RouterGroup) {
 		readingBehavior.GET("/stats", GetReadingStats)
 	}
 
-	// discovery 域 settings 路由（rsshub/proxy/bocha/searxng）已迁
+	// discovery 域 settings 路由（rsshub/proxy/bocha/web-search）已迁
 	// internal/discovery/routes.go（decouple-backend-domains）。
 	settings := rg.Group("/settings")
 	{

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/tracing"
+	"syntopica-backend/internal/reader/search"
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 )
@@ -20,7 +22,7 @@ import (
 const maxArticleTags = 6
 
 // genericLabelBlacklist 是泛词标签黑名单（fix-tagging-pollution）：这些词
-// 不携带文章内容信息，任何来源（llm/heuristic/回填）都不得成为文章标签。
+// 不携带文章内容信息，任何来源（llm/回填）都不得成为文章标签。
 // 封闭词表，不做子串匹配——Slugify 后完整匹配，「GLM Coding Plan」等复合
 // 正常标签不受影响；「Coding」不进名单（编程文章的合法主题词）。
 var genericLabelBlacklist = []string{"新闻", "论坛", "要闻", "快讯", "文章", "内容", "技术", "发展"}
@@ -188,15 +190,14 @@ func tagArticle(ctx context.Context, article *models.Article, feedName, category
 	if !handled {
 		result, err := extractor.ExtractTags(context.Background(), input)
 		if err != nil {
-			// 兑底仅限「调用失败」（transport/HTTP 错误，fix-tagging-pollution）。
-			// 调用成功但零标签是合法结论：文章保持无标签，等待后续重打。
-			tags = legacyExtractTopics(input)
-			source = "heuristic"
-		} else {
-			tags = result.Tags
-			source = result.Source
+			// 提取失败即失败（retire-heuristic-tag-fallback）：不再回退规则词
+			// 兜底，直接上抛错误——文章保持无标签，打标任务失败并进入既有队列
+			// 退避重试（MarkFailed + failureBackoff）。旧行为把失败伪装成成功，
+			// 文章永不重打，且规则词泛词污染下游。
+			return fmt.Errorf("tag extraction failed for article %d: %w", article.ID, err)
 		}
-		tags = limitArticleTags(tags)
+		tags = limitArticleTags(result.Tags)
+		source = "llm"
 	}
 
 	if len(tags) == 0 {
@@ -238,8 +239,8 @@ func buildArticleContext(article *models.Article) string {
 // auxiliary labels and link it to the article. Shared by the mono and
 // aggregate extraction paths.
 func persistArticleTags(ctx context.Context, article *models.Article, tags []TopicTag, source string) error {
-	// 泛词黑名单拦截（fix-tagging-pollution）：mono / aggregate / heuristic
-	// 三条写入路径的汇聚点，被拦截候选不进 topic_tags / 辅助标签池。
+	// 泛词黑名单拦截（fix-tagging-pollution）：mono / aggregate
+	// 两条写入路径的汇聚点，被拦截候选不进 topic_tags / 辅助标签池。
 	tags = filterGenericLabels(tags)
 	// Build article context for description generation
 	articleContext := buildArticleContext(article)
@@ -287,6 +288,11 @@ func persistArticleTags(ctx context.Context, article *models.Article, tags []Top
 		}
 
 		if dbTag.Category == "event" {
+			// 实体主体归一（normalize-event-subject-entities）：仅影子态真正
+			// 干活；hook 内部自判模式（off 零写入零调用），失败只记日志不阻断。
+			if EntitySubjectHook != nil {
+				EntitySubjectHook(ctx, tag, dbTag, article.ID, articleContext)
+			}
 			qs := getEmbeddingQueueService()
 			if qs != nil {
 				if err := qs.Enqueue(dbTag.ID); err != nil {
@@ -557,6 +563,9 @@ func CleanupOrphanedTags(tagIDs []uint) {
 		logging.Warnf("Failed to delete %d orphaned topic tags: %v", len(orphanIDs), err)
 	} else {
 		logging.Infof("Cleaned up %d orphaned topic tags", len(orphanIDs))
+		// 词典失效（review R-3）：孤儿清理是标签 label 的运行时删除路径，
+		// 不接线则被删词最长驻留词典到下一次任一标签写入。
+		search.DefaultDict().InvalidateDict()
 	}
 
 	// Recount refs for affected auxiliary labels after CASCADE

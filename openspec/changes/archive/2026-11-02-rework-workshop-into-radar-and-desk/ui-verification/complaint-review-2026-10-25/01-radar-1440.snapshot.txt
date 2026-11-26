@@ -1,0 +1,6 @@
+- link "返回主页" [ref=e2]
+- heading "今天看哪几个版块" [level=1, ref=e3]
+- button "新建版块" [ref=e4]
+- main "版块雷达列表" [ref=e1]
+- heading "今日该读" [level=2, ref=e5]
+- heading "今天可能升温" [level=2, ref=e6]

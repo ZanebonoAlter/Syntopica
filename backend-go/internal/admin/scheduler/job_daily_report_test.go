@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,9 +14,11 @@ import (
 	"gorm.io/gorm"
 
 	adminrepo "syntopica-backend/internal/admin/repository"
+	dataenrichment "syntopica-backend/internal/dataenrichment"
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/articlerefs"
 	"syntopica-backend/internal/platform/database"
+	"syntopica-backend/internal/platform/notification"
 	"syntopica-backend/internal/platform/scheduler"
 	tagging "syntopica-backend/internal/tagmanagement"
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
@@ -93,6 +96,12 @@ func setupDailyReportJobTest(t *testing.T) *gorm.DB {
 	prevPoll := dailyReportPollInterval
 	dailyReportPollInterval = time.Millisecond
 	t.Cleanup(func() { dailyReportPollInterval = prevPoll })
+
+	// 回填触发的新体检缝（fix-board-health-triage-degrade D3）：默认换成空实现
+	// —— 真实实现会跑真体检（生产 LLM），单测不接受；需要断言的用例自己覆盖。
+	prevBackfillCheckup := runPostBackfillBoardHealthCheckup
+	runPostBackfillBoardHealthCheckup = func(ctx context.Context) {}
+	t.Cleanup(func() { runPostBackfillBoardHealthCheckup = prevBackfillCheckup })
 
 	return db
 }
@@ -433,53 +442,93 @@ func TestDailyReportJobSucceedsWhenDanglingRefProbeFails(t *testing.T) {
 	require.EqualValues(t, 1, result.Data["report_count"], "the report pass still ran to completion")
 }
 
-// ── add-notification-center 白盒 B：定时路径终态通知判定口径 ──
+// ── add-notification-center 白盒 B + add-radar-pipeline-status D12：
+// 定时路径终态通知的三态计数口径 ──
 //
-// notification seam（notifyDailyReportSuccess / notifyDailyReportFailedSummary）
-// 是包级变量，测试直接 stub 捕获判定结果，无需通知库。四分支：
-// 全成功 / 部分真失败 / 空版面不误报 / 全部失败。互斥不变式（至多一条）由
-// adjudicateDailyReportTerminal 单点保证，这里断言调用侧。
-
+// 定时调度路径与手动 / 集合路径共用三态写入口 notification.DailyReportTerminal，
+// 故 seam 也只有一个：notifyDailyReportTerminal（包级变量）。测试直接 stub
+// 它捕获判定结果与三态计数，无需通知库。四分支：全成功 / 部分真失败 /
+// 空版面不误报 / 全部失败；互斥不变式（至多一条）由写入口单点保证，这里
+// 断言调用侧。
+//
+// 成功 / 失败分类沿用既有白盒 B 语义：notification.DailyReportTerminal 按
+// Failed>0 分流（失败汇总 vs 完成通知），故捕获按同一判据给调用分类——既有
+// 断言（完成通知 / 失败汇总 / 互斥不重复）的语义不变，只是断言对象从「两个
+// 旧入口的调用次数」换成「一个三态入口的调用 + 三态计数」。
 type notifyCapture struct {
-	mu            sync.Mutex
-	successDates  []time.Time
-	successTotal  []int
-	successSaved  []int
-	failDates     []time.Time
-	failSucceeded []int
-	failFailed    []int
+	mu     sync.Mutex
+	dates  []time.Time
+	counts []notification.DailyReportCounts
 }
 
 func (c *notifyCapture) stub(t *testing.T) {
 	t.Helper()
-	prevSuccess := notifyDailyReportSuccess
-	prevFailed := notifyDailyReportFailedSummary
-	notifyDailyReportSuccess = func(date time.Time, totalBoards, totalSaved int) {
+	previous := notifyDailyReportTerminal
+	notifyDailyReportTerminal = func(date time.Time, counts notification.DailyReportCounts) {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		c.successDates = append(c.successDates, date)
-		c.successTotal = append(c.successTotal, totalBoards)
-		c.successSaved = append(c.successSaved, totalSaved)
+		c.dates = append(c.dates, date)
+		c.counts = append(c.counts, counts)
 	}
-	notifyDailyReportFailedSummary = func(date time.Time, successCount, failedCount int) {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		c.failDates = append(c.failDates, date)
-		c.failSucceeded = append(c.failSucceeded, successCount)
-		c.failFailed = append(c.failFailed, failedCount)
-	}
-	t.Cleanup(func() {
-		notifyDailyReportSuccess = prevSuccess
-		notifyDailyReportFailedSummary = prevFailed
-	})
+	t.Cleanup(func() { notifyDailyReportTerminal = previous })
 }
 
+// terminalCalls 返回本次运行写出的终态通知条数（一次运行至多一条）。
+func (c *notifyCapture) terminalCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.counts)
+}
+
+// successCalls 归类为「完成通知」的调用数（Failed==0）。
 func (c *notifyCapture) successCalls() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(c.successDates)
+	n := 0
+	for _, counts := range c.counts {
+		if counts.Failed == 0 {
+			n++
+		}
+	}
+	return n
 }
-func (c *notifyCapture) failCalls() int { c.mu.Lock(); defer c.mu.Unlock(); return len(c.failDates) }
+
+// failCalls 归类为「失败汇总」的调用数（Failed>0）。
+func (c *notifyCapture) failCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, counts := range c.counts {
+		if counts.Failed > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// completionCounts 返回第一条完成通知的三态计数（没有则返回零值）。
+func (c *notifyCapture) completionCounts() notification.DailyReportCounts {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, counts := range c.counts {
+		if counts.Failed == 0 {
+			return counts
+		}
+	}
+	return notification.DailyReportCounts{}
+}
+
+// failedSummaryCounts 返回第一条失败汇总的三态计数（没有则返回零值）。
+func (c *notifyCapture) failedSummaryCounts() notification.DailyReportCounts {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, counts := range c.counts {
+		if counts.Failed > 0 {
+			return counts
+		}
+	}
+	return notification.DailyReportCounts{}
+}
 
 // stubGenerationBehavior swaps the generation entry point for a behavior table:
 // each boardID maps to "ok" (report) / "empty" (nil, nil) / "err" (error).
@@ -513,6 +562,9 @@ func TestDailyReportTerminalNotificationAdjudication(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 1, cap.successCalls(), "exactly one completion notification")
 		require.Equal(t, 0, cap.failCalls(), "mutual exclusion: no failure summary")
+		require.Equal(t, 1, cap.terminalCalls(), "一次运行至多一条终态通知")
+		require.Equal(t, notification.DailyReportCounts{TotalBoards: 2, Saved: 2, Failed: 0, Empty: 0},
+			cap.completionCounts(), "三态计数：2 个版面全部产出日报")
 	})
 
 	t.Run("部分真失败→一条失败汇总", func(t *testing.T) {
@@ -526,8 +578,10 @@ func TestDailyReportTerminalNotificationAdjudication(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 1, cap.failCalls(), "ONE failure summary, never per-board")
 		require.Equal(t, 0, cap.successCalls(), "互斥：失败时不发完成通知")
-		require.Equal(t, 2, cap.failSucceeded[0], "2 boards generated")
-		require.Equal(t, 1, cap.failFailed[0], "1 real failure")
+		require.Equal(t, 1, cap.terminalCalls(), "一次运行至多一条终态通知")
+		require.Equal(t, 2, cap.failedSummaryCounts().Saved, "2 boards generated")
+		require.Equal(t, 1, cap.failedSummaryCounts().Failed, "1 real failure")
+		require.Equal(t, 3, cap.failedSummaryCounts().TotalBoards, "总版面数含全部板块")
 	})
 
 	t.Run("空版面不误报为失败", func(t *testing.T) {
@@ -541,6 +595,10 @@ func TestDailyReportTerminalNotificationAdjudication(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 0, cap.failCalls(), "report==nil (当日无内容) must NOT count as failure")
 		require.Equal(t, 1, cap.successCalls(), "terminal state is a completion")
+		require.Equal(t, 1, cap.terminalCalls(), "一次运行至多一条终态通知")
+		// 口径变更（D12）：当日无内容的板块计入总版面数，但既不进成功数也不进失败数。
+		require.Equal(t, notification.DailyReportCounts{TotalBoards: 2, Saved: 1, Failed: 0, Empty: 1},
+			cap.completionCounts(), "「共 2 个版面」含当日无内容的板块，空版面单列")
 	})
 
 	t.Run("全部失败→一条失败汇总", func(t *testing.T) {
@@ -554,8 +612,51 @@ func TestDailyReportTerminalNotificationAdjudication(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 1, cap.failCalls(), "ONE failure summary for the run")
 		require.Equal(t, 0, cap.successCalls())
-		require.Equal(t, 0, cap.failSucceeded[0])
-		require.Equal(t, 2, cap.failFailed[0])
+		require.Equal(t, 1, cap.terminalCalls(), "一次运行至多一条终态通知")
+		require.Equal(t, 0, cap.failedSummaryCounts().Saved)
+		require.Equal(t, 2, cap.failedSummaryCounts().Failed)
+		require.Equal(t, 2, cap.failedSummaryCounts().TotalBoards, "总版面数含全部板块")
+	})
+
+	// 定时调度路径的三态口径（与手动 / 集合路径同源，D12）：1 成功 + 1 失败 +
+	// 1 当日无内容 → 「共 3 个版面，1 成功 1 失败，其中 1 个当日无内容」，
+	// 与 WS 终态消息的 total_boards/total_saved/failed_count/empty_count 一一对应。
+	t.Run("定时路径三态：1 成功 + 1 失败 + 1 无内容", func(t *testing.T) {
+		db := setupDailyReportJobTest(t)
+		seedReportBoardsForDate(t, db, today, 11, 22, 33)
+		stubGenerationBehavior(t, map[uint]string{11: "ok", 22: "err", 33: "empty"})
+		cap := &notifyCapture{}
+		cap.stub(t)
+
+		_, err := DailyReportJob(today)(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, 1, cap.terminalCalls(), "一次运行至多一条终态通知")
+		require.Equal(t, 1, cap.failCalls(), "有失败 → 一条失败汇总")
+		require.Equal(t, 0, cap.successCalls(), "互斥：失败时不发完成通知")
+		require.Equal(t, notification.DailyReportCounts{TotalBoards: 3, Saved: 1, Failed: 1, Empty: 1},
+			cap.failedSummaryCounts(),
+			"三态恒等式：saved+failed+empty == total_boards == 3（与手动路径 / WS 同口径）")
+	})
+
+	// 收集阶段早退（收集板块失败）：走三态写入口，口径与手动路径的早退一致——
+	// 「共 1 个版面，0 成功 1 失败」（TotalBoards=1 / Saved=0 / Failed=1 / Empty=0）。
+	t.Run("收集阶段失败早退→一条失败汇总（三态口径）", func(t *testing.T) {
+		setupDailyReportJobTest(t)
+		previous := daily_report.CollectBoardIDsForDate
+		daily_report.CollectBoardIDsForDate = func(time.Time) ([]uint, error) {
+			return nil, fmt.Errorf("simulated collect failure")
+		}
+		t.Cleanup(func() { daily_report.CollectBoardIDsForDate = previous })
+		cap := &notifyCapture{}
+		cap.stub(t)
+
+		result, err := DailyReportJob(today)(context.Background())
+		require.Error(t, err, "收集失败仍是作业错误（通知 fail-open 不改变错误返回）")
+		require.Nil(t, result)
+		require.Equal(t, 1, cap.terminalCalls(), "一次运行至多一条终态通知")
+		require.Equal(t, 1, cap.failCalls(), "一条失败汇总")
+		require.Equal(t, notification.DailyReportCounts{TotalBoards: 1, Saved: 0, Failed: 1, Empty: 0},
+			cap.failedSummaryCounts(), "早退口径：共 1 个版面，0 成功 1 失败")
 	})
 }
 
@@ -716,7 +817,9 @@ func TestManualDailyReportTriggerFiresBoardHealthCheckup(t *testing.T) {
 
 	bs := scheduler.New(scheduler.Config{
 		Name: "daily-report-manual-checkup",
-		Job:  func(ctx context.Context) (*scheduler.JobResult, error) { return &scheduler.JobResult{Summary: "noop"}, nil },
+		Job: func(ctx context.Context) (*scheduler.JobResult, error) {
+			return &scheduler.JobResult{Summary: "noop"}, nil
+		},
 	})
 	wrapper := NewDailyReportSchedulerWrapper(bs)
 
@@ -726,4 +829,180 @@ func TestManualDailyReportTriggerFiresBoardHealthCheckup(t *testing.T) {
 
 	require.Len(t, stub.snapshot(), 1, "manual path generated the report")
 	require.Equal(t, 1, checkup.count(), "manual path fires the checkup tail step")
+}
+
+// ── fix-board-health-triage-degrade：尾步预算 + 回填触发 ──
+
+// TestDailyReportJobCheckupTailStepBudget —— 尾步 ctx deadline ≈ 30min
+// （design D4：10min 硬编在「12 板耗 7.8min」的实测面前太紧，10-30 出现过
+// context deadline exceeded 把后面的板直接砍掉）。
+func TestDailyReportJobCheckupTailStepBudget(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	seedReportBoardsForDate(t, db, today, 11)
+	stubDailyReportGeneration(t, db)
+	cap := &notifyCapture{}
+	cap.stub(t)
+
+	var deadline time.Time
+	previous := runPostReportBoardHealthCheckup
+	runPostReportBoardHealthCheckup = func(ctx context.Context) {
+		deadline, _ = ctx.Deadline()
+	}
+	t.Cleanup(func() { runPostReportBoardHealthCheckup = previous })
+
+	_, err := DailyReportJob(today)(context.Background())
+	require.NoError(t, err)
+	require.False(t, deadline.IsZero(), "尾步必须拿到带 deadline 的 ctx")
+	remaining := time.Until(deadline)
+	require.Greater(t, remaining, 29*time.Minute, "尾步预算必须 ≈30min")
+	require.LessOrEqual(t, remaining, 30*time.Minute)
+}
+
+// TestDailyReportJobBackfillTriggersGuardedCheckup —— 回填补出日报后追加一次
+// 带守卫的体检（fix-board-health-triage-degrade D3）。
+func TestDailyReportJobBackfillTriggersGuardedCheckup(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	// 只有昨天有内容 → 昨天的日报缺失 → 被回填补出。
+	seedReportBoardsForDate(t, db, today.AddDate(0, 0, -1), 11)
+	stubDailyReportGeneration(t, db)
+	cap := &notifyCapture{}
+	cap.stub(t)
+
+	var calls int32
+	previous := runPostBackfillBoardHealthCheckup
+	runPostBackfillBoardHealthCheckup = func(ctx context.Context) { atomic.AddInt32(&calls, 1) }
+	t.Cleanup(func() { runPostBackfillBoardHealthCheckup = previous })
+
+	result, err := DailyReportJob()(context.Background())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, result.Data["backfilled_count"], "昨天那一板被补出")
+	// 回填触发是异步的（spec：回填与手动触发 SHALL 异步执行，不阻塞 job 返回），
+	// 所以这里等 goroutine 落地而不是立即断言。
+	require.Eventually(t, func() bool { return atomic.LoadInt32(&calls) == 1 }, 2*time.Second, 10*time.Millisecond,
+		"回填补出日报 → 追加一次体检")
+}
+
+// TestDailyReportJobNoBackfillDoesNotTriggerCheckup —— 没有补出任何日报时
+// 不追加体检（零成本口径）。
+func TestDailyReportJobNoBackfillDoesNotTriggerCheckup(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	// 只有今天有内容 → 主轮生成今天的日报，回填窗口内无缺口。
+	seedReportBoardsForDate(t, db, today, 11)
+	stubDailyReportGeneration(t, db)
+	cap := &notifyCapture{}
+	cap.stub(t)
+
+	var calls int32
+	previous := runPostBackfillBoardHealthCheckup
+	runPostBackfillBoardHealthCheckup = func(ctx context.Context) { atomic.AddInt32(&calls, 1) }
+	t.Cleanup(func() { runPostBackfillBoardHealthCheckup = previous })
+
+	result, err := DailyReportJob()(context.Background())
+	require.NoError(t, err)
+	require.EqualValues(t, 0, result.Data["backfilled_count"])
+	// 负向断言：给异步路径足够窗口确认「确实没触发」。
+	time.Sleep(200 * time.Millisecond)
+	require.Zero(t, atomic.LoadInt32(&calls), "没有补出 → 不触发体检")
+}
+
+// ── lifeline heal 尾步（daily-report-lifeline-heal 2.2/2.3）──
+
+type healCapture struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *healCapture) stub(t *testing.T) {
+	previous := launchLifelineHealAsync
+	launchLifelineHealAsync = func() { c.mu.Lock(); c.calls++; c.mu.Unlock() }
+	t.Cleanup(func() { launchLifelineHealAsync = previous })
+}
+
+func (c *healCapture) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+// spec「week SHALL NOT 启用每日补齐」守护：粒度集合恰为 month+year，
+// 防止未来误加 week（或误删 year）而全部测试仍绿（review R-2）。
+func TestLifelineHealGranularitiesExcludeWeek(t *testing.T) {
+	require.Equal(t, []string{
+		dataenrichment.GranularityMonth,
+		dataenrichment.GranularityYear,
+	}, lifelineHealGranularities)
+}
+
+// Scenario「日报成功后补齐月报缺口」：成功路径异步启动 heal 轮恰好一次，
+// JobResult.Data 带 lifeline_heal.triggered 痕迹字段（异步启动即记，不等结果）。
+func TestDailyReportJobTriggersLifelineHealOnSuccess(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	seedReportBoardsForDate(t, db, today, 11, 22)
+	stub := stubDailyReportGeneration(t, db)
+	cap := &notifyCapture{}
+	cap.stub(t)
+	heal := &healCapture{}
+	heal.stub(t)
+
+	result, err := DailyReportJob(today)(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, stub.snapshot(), 2)
+	require.Equal(t, 1, heal.count(), "heal tail step launched exactly once on success")
+	require.Equal(t, map[string]interface{}{"triggered": true}, result.Data["lifeline_heal"],
+		"trigger trace recorded in JobResult.Data")
+}
+
+// 主流程失败（failedCount>0）不触发 heal：失败轮无法证明模型通路健康。
+func TestDailyReportJobSkipsLifelineHealOnFailure(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	seedReportBoardsForDate(t, db, today, 11)
+	stubGenerationBehavior(t, map[uint]string{11: "err"})
+	cap := &notifyCapture{}
+	cap.stub(t)
+	heal := &healCapture{}
+	heal.stub(t)
+
+	result, err := DailyReportJob(today)(context.Background())
+	require.NoError(t, err, "board failure is logged, not a job error")
+	require.Zero(t, heal.count(), "no heal after a failed run")
+	require.NotContains(t, result.Data, "lifeline_heal", "no heal trace without a trigger")
+	require.Equal(t, 1, cap.failCalls(), "failure summary fired (precondition)")
+}
+
+// heal goroutine panic 被 launcher 边界 recover：日报 job 返回值不受污染；
+// 若 recover 缺失，panic 会崩掉整个测试进程，本用例必红。
+func TestDailyReportJobLifelineHealPanicDoesNotPolluteResult(t *testing.T) {
+	db := setupDailyReportJobTest(t)
+	today := midnightLocal(time.Now())
+	seedReportBoardsForDate(t, db, today, 11)
+	stub := stubDailyReportGeneration(t, db)
+	cap := &notifyCapture{}
+	cap.stub(t)
+
+	panicked := make(chan struct{})
+	previous := runLifelineHealRound
+	runLifelineHealRound = func() {
+		defer close(panicked)
+		panic("heal blew up")
+	}
+	t.Cleanup(func() { runLifelineHealRound = previous })
+
+	result, err := DailyReportJob(today)(context.Background())
+	require.NoError(t, err, "heal launch is fire-and-forget")
+	require.NotNil(t, result)
+	require.Len(t, stub.snapshot(), 1)
+	require.Equal(t, 1, cap.successCalls())
+
+	select {
+	case <-panicked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("heal goroutine did not run")
+	}
+	time.Sleep(50 * time.Millisecond) // 给 launcher 边界 recover 路径留出执行窗口
 }

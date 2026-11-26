@@ -3,6 +3,9 @@ services:
     image: pgvector/pgvector:pg18-trixie
     container_name: syntopica-postgres
     restart: unless-stopped
+    # halfvec HNSW 索引构建/查询需要较大共享内存（默认 64MB 不够，
+    # 维护期并行建 2560 维索引会要 ~534MB）。2026-11-04 tag-embedding-slow 验证加。
+    shm_size: 1g
     # autovacuum tuning (optimize-pg-storage): tighten vacuum triggers for the
     # high-churn tables (otel_spans ~820k inserts+deletes/day; embedding cache
     # churn) and raise cost limit so vacuum keeps up with write volume.
@@ -30,6 +33,23 @@ services:
       - wal_compression=on
       - -c
       - idle_in_transaction_session_timeout=60s
+      # shared_buffers 128MB → 1GB（2026-11-25 fix-aux-label-dedup-ann 验收）：
+      # semantic_labels merge halfvec HNSW 索引 218MB + topic_tag_embeddings identity
+      # 索引 194MB = 412MB 索引集。512MB 装不下（预热完被挤掉，pg_prewarm 重跑仍
+      # 返回全部 27k 页），实测冷读 ~278ms / 热读 5-13ms。1GB 可容索引 + 热页。
+      # 启动期参数：改后必须 recreate 容器，ALTER SYSTEM + reload 不生效。
+      - -c
+      - shared_buffers=1GB
+      # pg_prewarm autoprewarm（2026-11-25）：每 autoprewarm_interval 秒把 shared_buffers
+      # 里的页 dump 到 $PGDATA/autoprewarm.blocks，重启后自动恢复——否则每次 recreate
+      # 容器后 HNSW 索引（212MB）要从 SD 卡重新读，L2 召回首访问 ~278ms。
+      # autoprewarm worker 依赖 shared_preload_libraries，必须 preload + 重启容器。
+      - -c
+      - shared_preload_libraries=pg_prewarm
+      - -c
+      - pg_prewarm.autoprewarm=on
+      - -c
+      - pg_prewarm.autoprewarm_interval=300s
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     environment:

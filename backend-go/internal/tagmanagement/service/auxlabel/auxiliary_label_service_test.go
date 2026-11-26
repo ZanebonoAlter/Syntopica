@@ -75,6 +75,42 @@ func TestAuxiliaryLabelServiceL1NormalizeKeyMatchesTextVariant(t *testing.T) {
 	require.Empty(t, embedder.calls, "L1 match must short-circuit before any embedding call")
 }
 
+// 任务 3.2 补充一：别名 slug 口径命中——Slugify(alias) == Slugify(入参) 即复用，
+// 而且 trim + EqualFold 并不成立（旧 semanticAliasesContain 的第二条口径）。
+// 例：别名 「提示词/工程」 与入参 「提示词-工程」 字面不同，slug 都是 「提示词-工程」。
+func TestAuxiliaryLabelServiceL1AliasSlugMatch(t *testing.T) {
+	db := setupAuxiliaryLabelTestDB(t)
+	existing := models.SemanticLabel{Label: "Prompt Engineering", Slug: "prompt-engineering", LabelType: "auxiliary", Status: "active", Aliases: []string{"提示词/工程"}}
+	require.NoError(t, db.Create(&existing).Error)
+	embedder := &recordingAuxiliaryEmbedder{}
+	service := NewAuxiliaryLabelService(db, embedder.embed)
+
+	label, err := service.ResolveAuxiliaryLabel(context.Background(), "提示词-工程", "")
+
+	require.NoError(t, err)
+	require.Equal(t, existing.ID, label.ID, "Slugify(alias) == Slugify(input) must L1-hit even though the raw texts differ")
+	require.Empty(t, embedder.calls, "L1 alias hit must not call the embedder")
+}
+
+// 任务 3.2 补充二：同 key 多行取列表首个——map 索引先到先得，与旧顺序扫描的
+// 「首个命中即 break」一致（后者取决于无 ORDER BY 的物理顺序，这里锁定列表首行）。
+func TestAuxiliaryLabelServiceL1DuplicateKeysKeepFirstRow(t *testing.T) {
+	db := setupAuxiliaryLabelTestDB(t)
+	first := models.SemanticLabel{Label: "OpenAI", Slug: "openai-dup", LabelType: "auxiliary", Status: "active", Aliases: []string{"Open AI"}}
+	second := models.SemanticLabel{Label: "OpenAI 官方", Slug: "openai-dup-2", LabelType: "auxiliary", Status: "active", Aliases: []string{"Open AI"}}
+	require.NoError(t, db.Create(&first).Error)
+	require.NoError(t, db.Create(&second).Error)
+
+	idx := newAuxLabelIndex([]models.SemanticLabel{lightweightLabelCopy(&first), lightweightLabelCopy(&second)})
+	row, hit := idx.match("", "open ai", "")
+	require.True(t, hit)
+	require.Equal(t, first.ID, row.ID, "first row in list order owns a duplicated alias key")
+
+	row, hit = idx.match("openai-dup-2", "", "")
+	require.True(t, hit)
+	require.Equal(t, second.ID, row.ID, "unique slug keys stay addressable")
+}
+
 func TestAuxiliaryLabelServiceL1NormalizeKeyNoMatchCreatesNew(t *testing.T) {
 	db := setupAuxiliaryLabelTestDB(t)
 	existing := models.SemanticLabel{Label: "SK海力士", Slug: "sk海力士", LabelType: "auxiliary", Status: "active"}
@@ -221,6 +257,33 @@ func TestAuxiliaryLabelServiceRemoveBoardCompositionDeletesOnlyRequestedRow(t *t
 	var boardLabelCount int64
 	require.NoError(t, db.Model(&tagmodels.TopicTagBoardLabel{}).Count(&boardLabelCount).Error)
 	require.Equal(t, int64(1), boardLabelCount)
+}
+
+// 4.1 M1：组合标签也是构成单元（board_composition.auxiliary_label_id 列复用，
+// 挂载侧 addBoardComposition 已受理 auxiliary/composite 两类）——摘除侧必须同样
+// 受理 composite，否则体检分诊里组合标签的「建议摘除」走既有 DELETE 链会 400。
+func TestAuxiliaryLabelServiceRemoveBoardCompositionAcceptsComposite(t *testing.T) {
+	db := setupAuxiliaryLabelTestDB(t)
+	board := models.SemanticLabel{Label: "AI Board", Slug: "ai-board", LabelType: "board", Status: "active"}
+	require.NoError(t, db.Create(&board).Error)
+	composite := models.SemanticLabel{Label: "OpenAI × GPT", Slug: "openai-x-gpt", LabelType: "composite", Status: "active"}
+	require.NoError(t, db.Create(&composite).Error)
+	auxiliary := models.SemanticLabel{Label: "OpenAI", Slug: "openai", LabelType: "auxiliary", Status: "active"}
+	require.NoError(t, db.Create(&auxiliary).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: composite.ID}).Error)
+	require.NoError(t, db.Create(&tagmodels.BoardComposition{BoardID: board.ID, AuxiliaryLabelID: auxiliary.ID}).Error)
+	service := NewAuxiliaryLabelService(db, (&recordingAuxiliaryEmbedder{}).embed)
+
+	require.NoError(t, service.RemoveBoardComposition(context.Background(), board.ID, composite.ID))
+
+	var removed int64
+	require.NoError(t, db.Model(&tagmodels.BoardComposition{}).
+		Where("board_id = ? AND auxiliary_label_id = ?", board.ID, composite.ID).Count(&removed).Error)
+	require.Zero(t, removed, "组合标签的构成关系应被解除")
+	var kept int64
+	require.NoError(t, db.Model(&tagmodels.BoardComposition{}).
+		Where("board_id = ? AND auxiliary_label_id = ?", board.ID, auxiliary.ID).Count(&kept).Error)
+	require.Equal(t, int64(1), kept, "只摘除请求的那一行")
 }
 
 func TestAuxiliaryLabelServiceL2MergeKeepsHigherRefCountAndAppendsAlias(t *testing.T) {

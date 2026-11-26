@@ -44,6 +44,12 @@ func SessionIDFromContext(ctx context.Context) string {
 // It replaces the older pattern: GenerateDailyReport → SaveReport.
 // After saving the report (and its sections), it runs EvaluateWatchHits
 // OUTSIDE the SaveReport transaction as a read-only overlay.
+
+// generateDailyReportFn is the generation seam (tests stub the LLM-heavy
+// pipeline; production always runs the real orchestrator — same convention
+// as the handler-level generateReportEntry).
+var generateDailyReportFn = GenerateDailyReport
+
 func GenerateAndSaveReport(ctx context.Context, boardID uint, date time.Time) (*repository.BoardDailyReport, error) {
 	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "service.GenerateAndSaveReport")
 	defer span.End()
@@ -52,8 +58,10 @@ func GenerateAndSaveReport(ctx context.Context, boardID uint, date time.Time) (*
 	// gives a unique key even before SaveReport fills report.ID.
 	sessionID := fmt.Sprintf("daily_report_%d_%s", boardID, uuid.New().String()[:8])
 	ctx = WithSessionID(ctx, sessionID)
+	inputs := &reportHighlightInputs{}
+	ctx = context.WithValue(ctx, reportHighlightInputsKey{}, inputs)
 
-	report, sections, threadBatches, err := GenerateDailyReport(ctx, boardID, date)
+	report, sections, threadBatches, err := generateDailyReportFn(ctx, boardID, date)
 	if err != nil {
 		return nil, fmt.Errorf("generate daily report: %w", err)
 	}
@@ -61,9 +69,15 @@ func GenerateAndSaveReport(ctx context.Context, boardID uint, date time.Time) (*
 		return nil, nil
 	}
 
+	// Clear a previous generation's publication payload before rebuilding.
+	report.Highlights, _ = resolveHighlightsPayload(nil, nil)
+	report.Title = fmt.Sprintf("日报 %s", report.PeriodDate.Format("2006-01-02"))
+	report.Summary = ""
 	if err := repository.Repo.SaveReport(report, sections, threadBatches); err != nil {
 		return nil, fmt.Errorf("save daily report: %w", err)
 	}
+
+	finalizeDailyReportHighlights(ctx, report, inputs)
 
 	// EvaluateWatchHits runs AFTER SaveReport (outside its transaction).
 	// Failure is swallowed — hits are a read-only overlay that SHALL NOT
@@ -77,6 +91,12 @@ func GenerateAndSaveReport(ctx context.Context, boardID uint, date time.Time) (*
 	// goroutine, fully recovered — settlement failure/panic SHALL NOT affect
 	// the report (spec red line); retried naturally next report day.
 	spawnLaneSnapshotSettlement(boardID)
+
+	// Key-event recommendation (add-topic-key-event-markers D3): another
+	// detached bounded task AFTER the existing terminal work. Same red line —
+	// failure never changes the report result nor emits a second terminal
+	// notification; reads degrade honestly and the next report retries.
+	SpawnKeyEventRecommendationForReport(boardID, report.ID, sessionID)
 
 	return report, nil
 }

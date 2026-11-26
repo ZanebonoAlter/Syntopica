@@ -2,21 +2,25 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/testutil"
 	"syntopica-backend/internal/topicgraph/repository"
 )
 
 func TestBuildQualityBreakdownJSON(t *testing.T) {
 	tags := []repository.TagInput{
-		{ID: 1, Label: "AI芯片", MatchReason: "direct_hit", Score: 1.0, Downgraded: false},
-		{ID: 2, Label: "GPT-5发布", MatchReason: "max_sim", Score: 0.85, Downgraded: false},
-		{ID: 3, Label: "AI竞赛", MatchReason: "weighted", Score: 0.59, Downgraded: false},
-		{ID: 4, Label: "GPU短缺", MatchReason: "max_sim", Score: 0.72, Downgraded: true},
+		{ID: 1, Label: "AI芯片", MatchReason: "direct_hit", Score: 1.0},
+		{ID: 2, Label: "GPT-5发布", MatchReason: "max_sim", Score: 0.85},
+		{ID: 3, Label: "AI竞赛", MatchReason: "weighted", Score: 0.59},
+		{ID: 4, Label: "GPU短缺", MatchReason: "max_sim", Score: 0.72},
 	}
 
 	// Test with 3 tag IDs
@@ -34,7 +38,7 @@ func TestBuildQualityBreakdownJSON(t *testing.T) {
 		assert.NotNil(t, e["label"])
 		assert.NotNil(t, e["match_reason"])
 		assert.NotNil(t, e["score"])
-		assert.NotNil(t, e["downgraded"])
+		assert.NotContains(t, e, "downgraded", "downgraded 键已随标记退役移除")
 	}
 
 	// Verify first entry (direct_hit)
@@ -42,7 +46,6 @@ func TestBuildQualityBreakdownJSON(t *testing.T) {
 	assert.Equal(t, "AI芯片", entries[0]["label"])
 	assert.Equal(t, "direct_hit", entries[0]["match_reason"])
 	assert.Equal(t, float64(1), entries[0]["score"])
-	assert.Equal(t, false, entries[0]["downgraded"])
 
 	// Test empty tag IDs
 	raw2 := buildQualityBreakdownJSON(tags, []uint{})
@@ -53,9 +56,10 @@ func TestBuildQualityBreakdownJSON(t *testing.T) {
 	assert.Len(t, emptyEntries, 0)
 }
 
-func TestBuildQualityBreakdownJSON_DowngradedFlag(t *testing.T) {
+func TestBuildQualityBreakdownJSON_NoDowngradedKey(t *testing.T) {
+	// downgraded 标记已于 2026-11-12 退役：breakdown 不再写 downgraded 键。
 	tags := []repository.TagInput{
-		{ID: 10, Label: "降级标签", MatchReason: "max_sim", Score: 0.82, Downgraded: true},
+		{ID: 10, Label: "标签", MatchReason: "max_sim", Score: 0.82},
 	}
 
 	raw := buildQualityBreakdownJSON(tags, []uint{10})
@@ -63,7 +67,7 @@ func TestBuildQualityBreakdownJSON_DowngradedFlag(t *testing.T) {
 	err := json.Unmarshal(raw, &entries)
 	require.NoError(t, err)
 	assert.Len(t, entries, 1)
-	assert.Equal(t, true, entries[0]["downgraded"])
+	assert.NotContains(t, entries[0], "downgraded")
 	assert.Equal(t, "max_sim", entries[0]["match_reason"])
 	assert.Equal(t, float64(0.82), entries[0]["score"])
 }
@@ -103,40 +107,24 @@ func TestFilterTagsByQuality_TruncatesAbove30(t *testing.T) {
 	assert.Len(t, result, 30)
 }
 
-func TestFilterTagsByQuality_DowngradedMaxSimSortedToEnd(t *testing.T) {
-	// Build >30 tags, with one downgraded max_sim that should sort lower
+func TestFilterTagsByQuality_TierTruncation(t *testing.T) {
+	// downgraded 已退役：max_sim 统一 tier 2。30 条 direct_hit（tier 0）+
+	// max_sim/weighted 追加项 → 截断只保 30 条 tier 0。
 	tags := make([]repository.TagInput, 0, 35)
 	for i := 0; i < 30; i++ {
 		tags = append(tags, repository.TagInput{
 			ID: uint(i + 1), MatchReason: "direct_hit", Score: float64(100 - i),
 		})
 	}
-	// Add downgraded max_sim entries — they should be sorted to end
-	tags = append(tags, repository.TagInput{ID: 31, MatchReason: "max_sim", Score: 0.99, Downgraded: true})
-	tags = append(tags, repository.TagInput{ID: 32, MatchReason: "max_sim", Score: 0.95, Downgraded: true})
-	tags = append(tags, repository.TagInput{ID: 33, MatchReason: "max_sim", Score: 0.90, Downgraded: false})
-	tags = append(tags, repository.TagInput{ID: 34, MatchReason: "max_sim", Score: 0.85, Downgraded: false})
+	tags = append(tags, repository.TagInput{ID: 31, MatchReason: "max_sim", Score: 0.99})
+	tags = append(tags, repository.TagInput{ID: 32, MatchReason: "max_sim", Score: 0.95})
 	tags = append(tags, repository.TagInput{ID: 35, MatchReason: "weighted", Score: 0.5})
 
 	result := filterTagsByQuality(tags)
 	assert.Len(t, result, 30)
-
-	// The last entries should be the lowest-quality ones
-	// Downgraded max_sim (tier 3) should be behind non-downgraded max_sim (tier 2)
-	// All direct_hit (tier 0) should be first
-	hasDowngraded := false
 	for _, r := range result {
-		if r.Downgraded {
-			hasDowngraded = true
-		}
+		assert.Equal(t, "direct_hit", r.MatchReason, "tier 0 满额时低档不得挤占")
 	}
-	// With 30 direct_hit entries at tier 0, the 2 downgraded max_sim (tier 3),
-	// 2 non-downgraded max_sim (tier 2), and 1 weighted (tier 3) should not
-	// displace any direct_hit entries. Since we only keep 30 and have 30 direct_hit,
-	// none of the max_sim or weighted entries should appear.
-	// This is correct: all kept entries are direct_hit (tier 0).
-	// Downgraded entries correctly don't sneak in.
-	_ = hasDowngraded
 }
 
 // TestBuildQualityBreakdownJSON_MergedSections covers the spec scenario
@@ -147,10 +135,10 @@ func TestFilterTagsByQuality_DowngradedMaxSimSortedToEnd(t *testing.T) {
 // union semantics the merge path relies on.
 func TestBuildQualityBreakdownJSON_MergedSections(t *testing.T) {
 	tags := []repository.TagInput{
-		{ID: 1, Label: "AI芯片", MatchReason: "direct_hit", Score: 1.0, Downgraded: false},
-		{ID: 2, Label: "GPT-5发布", MatchReason: "max_sim", Score: 0.85, Downgraded: false},
-		{ID: 3, Label: "AI竞赛", MatchReason: "weighted", Score: 0.59, Downgraded: false},
-		{ID: 4, Label: "GPU短缺", MatchReason: "max_sim", Score: 0.72, Downgraded: true},
+		{ID: 1, Label: "AI芯片", MatchReason: "direct_hit", Score: 1.0},
+		{ID: 2, Label: "GPT-5发布", MatchReason: "max_sim", Score: 0.85},
+		{ID: 3, Label: "AI竞赛", MatchReason: "weighted", Score: 0.59},
+		{ID: 4, Label: "GPU短缺", MatchReason: "max_sim", Score: 0.72},
 	}
 
 	// Merged tagIDSet = union of section A {1,2} and section B {3,4}.
@@ -174,7 +162,7 @@ func TestBuildQualityBreakdownJSON_MergedSections(t *testing.T) {
 		assert.NotNil(t, e["label"])
 		assert.NotNil(t, e["match_reason"])
 		assert.NotNil(t, e["score"])
-		assert.NotNil(t, e["downgraded"])
+		assert.NotContains(t, e, "downgraded", "downgraded 键已随标记退役移除")
 	}
 	// All four merged tag IDs are present (union, no drops).
 	assert.True(t, seenIDs[1] && seenIDs[2] && seenIDs[3] && seenIDs[4])
@@ -223,4 +211,97 @@ func TestResolveClusterLabel_LongTitleStaysWithinColumnLimit(t *testing.T) {
 	if l := len([]rune(got)); l != 200 {
 		t.Errorf("resolved label length %d runes, want exactly 200 (column budget)", l)
 	}
+}
+
+// TestFindPreviousReportBrief covers tasks 3.1's alignment with the
+// 「日报关联昨日报告」 Scenario: the previous brief is the most recent
+// COMPLETED report strictly before the target date (a generating/failed report
+// must not become prev_report_id).
+func TestFindPreviousReportBrief(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repository.InitRepository(db)
+	t.Cleanup(func() { repository.Repo = nil })
+
+	board := models.SemanticLabel{Label: "prev-report", Slug: "prev-report", LabelType: "board", Status: "active"}
+	require.NoError(t, db.Create(&board).Error)
+	today := repository.NormalizeReportDate(time.Now())
+
+	yesterday := repository.BoardDailyReport{
+		SemanticBoardID: board.ID,
+		PeriodDate:      today.AddDate(0, 0, -1),
+		Title:           "yesterday",
+		Status:          "completed",
+	}
+	require.NoError(t, db.Create(&yesterday).Error)
+	// A more recent, non-completed report must be skipped.
+	require.NoError(t, db.Create(&repository.BoardDailyReport{
+		SemanticBoardID: board.ID,
+		PeriodDate:      today,
+		Title:           "today in flight",
+		Status:          "generating",
+	}).Error)
+
+	prev := findPreviousReportBrief(board.ID, today)
+	require.NotNil(t, prev)
+	assert.Equal(t, yesterday.ID, prev.ID, "prev_report_id links the last completed report")
+
+	// A board with only an in-flight report has no previous brief.
+	emptyBoard := models.SemanticLabel{Label: "prev-report-empty", Slug: "prev-report-empty", LabelType: "board", Status: "active"}
+	require.NoError(t, db.Create(&emptyBoard).Error)
+	require.NoError(t, db.Create(&repository.BoardDailyReport{
+		SemanticBoardID: emptyBoard.ID,
+		PeriodDate:      today,
+		Title:           "only in flight",
+		Status:          "generating",
+	}).Error)
+	assert.Nil(t, findPreviousReportBrief(emptyBoard.ID, today))
+}
+
+// ---- highlights payload resolution (fix-daily-report-highlights-null) ----
+
+// TestResolveHighlightsPayload_DegradesToEmptyArray (B12): a failed highlights
+// generation degrades to an empty JSON array — the payload is exactly "[]",
+// never the JSON null scalar that used to hide the whole "今日重点" block.
+func TestResolveHighlightsPayload_DegradesToEmptyArray(t *testing.T) {
+	payload, degraded := resolveHighlightsPayload(nil, errors.New("highlights AI call failed: schema echo"))
+
+	assert.True(t, degraded, "a failed highlights generation must report degradation")
+	assert.Equal(t, []byte("[]"), payload)
+	assert.NotEqual(t, []byte("null"), payload, "highlights must never persist a JSON null scalar")
+
+	// The payload must decode as an empty array (jsonb contract).
+	var decoded []map[string]any
+	require.NoError(t, json.Unmarshal(payload, &decoded))
+	assert.Empty(t, decoded)
+}
+
+// TestResolveHighlightsPayload_Normal (B13): a successful generation persists
+// the highlights array unchanged and is NOT flagged as degraded.
+func TestResolveHighlightsPayload_Normal(t *testing.T) {
+	data := []repository.Highlight{
+		{Title: "要闻一", Reason: "理由一", TagIDs: []uint{1}},
+		{Title: "要闻二", Reason: "理由二", TagIDs: []uint{2}},
+		{Title: "要闻三", Reason: "理由三", TagIDs: []uint{1, 2}},
+	}
+
+	payload, degraded := resolveHighlightsPayload(data, nil)
+
+	assert.False(t, degraded, "a successful generation must not report degradation")
+	require.NotEqual(t, []byte("null"), payload)
+
+	var decoded []repository.Highlight
+	require.NoError(t, json.Unmarshal(payload, &decoded))
+	require.Len(t, decoded, 3)
+	assert.Equal(t, "要闻一", decoded[0].Title)
+	assert.Equal(t, "理由二", decoded[1].Reason)
+	assert.Equal(t, []uint{1, 2}, decoded[2].TagIDs)
+}
+
+// TestResolveHighlightsPayload_EmptyButLegalIsNotDegraded (B6/B13 seam): a
+// legal empty response is a normal (non-degraded) report with "[]" persisted.
+func TestResolveHighlightsPayload_EmptyButLegalIsNotDegraded(t *testing.T) {
+	payload, degraded := resolveHighlightsPayload([]repository.Highlight{}, nil)
+
+	assert.False(t, degraded)
+	assert.Equal(t, []byte("[]"), payload)
 }

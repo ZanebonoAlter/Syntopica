@@ -11,6 +11,9 @@ export * from './feed'
 export * from './article'
 export * from './ai'
 
+// 站内搜索类型
+export * from './search'
+
 // 阅读行为类型
 export * from './reading_behavior'
 

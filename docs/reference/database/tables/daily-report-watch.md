@@ -3,7 +3,7 @@
 > 真相源 = 代码（GORM struct + `postgres_migrations.go`），本文件是投影。全局约定（FK 真相 / 向量维度 / 枚举 / 唯一与 CHECK 约束）见 [_conventions.md](_conventions.md)；完整表清单与导航见 [_index.md](../_index.md)。
 
 
-> 本域 8 张表由 `internal/topicgraph` 的 `RegisterModels` 注册（`init()`），部署若未引入该包则表不存在；迁移对它们用 `tableExists` 守卫，缺失时安全跳过。
+> 本域 15 张表：12 张由 `internal/topicgraph/repository` 的 `RegisterModels` 注册（`init()`）；`topic_anchor_overrides` / `section_assignment_overrides` 两张留痕表由显式迁移 `20261113_0002` / `20261113_0004` 建表，`daily_report_backfill_runs` 补填留档表由显式迁移 `20261125_0001` 建表（三张的模型都刻意不进 AutoMigrate）。部署若未引入该包则表不存在，迁移对它们用 `tableExists` 守卫，缺失时安全跳过。
 
 ### 9.1 board_daily_reports（板块日报主表）
 
@@ -32,7 +32,7 @@
 
 ### 9.2 daily_report_sections（日报分区）
 
-一分区 = 一聚类。承载归属持久话题的字段。
+一分区 = 一聚类；域型泳道的一个聚类可拆成 2-6 个主题方向（兄弟分区共享 `cluster_index`，用 `bucket_index`/`bucket_title` 区分）。承载归属持久话题的字段。
 
 | 字段名 | 类型 | 约束/默认/索引 | 用途 |
 | -------- | ------ | ------ | ------ |
@@ -50,7 +50,12 @@
 | `topic_match_distance` | FLOAT | — | 归属匹配距离 |
 | `topic_match_confidence` | VARCHAR(20) | — | 归属置信度：`anchor_hit` / `auto_new` / `unmatched` / **`manual`** |
 | `topic_status_at_report` | VARCHAR(20) | —（`*string`，可空，迁移 `20260627_0001`） | 报告生成时话题状态快照（`candidate` / `active` / NULL） |
-| `lane_tier` | VARCHAR(16) | —（迁移 `20260727_0001`） | 泳道归属标记：`l1_direct`（质心强挂直归属）/ `l2_llm`（弱区 LLM 留/换）/ `l3_new`（新开 candidate）。NULL = 迁移前历史 section（旧流程产出，不回刷） |
+| `lane_tier` | VARCHAR(16) | —（迁移 `20260727_0001`） | 泳道归属标记：`l1_direct`（质心强挂直归属）/ `l2_llm`（弱区 LLM 留/换）/ `l3_new`（新开 candidate）；物化轨另有 `watch_keyword` / `watch_sentence`。NULL = 迁移前历史 section（旧流程产出，不回刷） |
+| `bucket_title` | VARCHAR(200) | 可空（迁移 `20261024_0001`） | 泳道内主题分桶的方向名（add-intra-lane-theme-bucketing）。NULL = 未分桶/历史行；不参与任何跨天统计 |
+| `bucket_index` | INTEGER | NOT NULL DEFAULT 0（迁移 `20261024_0001`） | 同一 `cluster_index` 内的桶序号（0 起、组内唯一）。未分桶 = 0；`(report_id, cluster_index)` **刻意无唯一约束**（兄弟桶共享） |
+| `manual_assignment_at` | TIMESTAMPTZ | 可空（迁移 `20261113_0003`） | 最近一次人工归属变更时刻；历史行 NULL（**不回填**） |
+| `manual_assignment_from_topic_id` | BIGINT | 可空（同上） | 变更前所属话题 id（`detach` 记来源；`attach` 为 NULL） |
+| `manual_assignment_action` | VARCHAR(16) | 可空（同上） | 动作：`detach` / `attach`。**只保留最近一次**（会被下一次覆盖），完整历史在 `section_assignment_overrides`（§9.14） |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 
 > HNSW 索引 `idx_daily_report_sections_embedding`：运行时由 `ensureSectionEmbeddingDimension` 创建（dim ≤ 2000 才建）。
@@ -73,6 +78,11 @@
 | `related_article_ids` | JSONB | 保序、去重（首个为准） | 关联文章 ID 列表（逻辑引用 `articles.id`，无 FK）。**写入时只允许存在的 id**：日报生成写库前过一次存在性校验；空引用写 `[]`，**不得**写 JSON `null`（`jsonb_array_elements_text` 遇 null 抛 22023）。**删除路径必须维护**：`articles` 行被删时同事务内改指保留条或剔除（详见 `flow/daily-report.md` 约束 21） |
 | `embedding` | vector | —（运行时维度） | 线程向量 |
 | `fit_distance` | FLOAT | —（`*float64`，**无 default**，刻意区分 nil 与 0.0） | 与所属分区的契合距离（nil = 无信号，0.0 = 完美契合） |
+| `story_id` | BIGINT | —（`*uint` 可空；index `daily_report_threads_story_idx`；迁移 `20261105_0001` 建真实 FK → `board_stories(id) ON DELETE SET NULL`） | **历史列（retire-story-adopt-event-metrics 起停写）**：新生成/重建的日报恒 NULL，历史值只读保留且读路径不再对外返回；事件线链路已停写，该列只作回滚与存量核对依据 |
+| `scope` | TEXT | NOT NULL DEFAULT 'single'; **CHECK** `chk_daily_report_threads_scope IN ('single','composite')`（迁移 `20261105_0001`） | 由 `tag_ids` 中 event 标签数推导：≥2 = composite（综合稿，永不建/挂事件线），否则 single |
+| `is_development` | BOOLEAN | NOT NULL DEFAULT false（迁移 `20261105_0001`） | **历史列**：「同一事件线不同阶段（进展）」标记；跨期去重已退役，新报不再写该语义（默认 false），只读保留 |
+| `story_manual` | BOOLEAN | NOT NULL DEFAULT false（迁移 `20261105_0001`） | **历史列**：新报恒 false；历史人工标记只读保留，自动归属已停写故不再有「跳过人工标记」路径 |
+| `display_tier` | TEXT | NOT NULL DEFAULT 'body'; **CHECK** `chk_daily_report_threads_display_tier IN ('body','flash','hidden')`（迁移 `20261105_0001`） | 展示层载体：**新报恒 body**（跨期去重退役，不再产生 flash）；历史 flash/hidden 只读保留，读路径仍只回 body。身份/signals/热度永不读该列 |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 
 > **已删列**：`status`、`prev_thread_id`（迁移 `20260603_0001`）。
@@ -113,6 +123,7 @@
 | `is_vacuum` | BOOLEAN | NOT NULL DEFAULT false（迁移 `20260727_0001`） | 吸尘器标记：`strong/(strong+mid) < persistent_topic_vacuum_ratio`（默认 0.20）则 true——质心过宽、沾边 tag 都被吸成最近邻，挂到它的 tag 从 L1 降级 L2 交 LLM 裁决 |
 | `vacuum_strong` | INTEGER | NOT NULL DEFAULT 0（迁移 `20260727_0001`） | 近 `persistent_topic_vacuum_window`（默认 7 天）归属该 topic 且 `topic_match_distance < 0.18` 的 section 计数（吸尘器统计快照） |
 | `vacuum_mid` | INTEGER | NOT NULL DEFAULT 0（迁移 `20260727_0001`） | 近窗口归属该 topic 且 distance ∈ [0.18, 0.30] 的 section 计数（吸尘器统计快照） |
+| `centroid_pending_recompute` | BOOLEAN | NOT NULL DEFAULT false（迁移 `20261113_0001`） | 人工修正后的强制重算标记：质心刷新范围 =「当日 touched 话题 ∪ 本列为 true 的话题」，否则当天无新内容的泳道永远等不到重算。历史行 false，不触发重算 |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 | `updated_at` | TIMESTAMP | — | 更新时间 |
 
@@ -173,7 +184,174 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 | `rolling_summary` | TEXT | NOT NULL | ≤100 字短版态势句 |
 | `rolling_detail` | TEXT | 可空（模型层空串=缺失） | ≤500 字长版成段叙述，与短版同窗同素材同一次结算生成；纯派生缓存——每日报结算 upsert 覆盖，无迁移动作（AutoMigrate 加列）；存量旧行空=合法，下个结算周期自愈补齐、不回填 |
 | `as_of_date` | DATE | NOT NULL | 汇总截止（=最新报告期） |
+### 9.9 topic_key_event_markers（话题关键事件注记）
+
+人工主权的关键事件注记行：AI 只写 `suggested`，`confirmed`/`dismissed` 只能由用户动作产生；同版块同来源指纹唯一（重建重跑幂等）。来源指针可空——日报重生成删 thread/section 时 DB FK SET NULL 断开引用，确认快照保留（失效来源注记）。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | SERIAL | PK | 主键 |
+| `semantic_board_id` | INTEGER | NOT NULL; UNIQUE `idx_topic_key_events_board_source(semantic_board_id, source_key)`; **FK** `→ semantic_labels(id) ON DELETE CASCADE`（迁移 `20261012_0001`） | 所属版块（boards=semantic_labels 行） |
+| `source_key` | VARCHAR(64) | NOT NULL; 同上复合唯一 | 来源指纹：SHA-256(board\|topic\|上海日期\|空白归一标题\|排序去重 tag+article ID)；任何漂移=新注记 |
+| `persistent_topic_id` | INTEGER | 复合索引 `idx_topic_key_events_topic_state`; **FK** `→ board_persistent_topics(id) ON DELETE SET NULL` | 所属话题（话题删除→失效快照注记） |
+| `source_report_id` | INTEGER | index; **FK** `→ board_daily_reports(id) ON DELETE SET NULL` | 来源日报（导航入口；SET NULL 保快照） |
+| `source_section_id` | INTEGER | **FK** `→ daily_report_sections(id) ON DELETE SET NULL` | 来源分区（重建后失配→NULL=失效快照） |
+| `source_thread_id` | INTEGER | **FK** `→ daily_report_threads(id) ON DELETE SET NULL` | 来源线索（thread 寻址动作的目标） |
+| `source_period_date` | DATE | NOT NULL; 复合索引同上 | 来源报告期（轴定位；快照冻结） |
+| `topic_label_snapshot` | VARCHAR(200) | — | 确认时话题名快照 |
+| `title_snapshot` | TEXT | — | 确认时线索标题快照（展示不得重写新闻） |
+| `summary_snapshot` | TEXT | — | 确认时线索摘要快照 |
+| `tag_ids_snapshot` | JSONB | — | 标签 ID 快照数组 |
+| `article_ids_snapshot` | JSONB | — | 依据文章 ID 快照数组（**确认时冻结**，可为 `null` = 未冻结文章）；版块级关键事件视图的「关联文章」展开入口读它（add-key-event-matrix-view），MUST NOT 用它反查实时文章集合 |
+| `state` | VARCHAR(16) | NOT NULL DEFAULT 'suggested'; 复合索引同上; **CHECK** `ck_topic_key_event_markers_state IN ('suggested','confirmed','dismissed')` | 三态；AI 只写 suggested |
+| `recommendation_reason` | TEXT | —（AI 行才有；手动标记为空） | 建议理由（服务端校验候选与证据归属后才落库） |
+| `recommendation_basis` | JSONB | —（同上） | `{"evidence_article_ids":[...],"new_progress":bool}`；证据必须 ⊆ 线索文章 |
+| `last_action` | VARCHAR(16) | — | 最近动作（mark/dismiss/unmark 审计） |
+| `confirmed_at` | TIMESTAMP | —（可空） | 确认时刻（信号材料回溯标记用） |
+| `decided_at` | TIMESTAMP | —（可空） | 最近人工决定时刻 |
+| `revision` | INTEGER | NOT NULL DEFAULT 1 | 乐观锁版本；409 冲突返回最新行 |
 | `created_at` / `updated_at` | TIMESTAMP | — | 创建 / 更新时间 |
+
+> 幂等语义（add-topic-key-event-markers design D1）：PUT/PATCH 同目标同状态重复提交直接返回已保存行；状态变更必须携带最新 `revision`，冲突 409 附服务端最新行；重建重跑按 `source_key` 精确匹配重挂来源指针，失配即断开为独立快照注记（不伪造 section/关系）。
+>
+> 读端口径（add-key-event-matrix-view）：`GET /semantic-boards/:id/key-events?days=N` 只读 `state='confirmed'` 且 `source_period_date` 落在窗口内的行，按 `source_period_date ASC, persistent_topic_id ASC, id ASC` 排序；`suggested`/`dismissed` 不进载荷。`article_ids_snapshot` / `tag_ids_snapshot` 是**确认时冻结**的事实层快照，消费方只读、不得回写、不得当作实时关系。
+
+### 9.10 key_event_recommendation_runs（推荐任务状态）
+
+每报告一行的推荐任务状态（重建覆盖 state/token，迟到任务凭 token 失配整批丢弃）。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | SERIAL | PK | 主键 |
+| `report_id` | INTEGER | NOT NULL; UNIQUE `idx_key_event_runs_report` | 目标日报（一报告一行） |
+| `semantic_board_id` | INTEGER | NOT NULL; index | 所属版块 |
+| `state` | VARCHAR(16) | NOT NULL DEFAULT 'running'; **CHECK** `ck_key_event_recommendation_runs_state IN ('running','done','failed')` | running/done/failed；进程重启后无内存任务对应的 running 行读取降级为 failed |
+| `generation_token` | VARCHAR(64) | NOT NULL | 生成代 token（uuid）：重建换 token，迟到批次对不上即丢弃 |
+| `candidate_count` | INTEGER | — | 本轮候选线索数（≤40） |
+| `suggested_count` | INTEGER | — | 本轮实际写/刷新 suggested 行数 |
+| `error` | TEXT | —（可空） | 失败原因 |
+| `created_at` / `updated_at` | TIMESTAMP | — | 创建 / 更新时间 |
+
+### 9.11 board_stories（事件线，add-event-story-heat；**只读保留**）
+
+> ⚠️ **本表自 change `retire-story-adopt-event-metrics`（2026-11-11）起只读保留**：在线生产已硬停写（归属入口与其调用已摘除，无 `ai_settings` 开关；review R-1），重建历史报也不再重算派生计数（review R-2），回填 CLI 写模式拒绝，不删表不迁移；下列字段/索引描述为历史口径与回滚（`git revert`）依据。现行「今日重点」用当天同事件聚簇（不落库），见 `flow/daily-report.md` 红线 46-47。
+
+跨天同一事件的聚合体（一条线贯穿多天的多个 `daily_report_threads`），承载结构化指纹与热度汇总计数；热度证据在 `story_signals`，热度由 signals 实时计算不落本表。挂在版块下（`board_id`），可选关联首次归属话题（`lane_id` 仅展示分组用，不参与身份判定）。迁移 `20261105_0001`。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | BIGSERIAL | PK | 主键 |
+| `board_id` | BIGINT | NOT NULL; index `board_stories_subject_idx` (priority 1)；迁移建真实 FK → `semantic_labels(id)`（boards 是 `label_type='board'` 的 SemanticLabel 行）ON DELETE CASCADE | 所属版块 |
+| `lane_id` | BIGINT | —（可空；FK ON DELETE SET NULL） | 首次归属话题（board_persistent_topics.id）；可空——话题归档/删除不影响身份 |
+| `title` | TEXT | NOT NULL | 事件线标题 |
+| `subject` | TEXT | — | 主体原文（展示用，可能是「特朗普」也可能是「Trump」） |
+| `subject_key` | TEXT | —; index `board_stories_subject_idx` (priority 2) | 归一化实体键（`person:trump` / `company:bytedance` / `org:pboc` / `product:gpt-5` / `other:*`）；主体归一化主判据 |
+| `action` | TEXT | — | 动作（发布/宣布/涨价/回应/下架）；阶段判定与反向动作表输入 |
+| `object` | TEXT | — | 对象（产品/政策/资产/事项） |
+| `occurred_at` | TIMESTAMPTZ | —（可空） | 事件发生时间 |
+| `status` | TEXT | NOT NULL DEFAULT 'active'; **CHECK** `chk_board_stories_status IN ('active','settled','merged')` | active（参与召回与热度）/ settled（已收束）/ merged（已合并，merged_into 指向存活者） |
+| `first_seen_date` / `last_seen_date` | DATE | NOT NULL | 活跃区间（date 非时间戳），随新事件挂入滚动更新 |
+| `thread_count` | INTEGER | NOT NULL DEFAULT 0 | 挂入事件数（composite 不计） |
+| `article_count` | INTEGER | NOT NULL DEFAULT 0 | 关联文章数 |
+| `participant_count` | INTEGER | NOT NULL DEFAULT 0 | 独立参与者数（按内容身份去重，feed 兜底）；**历史字段**（矩阵颜色通道已退役，不再有消费方） |
+| `embedding` | vector | —（**无维度限定**，运行时维度） | 召回向量（title 级，只召回不判定） |
+| `subject_embedding` | vector | —（**无维度限定**） | 主体归一化兑底向量（subject_key 的 embedding，cos ≥ 0.92）；仅为已建立事件线算一次 |
+| `merged_into` | BIGINT | —（可空；FK → board_stories(id)）；index `board_stories_recall_idx` 为部分索引 `WHERE merged_into IS NULL AND status='active'` ON `(board_id, last_seen_date DESC)` | 指向合并后存活事件线；读取一跳解析（不允许两层链） |
+| `origin` | TEXT | NOT NULL DEFAULT 'rule'; **CHECK** `chk_board_stories_origin IN ('rule','model','manual')` | rule（确定性判定）/ model（LLM 兕底，单分类器置信度 ≥0.75）/ manual（人工创建/合并，永不被自动判定覆盖） |
+| `created_at` / `updated_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | 创建 / 更新 |
+
+### 9.12 story_signals（热度证据，add-event-story-heat；**只读保留**）
+
+> ⚠️ **本表自 change `retire-story-adopt-event-metrics` 起只读保留**：不再有新写入（归属停写），历史行供回滚与存量核对；现行泳道热度不读本表（`heat-v2-lane-clues-1d` 按当天线索数现算）。
+
+一行 = 一条报道证据在信源时间讨论过一条事件线；身份（事件归属）与热度（signals）分离，去重只作用于身份层。**参与者身份 = 内容身份优先、feed 兜底**：去重键 = `COALESCE(NULLIF(content_key,''), participant_key)`——同一篇内容（规范化链接相同）被多个 feed 各抓一份只算 1 个参与者（fix-duplicate-article-heat）。**2026-11-19 校正（review R-5）**：`participant_count` / 来源数 / 热度**已随事件线退役不再派生**（flow `daily-report.md` 红线 43/49），本段只描述历史口径；内容身份去重的现行消费面是当天聚簇的簇内篇数（`report_event_clusters.go` 复用 `heatParticipantKey`）。热度只读本表计算（`story_heat = Σ 0.5^(Δt/24h)` 窗口 48h；`lane_heat` 72h/14d 独立衰减的历史公式），也从日报派生不了任何现役数字。迁移 `20261105_0001`（+ `20261110_0001` 加 `content_key`）。**存量回填已终结**：`content_key` 已于 2026-11-10 用 `cmd/backfill-stories --backfill-content-keys` 回填并核对（1386 行全有值、`participant_count` 全库一致）；事件线停写后该命令的**写模式一律拒绝并非零退出**（仅 `--dry-run` 保留），不得再重算 `participant_count`。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `story_id` | BIGINT | NOT NULL; PK (1/2)；FK → board_stories(id) ON DELETE CASCADE；index `story_signals_story_idx` ON `(story_id, participant_key, observed_at DESC)` | 所属事件线 |
+| `article_id` | BIGINT | NOT NULL; PK (2/2)；FK → articles(id) ON DELETE CASCADE | 报道文章（同一篇对同一条线只计一次证据） |
+| `feed_id` | BIGINT | NOT NULL | 来源 feed |
+| `participant_key` | TEXT | NOT NULL | 参与者键的 **feed 兜底值**（`feed:<id>`）；`content_key` 为空（内容身份不可判定）时按它去重，同参与者多篇只计一次 |
+| `content_key` | TEXT | 可空（迁移 `20261110_0001` 新增）；index `story_signals_story_content_idx` ON `(story_id, content_key)` | 内容身份键 = `NormalizeArticleLink(articles.link)`（去 `#fragment`、去 `?query`、scheme/host 小写、path 原样；空 link → 空串 = 不可判定）；同一内容的多 feed 副本共用一个键，去重时优先于 `participant_key` |
+| `kind` | TEXT | NOT NULL DEFAULT 'editorial'; **CHECK** `chk_story_signals_kind IN ('editorial','signal')` | editorial（信源报道，本期唯一写入值）/ signal（社媒等外部信号，预留位，写入路径未开放） |
+| `observed_at` | TIMESTAMPTZ | NOT NULL; index `story_signals_time_idx` ON `(observed_at DESC)` | 信源时间 = `articles.pub_date`；热度衰减的 Δt 基准 |
+| `observed_at_source` | TEXT | NOT NULL DEFAULT 'pub_date'; **CHECK** `chk_story_signals_observed_at_source IN ('pub_date','fallback')` | pub_date（信源时间，优先）/ fallback（文章缺 pub_date 时回退 created_at） |
+
+> 写入幂等：复合主键 `(story_id, article_id)` 收敛（重复写入保留最新 observed_at）；归属变更时旧线 signal 删除、新线写入（`RecomputeSignalsForStory`）。证据不按 `archived` 过滤——归档只是轮转出 feed 活跃窗口（MaxArticles），不是撤回，归档报道照常计入热度（红线同 sourcestats 包「窗口查询不得过滤 archived」）；将来若需排除「撤回/恶意」须新增专用列，不得复用 `archived`。
+
+### 9.13 topic_anchor_overrides（首义改写留痕，append-only；lane-manual-correction-loop）
+
+人工重设话题首义（`PATCH /api/daily-reports/topics/:id/anchor`）每改一次追加一行：旧行**永不更新、永不删除**，所以「这条泳道的定义面什么时候被谁改成什么」永远可答。**另一条写入路径（align-lane-correction-workface 起）**：手动建泳道（`POST /supervision/.../persistent-topics/manual` 一类手动建话题入口 → `CreateManualTopic`）在建话题的**同一事务内**追加一行（`source=selected_sections`、`input_summary` = 实际参与聚合的 section id = 构成首义向量的那批节点），使「建话题时选中的节点」即首义集合可读回；留痕写失败则整个建话题事务回滚。**历史存量手动话题不回填**（当时未留痕，事后推断即编造），继续读作 `source=auto` 的「来源不可考」。读出口 `GET /api/daily-reports/topics/:id/anchor` 的 `override_count` 就是本表中该话题的行数（0 = `source=auto` 走自动首义；≥1 = `source=manual`，节点集取最新一行（`created_at DESC, id DESC`）的 `input_summary`）。与 `daily_report_sections` 的留痕三列不同，本表是**完整历史**而非「最近一次快照」。
+
+> **建表方式**：显式迁移 `20261113_0002` `CREATE TABLE`——模型 `TopicAnchorOverride` 刻意不进 AutoMigrate 注册清单（`TableName()` 返回本表名）。
+> **刻意无 DB 级外键**：`topic_id` 不建 FK——留痕是只追加的审计流水，话题被硬删时不应连带抹掉改写历史。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | BIGSERIAL | PK | 主键 |
+| `topic_id` | BIGINT | NOT NULL; index `idx_topic_anchor_overrides_topic` | 被改写的话题（逻辑引用 `board_persistent_topics.id`，**无 FK**） |
+| `old_embedding` | vector | 可空（运行时维度） | 改写前的首义向量；话题此前无可用向量时 NULL |
+| `new_embedding` | vector | NOT NULL（运行时维度） | 改写后写入的首义向量 |
+| `source` | VARCHAR(32) | NOT NULL | 输入模式；当前只有 `selected_sections`（首义由选定节点区间定义，不接自由文本） |
+| `input_summary` | TEXT | NOT NULL DEFAULT '' | 选定 section id 的 JSON 数组（留痕原文） |
+| `operator` | VARCHAR(64) | NOT NULL DEFAULT '' | 操作者；单用户无鉴权部署统一记本地用户 |
+| `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | 追加时刻 |
+
+### 9.14 section_assignment_overrides（泳道归属变更留痕，append-only；lane-manual-correction-loop）
+
+人工移除/加回一条 section 的泳道归属（`PATCH /api/daily-reports/sections/:id/assignment`）各追加一行。`daily_report_sections` 上的留痕三列只保留**最近一次**变更（下一次即覆盖）——「移除 → 加回」会抹掉 detach 痕迹；本表补完整历史：谁在什么时候把哪条内容挪进 / 挪出哪条泳道。
+
+> **建表方式**：显式迁移 `20261113_0004` `CREATE TABLE`（模型 `SectionAssignmentOverride` 同样不进 AutoMigrate）。
+> **刻意无 DB 级外键**：`section_id` / `topic_id_from` / `topic_id_to` 均不建 FK——留痕必须比被硬删的 section 活得更久。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | BIGSERIAL | PK | 主键 |
+| `section_id` | BIGINT | NOT NULL; index `idx_section_assignment_overrides_section` | 被移动的 section（逻辑引用 `daily_report_sections.id`，**无 FK**） |
+| `topic_id_from` | BIGINT | 可空 | 变更前所属话题；`attach` 时为 NULL（此前无归属） |
+| `topic_id_to` | BIGINT | 可空 | 变更后所属话题；`detach` 时为 NULL（不再归属任何泳道） |
+| `action` | VARCHAR(16) | NOT NULL | 动作：`detach` / `attach`（与 §9.2 `manual_assignment_action` 同口径） |
+| `operator` | VARCHAR(64) | NOT NULL DEFAULT '' | 操作者 |
+| `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | 追加时刻 |
+
+### 9.15 daily_report_backfill_runs（缺档补填运行留档，add-daily-report-gap-backfill）
+
+一次「日报缺档补填」运行留一行。补填是**异步后台运行**（`POST /api/daily-reports/backfill-gaps` 受理即返 `job_id`，服务端旧到新串行补空）——用户侧靠 WS 进度与终态通知看到过程与结果，但**运行级留痕**只有本表，它也是缺口查询响应里 `last_run` 摘要的来源。
+
+> **建表方式**：显式迁移 `20261125_0001` `CREATE TABLE`（模型 `repository.DailyReportBackfillRun` **刻意不进 AutoMigrate**，SQL 是 schema 唯一权威——jsonb 逐日明细契约与四态 `status` CHECK 由迁移固化，不让 AutoMigrate 猜）。迁移对 `board_daily_reports` 做 `tableExists` 守卫：日报域模型未注册的最小部署跳过整段，不炸启动。
+> **为什么独立成表**（不复用 `scheduler_tasks.last_execution_result`）：手动补填不走调度任务，塞进调度结果会丢；调度任务结果结构随调度器变动，而补填留档需要稳定的逐日明细 + 四态终态；缺口查询还要按 `started_at` 倒序读「最近一次运行」。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `id` | BIGSERIAL | PK | 主键 |
+| `run_id` | VARCHAR(64) | NOT NULL; UNIQUE index `uq_daily_report_backfill_runs_run_id` | 一次运行的唯一标识（与 WS 终态消息 `daily_report_backfill_done.run_id` 同值） |
+| `trigger_scope` | VARCHAR(20) | NOT NULL DEFAULT 'manual'; CHECK `ck_daily_report_backfill_runs_trigger_scope` IN ('manual','scheduled') | 触发来源：`manual`（手动端点）/ `scheduled`（调度器） |
+| `window_start` | DATE | NOT NULL | 补填窗口下界（含） |
+| `window_end` | DATE | NOT NULL | 补填窗口上界（含） |
+| `status` | VARCHAR(24) | NOT NULL DEFAULT 'running'; CHECK `ck_daily_report_backfill_runs_status` IN ('running','success','partial','failed','budget_exhausted') | 终态四态 + 运行中态 `running`（收尾时改写） |
+| `daily_details` | JSONB | NOT NULL DEFAULT '[]'::jsonb | 逐日明细数组（契约见下） |
+| `filled_count` | INTEGER | NOT NULL DEFAULT 0 | 补出篇数 |
+| `failed_count` | INTEGER | NOT NULL DEFAULT 0 | 失败格数 |
+| `remaining_count` | INTEGER | NOT NULL DEFAULT 0 | 未完成缺口数（预算耗尽 / 失败 / 当日无内容时 > 0） |
+| `started_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | 开始时间 |
+| `finished_at` | TIMESTAMPTZ | 可空（运行中为 NULL） | 结束时间 |
+| `created_at` | TIMESTAMPTZ | NOT NULL DEFAULT now() | 建行时间 |
+
+CHECK 约束第三条：`ck_daily_report_backfill_runs_window` — `window_end >= window_start`（倒置窗口被拒）。
+
+**`daily_details` jsonb 契约**：数组，元素 `{"date": "YYYY-MM-DD", "filled": int, "failed": int, "remaining": int}`，按日期升序；**空写 `[]` 不写 `null`**（对齐本域 jsonb 数组契约：空集合写 `[]`、不写 `null` 标量）。语义：`filled` = 该日补出篇数；`failed` = 该日生成失败的格数；`remaining` = 该日**仍未有报告**的格数（失败格与「当日无内容」格都计入，故 `remaining ≥ failed`）。
+
+**写路径**（谁写、何时收尾）：
+
+| 时机 | 入口 | 行为 |
+| ---- | ---- | ---- |
+| 运行开始（第一个格子生成**之前**） | `repository.CreateBackfillRun` | 插入一行 `status='running'`、`daily_details='[]'`、`started_at=now()`——先建行保证中途崩溃的运行也可见。表缺席时**静默跳过**（留档是增强，不是补填的前置条件） |
+| 运行收尾 | `repository.FinalizeBackfillRun` | 按 `run_id` **原地 UPDATE**（`status` / `daily_details` / `filled_count` / `failed_count` / `remaining_count` / `finished_at`）——**幂等，不新建行**（重复收尾 / 补偿任务不会把一次运行拆成两行）。表缺席时静默跳过 |
+| 只读 | `repository.LatestBackfillRun` | `ORDER BY started_at DESC, id DESC` 取最近一行；表缺席或无记录时返回 `(nil, nil)`（缺口查询响应的 `last_run` 字段随之缺省） |
+
+**保留策略**：本表**无自动清理**（仓库内没有针对本表的删除 / 裁剪代码），只增不删；`idx_daily_report_backfill_runs_started`（`started_at DESC`）供「读最近一次」与按时间倒序浏览。
+
+> **同迁移播种的设置项**：`20261125_0001` 同时向 `ai_settings` 播种 `daily_report_backfill_budget_minutes` = `60`（描述「日报缺档补填整轮预算（分钟）」）——整轮补填的分钟预算可在设置里在线调；读不到 / 非法值时回退默认 60。键值属 AI 路由域（见 [`ai-routing.md`](ai-routing.md)），此处只记它与本表同迁移落地。
 
 ---
 
@@ -199,11 +377,24 @@ label 类 AI 或 keyword 类文本匹配得到的 Watch 与日报分区的匹配
 | `idx_persistent_topics_board_status` | board_persistent_topics | `(semantic_board_id, status)` | `20260619_0001` |
 | `idx_watch_section_report` | topic_watch_hits | UNIQUE `(watch_id, section_id, report_id)` | `20260630_0002` |
 | `idx_board_upgrade_suggestions_status` | board_upgrade_suggestions | `(status)` | `20260717_0001` |
+| `idx_topic_key_events_board_source` | topic_key_event_markers | UNIQUE `(semantic_board_id, source_key)` | gorm tag（AutoMigrate） |
+| `idx_topic_key_events_topic_state` | topic_key_event_markers | `(persistent_topic_id, state, source_period_date)` | gorm tag（AutoMigrate） |
+| `idx_key_event_runs_report` | key_event_recommendation_runs | UNIQUE `(report_id)` | gorm tag（AutoMigrate） |
+| `daily_report_threads_story_idx` | daily_report_threads | `(story_id)` | `20261105_0001` |
+| `idx_topic_anchor_overrides_topic` | topic_anchor_overrides | `(topic_id)` | `20261113_0002` |
+| `idx_section_assignment_overrides_section` | section_assignment_overrides | `(section_id)` | `20261113_0004` |
+| `board_stories_recall_idx` | board_stories | 部分索引 `(board_id, last_seen_date DESC) WHERE merged_into IS NULL AND status='active'` | `20261105_0001` |
+| `board_stories_subject_idx` | board_stories | `(board_id, subject_key)` | `20261105_0001` |
+| `story_signals_time_idx` | story_signals | `(observed_at DESC)` | `20261105_0001` |
+| `story_signals_story_idx` | story_signals | `(story_id, participant_key, observed_at DESC)` | `20261105_0001` |
+| `story_signals_story_content_idx` | story_signals | `(story_id, content_key)` | `20261110_0001` |
+| `uq_daily_report_backfill_runs_run_id` | daily_report_backfill_runs | UNIQUE `(run_id)` | `20261125_0001` |
+| `idx_daily_report_backfill_runs_started` | daily_report_backfill_runs | `(started_at DESC)` | `20261125_0001` |
 
 
 ## 域 ER 图
 
-> 实线关系 = GORM 逻辑关联；标注「真实DB FK」的边 = DB 物理外键（共 6 条，全清单见 [_conventions.md](_conventions.md)）。外域邻居表仅标名，字段见其所属域文档。
+> 实线关系 = GORM 逻辑关联；标注「真实DB FK」的边 = DB 物理外键（共 13 条，全清单见 [_conventions.md](_conventions.md)）。外域邻居表仅标名，字段见其所属域文档。
 
 ```mermaid
 erDiagram

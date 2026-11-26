@@ -5,6 +5,7 @@ import { Icon } from '@iconify/vue'
 import type { Component } from 'vue'
 import { useTheme } from '~/composables/useTheme'
 import { useOnboarding } from '~/composables/useOnboarding'
+import { LEGACY_SECTION_REDIRECT, LEGACY_TAB_REDIRECT } from '~/features/settings/legacyRedirects'
 import SettingsSidebar from './SettingsSidebar.vue'
 import SettingsSectionFeeds from './SettingsSectionFeeds.vue'
 import SettingsSectionPreferences from './SettingsSectionPreferences.vue'
@@ -40,23 +41,12 @@ const sections: SectionMeta[] = [
   { key: 'margin-notes', group: '内容管理', label: '页边注', description: '跨报告的日报划词批注与问答：筛选、跳原日报定位、删除', icon: 'mdi:notebook-outline', component: SettingsSectionMarginNotes },
   { key: 'ai-providers', group: 'AI 配置', label: 'AI 模型', description: '管理供应商、模型清单与能力路由', icon: 'mdi:brain', component: AIProviderManagement },
   { key: 'capability-routes', group: 'AI 配置', label: '能力路由', description: '按能力分配模型优先级与降级顺序', icon: 'mdi:routes', component: SettingsSectionCapabilityRoutes },
-  { key: 'datasources-network', group: '数据源与网络', label: '数据源与网络', description: 'Firecrawl、博查、SearXNG、RSSHub、研究数据源与出站代理配置', icon: 'mdi:lan-connect', component: SettingsSectionDatasourcesNetwork },
+  { key: 'datasources-network', group: '数据源与网络', label: '数据源与网络', description: 'Firecrawl、博查、网页搜索、RSSHub、研究数据源与出站代理配置', icon: 'mdi:lan-connect', component: SettingsSectionDatasourcesNetwork },
   { key: 'runtime-status', group: '运行状态', label: '运行状态', description: 'AI 健康、队列与定时任务的监控与手动触发', icon: 'mdi:monitor-dashboard', component: SettingsSectionRuntimeStatus },
 ]
 
-/** 旧 section 键深链重定向（D2）：9 旧键 → 2 复合键 + tab=旧键，外部书签与 onboarding 不死链 */
-const LEGACY_SECTION_REDIRECT: Record<string, { section: SectionKey, tab: string }> = {
-  firecrawl: { section: 'datasources-network', tab: 'firecrawl' },
-  bocha: { section: 'datasources-network', tab: 'bocha' },
-  searxng: { section: 'datasources-network', tab: 'searxng' },
-  rsshub: { section: 'datasources-network', tab: 'rsshub' },
-  datasources: { section: 'datasources-network', tab: 'datasources' },
-  proxy: { section: 'datasources-network', tab: 'proxy' },
-  'ai-health': { section: 'runtime-status', tab: 'ai-health' },
-  queues: { section: 'runtime-status', tab: 'queues' },
-  schedulers: { section: 'runtime-status', tab: 'schedulers' },
-}
-
+// 旧 section 键深链重定向（D2）与旧子 tab 键重定向（switch-margin-note-search-to-deepseek D6）
+// 的映射单一来源在 ~/features/settings/legacyRedirects.ts，本文件只消费、不再本地维护字面拷贝。
 const router = useRouter()
 const route = useRoute()
 const { toggleTheme, isDark } = useTheme()
@@ -74,14 +64,20 @@ const activeSection = computed<SectionKey>(() => {
   return 'feeds'
 })
 
-// 旧键命中即 router.replace 到新键携带 tab=<旧键>（幂等：replace 后键为合法新键不再触发）
+// 旧键命中即 router.replace 到新键携带 tab=<旧键/新键>（幂等：replace 后键已合法不再触发）
 watch(
-  () => route.query.section as string | undefined,
-  (q) => {
-    if (!q) return
-    const redirect = LEGACY_SECTION_REDIRECT[q]
+  () => [route.query.section as string | undefined, route.query.tab as string | undefined] as const,
+  ([section, tab]) => {
+    if (!section) return
+    const redirect = LEGACY_SECTION_REDIRECT[section]
     if (redirect) {
       router.replace({ query: { ...route.query, section: redirect.section, tab: redirect.tab } })
+      return
+    }
+    if (section !== 'datasources-network' || !tab) return
+    const tabRedirect = LEGACY_TAB_REDIRECT[tab]
+    if (tabRedirect) {
+      router.replace({ query: { ...route.query, tab: tabRedirect } })
     }
   },
   { immediate: true },

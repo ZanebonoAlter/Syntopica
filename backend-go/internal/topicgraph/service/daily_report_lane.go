@@ -356,7 +356,11 @@ func clusterLaneToTier(lane string) string {
 // adjudicates the L2 band with an LLM, groups the L3 band as new narrative,
 // and emits []ClusterGroup carrying Lane + MatchedTopicID for the orchestrator
 // to stamp onto each section.
-func ClusterTagsLane(ctx context.Context, tags []repository.TagInput, topics []repository.BoardPersistentTopic, tagEmbeddings map[uint][]float64, briefs map[uint][]repository.TopicRecentBrief, cfg repository.PersistentTopicConfig) ([]repository.ClusterGroup, error) {
+// Variadic opts carry the auxiliary-label constraint context
+// (topic-lane-auxiliary-label-constraint). Callers that pass nothing (and every
+// test written before the change) get the exact legacy behaviour: no
+// constraints ⇒ no gate ⇒ zero extra LLM calls.
+func ClusterTagsLane(ctx context.Context, tags []repository.TagInput, topics []repository.BoardPersistentTopic, tagEmbeddings map[uint][]float64, briefs map[uint][]repository.TopicRecentBrief, cfg repository.PersistentTopicConfig, opts ...LaneConstraintOption) ([]repository.ClusterGroup, error) {
 	ctx, span := tracing.Tracer(tracing.ServiceName).Start(ctx, "workflow.daily_report.cluster_tags_lane")
 	defer span.End()
 
@@ -387,6 +391,7 @@ func ClusterTagsLane(ctx context.Context, tags []repository.TagInput, topics []r
 			l3groups = append(l3groups, repository.ClusterGroup{GroupName: t.Label, TagIDs: []uint{t.ID}, Lane: "l3"})
 		}
 		groups := assembleLaneGroups(l1, l2dec, l3groups)
+		groups = ApplyLaneConstraintGate(ctx, groups, tags, topics, briefs, cfg, laneConstraintOption(opts))
 		logging.Infof("daily-report: lane cluster (fallback, no LLM) %d tags → l1=%d l2=%d l3=%d groups=%d",
 			len(tags), len(l1), len(l2), len(l3pool), len(groups))
 		return groups, nil
@@ -436,6 +441,7 @@ func ClusterTagsLane(ctx context.Context, tags []repository.TagInput, topics []r
 	}
 
 	groups := assembleLaneGroups(l1, l2dec, l3groups)
+	groups = ApplyLaneConstraintGate(ctx, groups, tags, topics, briefs, cfg, laneConstraintOption(opts))
 	logging.Infof("daily-report: lane cluster %d tags → l1=%d l2=%d l3=%d groups=%d",
 		len(tags), len(l1), len(l2), len(l3pool), len(groups))
 	return groups, nil
@@ -541,4 +547,318 @@ func l3GroupsSchema() *airouter.JSONSchema {
 		},
 		Required: []string{"groups"},
 	}
+}
+
+// ── 辅助标签约束闸门（topic-lane-auxiliary-label-constraint tasks 4.2~4.5）──────
+
+// LaneConstraintOption carries the auxiliary-label constraint context into the
+// lane pipeline. It is optional on purpose: a caller that passes nothing (and
+// every topic without constraint rows) skips the gate entirely — the spec's
+// 「无约束话题行为不变，SHALL NOT 产生额外 LLM 调用」is structurally true, not a
+// branch that could regress.
+type LaneConstraintOption struct {
+	// ConstraintsByTopic holds the constraint rows per topic. Empty map = no
+	// gate (存量话题零开销).
+	ConstraintsByTopic map[uint][]repository.TopicLaneConstraint
+	// LabelVectors holds the day's tag vectors + their embedding model, resolved
+	// through article_topic_tags (NOT cluster_tag_ids — 92.8% dangling). Tags
+	// absent from the map cannot be judged and are skipped.
+	LabelVectors map[uint]repository.LaneLabelVector
+}
+
+// WithLaneConstraints builds the gate option from the loaded constraint rows.
+func WithLaneConstraints(constraints map[uint][]repository.TopicLaneConstraint, labelVectors map[uint]repository.LaneLabelVector) LaneConstraintOption {
+	return LaneConstraintOption{ConstraintsByTopic: constraints, LabelVectors: labelVectors}
+}
+
+func laneConstraintOption(opts []LaneConstraintOption) LaneConstraintOption {
+	if len(opts) == 0 {
+		return LaneConstraintOption{}
+	}
+	return opts[0]
+}
+
+// laneGroupLabelVectors projects a lane group's tag ids onto the judgeable
+// label set (cross-space / dangling / deleted tags already filtered upstream).
+func laneGroupLabelVectors(tagIDs []uint, labelVectors map[uint]repository.LaneLabelVector) []repository.LaneLabelVector {
+	out := make([]repository.LaneLabelVector, 0, len(tagIDs))
+	for _, id := range tagIDs {
+		if v, ok := labelVectors[id]; ok {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// laneGroupConstraintCoverage judges one lane group against one topic's
+// constraints. hasConstraints=false means the topic is unconstrained and the
+// group must be left untouched.
+func laneGroupConstraintCoverage(tagIDs []uint, topicID uint, opt LaneConstraintOption, cfg repository.PersistentTopicConfig) (LaneConstraintCoverage, bool) {
+	constraints := opt.ConstraintsByTopic[topicID]
+	if len(constraints) == 0 {
+		return LaneConstraintCoverage{Verdict: LaneConstraintSatisfied}, false
+	}
+	return EvaluateLaneConstraintCoverage(constraints, laneGroupLabelVectors(tagIDs, opt.LabelVectors), cfg), true
+}
+
+// ApplyLaneConstraintGate enforces the auxiliary-label constraints on the lane
+// groups produced by assembleLaneGroups: a group whose tag set does not cover
+// its topic's required constraints SHALL NOT anchor that topic (design D5).
+//
+// 违例 group 不直接丢弃，而是**补一次 L2 裁决**（tasks 4.3）：LLM 可能识别出该
+// 内容更属于另一个话题。裁决结果仍选中一个约束未覆盖的话题时，沿用既有
+// 「switch 到候选集外 → 降级 new」范式转 L3（tasks 4.4）；漏答 / JSON 畸形时
+// parseL2Response 的安全网（keep 最近候选）同样要再过一遍约束闸门（tasks 4.5）。
+//
+// 全程只发**一次** LLM 调用（所有违例 group 合并成一轮），且只在确有违例时发。
+// 调用失败时违例 group 一律降级 new——SHALL NOT 因为上游不可用就把内容锚到
+// 违例话题上（红线优先于「report 不能失败」的便利）。
+func ApplyLaneConstraintGate(ctx context.Context, groups []repository.ClusterGroup, tags []repository.TagInput, topics []repository.BoardPersistentTopic, briefs map[uint][]repository.TopicRecentBrief, cfg repository.PersistentTopicConfig, opt LaneConstraintOption) []repository.ClusterGroup {
+	if len(groups) == 0 || len(opt.ConstraintsByTopic) == 0 {
+		return groups
+	}
+
+	violating := make([]int, 0, len(groups))
+	for i := range groups {
+		if groups[i].MatchedTopicID == nil {
+			continue
+		}
+		cov, hasConstraints := laneGroupConstraintCoverage(groups[i].TagIDs, *groups[i].MatchedTopicID, opt, cfg)
+		if !hasConstraints || !cov.Blocks() {
+			continue
+		}
+		logging.Infof("daily-report: lane group (tags=%v) violates topic %d constraints (uncovered=%v) → L2 rework",
+			groups[i].TagIDs, *groups[i].MatchedTopicID, cov.Uncovered)
+		violating = append(violating, i)
+	}
+	if len(violating) == 0 {
+		return groups
+	}
+
+	topicByID := make(map[uint]repository.BoardPersistentTopic, len(topics))
+	topicVecs := make(map[uint][]float64, len(topics))
+	for _, t := range topics {
+		topicByID[t.ID] = t
+		if v := topicAnchorVec(t); len(v) > 0 {
+			topicVecs[t.ID] = v
+		}
+	}
+	tagByID := make(map[uint]repository.TagInput, len(tags))
+	for _, t := range tags {
+		tagByID[t.ID] = t
+	}
+
+	assigns := make([]LaneTagAssign, 0, len(violating))
+	groupTagIDs := make([][]uint, 0, len(violating))
+	for _, idx := range violating {
+		assigns = append(assigns, buildLaneConstraintAssign(groups[idx], tagByID, opt.LabelVectors, topicVecs, cfg))
+		groupTagIDs = append(groupTagIDs, groups[idx].TagIDs)
+	}
+
+	system, user := buildL2Prompt(assigns, topicByID, briefs)
+	system += "\n注意：下面部分候选话题绑定了 required 辅助标签约束，其约束未被覆盖的话题不可归属——这些话题请判 new。"
+	user += buildLaneConstraintStatusBlock(assigns, groupTagIDs, opt, cfg)
+
+	content, err := clusterChatFn(ctx, system, user, l2DecisionSchema(), "daily_report.constraint_l2_rework")
+	if err != nil {
+		logging.Warnf("daily-report: constraint rework AI call failed (%v) — %d violating lane group(s) degrade to new (SHALL NOT anchor a violating topic)", err, len(violating))
+		for _, idx := range violating {
+			groups[idx] = downgradeLaneGroupToNew(groups[idx], tagByID)
+		}
+		return groups
+	}
+	decisions := parseL2Response(content, assigns)
+
+	for k, idx := range violating {
+		dec := decisions[k]
+		target := dec.targetTopicID
+		if dec.decision != "keep" && dec.decision != "switch" {
+			target = 0
+		}
+		if target != 0 {
+			// 裁决结果必须再过一遍约束闸门（tasks 4.4/4.5）：LLM 仍选中一个约束
+			// 未覆盖的话题时降级 new，而不是「LLM 说了算」。
+			if cov, hasConstraints := laneGroupConstraintCoverage(groups[idx].TagIDs, target, opt, cfg); hasConstraints && cov.Blocks() {
+				logging.Infof("daily-report: constraint rework picked topic %d whose constraints are still uncovered (uncovered=%v) → new narrative",
+					target, cov.Uncovered)
+				target = 0
+			}
+		}
+		if target == 0 {
+			groups[idx] = downgradeLaneGroupToNew(groups[idx], tagByID)
+			continue
+		}
+		topicID := target
+		groups[idx].MatchedTopicID = &topicID
+		// 违例 group 的最终 lane_tier 仍是 l2_llm（spec：违例的 L1 直挂降级进 L2 band）。
+		groups[idx].Lane = "l2"
+	}
+	return groups
+}
+
+// buildLaneConstraintAssign renders one violating lane group as a single L2
+// adjudication unit. The synthetic tag id is the group's smallest tag id — it
+// is unique across groups (groups partition the day's tags), so parseL2Response
+// can map decisions back without inventing ids the LLM would have to echo.
+func buildLaneConstraintAssign(group repository.ClusterGroup, tagByID map[uint]repository.TagInput, labelVectors map[uint]repository.LaneLabelVector, topicVecs map[uint][]float64, cfg repository.PersistentTopicConfig) LaneTagAssign {
+	anchorID := uint(0)
+	labels := make([]string, 0, len(group.TagIDs))
+	for _, id := range group.TagIDs {
+		if anchorID == 0 || id < anchorID {
+			anchorID = id
+		}
+		if t, ok := tagByID[id]; ok && t.Label != "" {
+			labels = append(labels, t.Label)
+		}
+	}
+	if len(labels) > 5 {
+		labels = labels[:5]
+	}
+	base := tagByID[anchorID]
+	tag := repository.TagInput{
+		ID:             anchorID,
+		Label:          strings.Join(labels, " / "),
+		Category:       base.Category,
+		ArticleContext: base.ArticleContext,
+	}
+
+	groupVectors := laneGroupLabelVectors(group.TagIDs, labelVectors)
+
+	// Candidate ordering is only a hint for the prompt: the nearest distance
+	// from the group's tag set to each topic anchor, ascending.
+	type cand struct {
+		id   uint
+		dist float64
+	}
+	cands := make([]cand, 0, len(topicVecs))
+	for id, vec := range topicVecs {
+		best := math.MaxFloat64
+		for _, label := range groupVectors {
+			d := cosineFloats(label.Vector, vec)
+			if d < best {
+				best = d
+			}
+		}
+		if !isFiniteDistance(best) {
+			best = 1.0 // 无法计算距离时的中性占位（提示用，不参与准入判定）
+		}
+		cands = append(cands, cand{id: id, dist: best})
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].dist == cands[j].dist {
+			return cands[i].id < cands[j].id
+		}
+		return cands[i].dist < cands[j].dist
+	})
+	k := cfg.L2CandidateK
+	if k <= 0 || k > len(cands) {
+		k = len(cands)
+	}
+	out := make([]LaneCandidate, 0, k)
+	for i := 0; i < k; i++ {
+		out = append(out, LaneCandidate{TopicID: cands[i].id, Distance: cands[i].dist})
+	}
+	nearestID := uint(0)
+	nearestDist := 0.0
+	if len(out) > 0 {
+		nearestID = out[0].TopicID
+		nearestDist = out[0].Distance
+	}
+	return LaneTagAssign{Tag: tag, TopicID: nearestID, Distance: nearestDist, Candidates: out}
+}
+
+// buildLaneConstraintStatusBlock renders, for every reworked group, each
+// candidate topic's constraint coverage state (tasks 4.3「候选含各话题的约束
+// 状态」）. Only required legs are listed — preferred constraints never block.
+// groupTagIDs is parallel to assigns (each entry = that group's real tag ids).
+func buildLaneConstraintStatusBlock(assigns []LaneTagAssign, groupTagIDs [][]uint, opt LaneConstraintOption, cfg repository.PersistentTopicConfig) string {
+	var sb strings.Builder
+	sb.WriteString("\n## 约束准入（required 辅助标签）\n\n")
+	sb.WriteString("约束未被完整覆盖的话题不可归属，请判 new：\n")
+	for i, a := range assigns {
+		var tagIDs []uint
+		if i < len(groupTagIDs) {
+			tagIDs = groupTagIDs[i]
+		}
+		labels := laneGroupLabelVectors(tagIDs, opt.LabelVectors)
+		fmt.Fprintf(&sb, "\n标签 [ID:%d] %s\n", a.Tag.ID, a.Tag.Label)
+		for _, c := range a.Candidates {
+			constraints := opt.ConstraintsByTopic[c.TopicID]
+			if len(constraints) == 0 {
+				fmt.Fprintf(&sb, "- [topic:%d] 无约束\n", c.TopicID)
+				continue
+			}
+			cov := EvaluateLaneConstraintCoverage(constraints, labels, cfg)
+			preferred := laneConstraintPreferredTerms(constraints)
+			if preferred != "" {
+				fmt.Fprintf(&sb, "- [topic:%d] 要求:%s（偏好:%s，仅提示不拦截） → %s\n",
+					c.TopicID, laneConstraintTerms(constraints), preferred, laneConstraintCoverageLabel(cov))
+				continue
+			}
+			fmt.Fprintf(&sb, "- [topic:%d] 要求:%s → %s\n",
+				c.TopicID, laneConstraintTerms(constraints), laneConstraintCoverageLabel(cov))
+		}
+	}
+	return sb.String()
+}
+
+// laneConstraintTerms renders the required terms of a topic (the legs the LLM
+// must see covered).
+func laneConstraintTerms(constraints []repository.TopicLaneConstraint) string {
+	terms := make([]string, 0, len(constraints))
+	for _, c := range constraints {
+		mode := c.Mode
+		if mode == "" {
+			mode = repository.LaneConstraintModeRequired
+		}
+		if mode != repository.LaneConstraintModeRequired {
+			continue
+		}
+		terms = append(terms, c.Term)
+	}
+	if len(terms) == 0 {
+		return "无 required"
+	}
+	return strings.Join(terms, ", ")
+}
+
+// laneConstraintPreferredTerms renders the preferred (non-blocking) terms of a
+// topic. Preferred constraints never gate anchoring (spec「约束覆盖判定语义」);
+// they only reach the L2 prompt as a preference hint so the mode is not a dead
+// switch in the UI.
+func laneConstraintPreferredTerms(constraints []repository.TopicLaneConstraint) string {
+	terms := make([]string, 0, len(constraints))
+	for _, c := range constraints {
+		if c.Mode != repository.LaneConstraintModePreferred {
+			continue
+		}
+		terms = append(terms, c.Term)
+	}
+	return strings.Join(terms, ", ")
+}
+
+// laneConstraintCoverageLabel renders the coverage verdict in prompt language.
+func laneConstraintCoverageLabel(cov LaneConstraintCoverage) string {
+	switch {
+	case cov.Blocks():
+		return "未覆盖 " + strings.Join(cov.Uncovered, ", ")
+	case cov.Verdict == LaneConstraintUndecided:
+		return "无法判定（放行）"
+	default:
+		return "已全部覆盖"
+	}
+}
+
+// downgradeLaneGroupToNew turns a group into an L3 new-narrative group (no
+// topic anchor). The group name is filled from the first tag label so the
+// section still renders a readable title.
+func downgradeLaneGroupToNew(group repository.ClusterGroup, tagByID map[uint]repository.TagInput) repository.ClusterGroup {
+	if group.GroupName == "" && len(group.TagIDs) > 0 {
+		if t, ok := tagByID[group.TagIDs[0]]; ok {
+			group.GroupName = t.Label
+		}
+	}
+	group.MatchedTopicID = nil
+	group.Lane = "l3"
+	return group
 }

@@ -6,23 +6,29 @@
  * 设计决策：
  * 1. 挂 tool_call，只拦截结构化入口：Agent 派发与 edit/write mutation（bash 写盘
  *    不做可靠判定，交 schema apply preflight 主门）；read/grep/bash 等一律放行。
- * 2. 介入条件：本会话最新 mode.set = implementation 且绑定了 change（同源
- *    entry-gate：constraint-injection 写入的 mode.set；无记录 = requirements → 静默）。
+ * 2. 介入条件：本会话最新 stage.set 的**阶段族 == implementation** 且绑定了 change
+ *    （stage.set 由 constraint-injection 写入；取数走 queryLatestStageSet
+ *    ——双读，legacy mode.set 自动映射回族；无记录 = 未绑定阶段 → 静默）。
  * 3. 每次检查**重新读磁盘**（.openspec.yaml / proposal.md / ui-design.md / tasks.md /
  *    change 目录递归普通文件清单）——用户批准后不沿用旧 pending 缓存；判定全在
  *    lib/ui-design-gate.ts 纯函数（不读文件/不抛异常）。
- * 4. 新 schema（syntopica-ui）合同 block 时：Agent 派发与越出当前 change 目录的
- *    mutation 阻断；当前 change 目录内修改（ui-design.md / ui-prototype/** 等）放行。
+ * 4. 新 schema（syntopica-ui）合同 block 时：**具备写能力的** Agent 派发与越出当前 change 目录的
+ *    mutation 阻断；只读档（explore/plan/change-review）与原型编辑档（ui-design）派发放行并留痕
+ *    （policy warn，reasonCode=ui-dispatch-allowed——放行的是「派发」这个动作，子线程经 edit/write
+ *    工具的每次写入仍逐个过本门禁，写侧边界不放宽；shell 类通道不在本门禁覆盖范围——既有边界）；
+ *    当前 change 目录内修改（ui-design.md / ui-prototype/** 等）放行。
  * 5. legacy schema：不硬阻断；mutation 触及 front/** 时每 session/change 提醒一次
  *    （warn-legacy + policy warn），其余静默。
  * 6. 逃生口 UI_DESIGN_GATE_BYPASS=1：仅在原本会 block 时生效，放行必须留痕
  *    （policy bypass + 显式 warning），不静默。
  * 7. 记账（lib/policy-decision）：block/warn/bypass/fail-open 全记
- *    （policy=ui-design-gate，reasonCode 白名单 8 值）；健康放行零记录，**例外**：
- *    此前有未解除的 block 且本次合同健康放行 → 记一条 action=pass
+ *    （policy=ui-design-gate，reasonCode 白名单 9 值）；健康放行零记录，**例外**：
+ *    ① 此前有未解除的 block 且本次合同健康放行 → 记一条 action=pass
  *    （ui-approval-approved / ui-design-satisfied，add-change-lifecycle-retro design D2，
  *    与 change.archive 同族的低频高价值成功锚点；账本查「最近未解除 block」判定，
- *    跨 session 可靠）。归档侧 ui-verification-missing 的解除由 spec-gate 归档路径记。
+ *    跨 session 可靠）。② 合同未就绪时放行只读档/原型编辑档派发 → 记一条 action=warn
+ *    （ui-dispatch-allowed，add-ui-prototype-editor-agent design D5）。
+ *    归档侧 ui-verification-missing 的解除由 spec-gate 归档路径记。
  *    记账失败不改变裁决。
  * 8. 全程 fail-open：扩展自身异常 → 放行 + console.warn + steer 告警 +
  *    policy fail-open（ui-gate-check-failed），绝不把 agent 卡死。
@@ -31,11 +37,15 @@
  * UI_DESIGN_GATE_BYPASS=1（显式逃生口）。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { logPolicyDecision, type PolicyDecisionInput } from "./lib/policy-decision";
-import { queryByChange, queryBySession } from "./lib/harness-log";
+import { queryByChange, queryLatestStageSet } from "./lib/harness-log";
 import {
+	changeNameFromPath,
+	checkStageScope,
+	parseUiStage,
+	relInsideChange,
 	decideUiToolGate,
 	passReasonForRelease,
 	type UiToolAction,
@@ -51,6 +61,9 @@ const BYPASS = process.env.UI_DESIGN_GATE_BYPASS === "1";
 
 /** 本会话已 legacy 提醒过的 change（`${sessionId}|${change}` 去重） */
 const legacyWarned = new Set<string>();
+
+/** stage 记账去重（`${sessionId}|${change}|${reasonCode}`）；键含 session 故无需清空 */
+const stageWarned = new Set<string>();
 
 /** 本扩展只用到的 ExtensionContext 子集（结构兼容，见 quota-gate GateCtx） */
 type GateCtx = {
@@ -97,7 +110,15 @@ function classifyTool(
 	toolName: string,
 	input: unknown,
 ): UiToolAction | null {
-	if (toolName === "Agent") return { kind: "agent-dispatch", targetPath: null };
+	if (toolName === "Agent") {
+		// 派发档位名（pi-web 的 Agent 工具参数 subagent_type；缺省 = general-purpose = 写能力档）
+		const st = (input as { subagent_type?: unknown } | null | undefined)
+			?.subagent_type;
+		return {
+			kind: "agent-dispatch",
+			subagentType: typeof st === "string" ? st : null,
+		};
+	}
 	if (toolName === "edit" || toolName === "write") {
 		const p = (input as { path?: unknown } | null | undefined)?.path;
 		return typeof p === "string" ? { kind: "mutation", targetPath: p } : null;
@@ -115,11 +136,15 @@ async function check(
 	const sessionId = ctx.sessionManager?.getSessionId?.();
 	if (!sessionId) return;
 	const cwd = ctx.cwd ?? process.cwd();
-	const modeInfo = readLatestMode(cwd, sessionId);
-	if (!modeInfo || modeInfo.mode !== "implementation" || !modeInfo.boundChange) {
+
+	// 0. 按写入路径触发的 stage 记账（add-ui-stage-accounting D1/D4）：不看 mode、不改裁夺。
+	if (tool.kind === "mutation") accountStageScope(ctx, normalizeTarget(tool, cwd));
+
+	const stageInfo = readLatestStage(cwd, sessionId);
+	if (!stageInfo || stageInfo.stageFamily !== "implementation" || !stageInfo.boundChange) {
 		return;
 	}
-	const { boundChange } = modeInfo;
+	const { boundChange } = stageInfo;
 	const changeDir = join(cwd, "openspec/changes", boundChange);
 
 	// 2. 磁盘快照（每次重读，不缓存——批准后即时生效）
@@ -129,7 +154,7 @@ async function check(
 		tasksMd: safeRead(join(changeDir, "tasks.md")),
 		uiDesignText: safeRead(join(changeDir, "ui-design.md")),
 		changeDirFiles: listRegularFiles(changeDir),
-		mode: modeInfo.mode,
+		stageFamily: stageInfo.stageFamily,
 		boundChange,
 		tool: normalizeTarget(tool, cwd),
 	};
@@ -143,6 +168,17 @@ async function check(
 		if (decision.verdict?.kind === "pass") {
 			recordReleasePass(ctx, boundChange);
 		}
+		return;
+	}
+
+	if (decision.action === "dispatch-allowed") {
+		// 合同未就绪时放行只读档/原型编辑档派发（add-ui-prototype-editor-agent D5）：
+		// 留痕一条 warn（不改裁决、不打断会话），供事后回检「未就绪期间派了什么档」。
+		auditPolicy(ctx, boundChange, {
+			policy: "ui-design-gate",
+			action: "warn",
+			reasonCode: "ui-dispatch-allowed",
+		});
 		return;
 	}
 
@@ -192,25 +228,22 @@ function readSchemaName(changeDir: string): string | null {
 	return m ? m[1] : null;
 }
 
-/** 本会话最新 mode.set（payload {mode, boundChange}）；无记录/损坏 → null */
-function readLatestMode(
+/**
+ * 本会话最新阶段（**双读**：先 stage.set，无则回退 legacy mode.set 并映射回族——
+ * stage-driven-constraint-injection D7 过渡期不断链）；无记录/损坏 → null。
+ * 判定只看**阶段族**（implementation 才介入；族为派生值，D2）。
+ */
+function readLatestStage(
 	cwd: string,
 	sessionId: string,
-): { mode: string | null; boundChange: string | null } | null {
-	const rows = queryBySession(cwd, sessionId, ["mode.set"]);
-	if (rows.length === 0) return null;
-	try {
-		const payload = JSON.parse(rows[rows.length - 1].payload) as {
-			mode?: unknown;
-			boundChange?: unknown;
-		};
-		return {
-			mode: typeof payload.mode === "string" ? payload.mode : null,
-			boundChange: typeof payload.boundChange === "string" ? payload.boundChange : null,
-		};
-	} catch {
-		return null;
-	}
+): { stage: string | null; stageFamily: string | null; boundChange: string | null } | null {
+	const info = queryLatestStageSet(sessionId, cwd);
+	if (!info) return null;
+	return {
+		stage: info.stage,
+		stageFamily: info.stageFamily,
+		boundChange: info.boundChange,
+	};
 }
 
 /** 读文本；读不到 → null */
@@ -303,6 +336,55 @@ function recordReleasePass(ctx: GateCtx, change: string): void {
 }
 
 /** policy.decision 旁路记账（同 spec-gate：无 cwd/sessionId 不记；失败不影响裁决） */
+/**
+ * 按写入路径触发的 stage 记账（add-ui-stage-accounting design D1/D4）：
+ * **不看 mode**——原型工作在 requirements / 无档位发生，而 `ui-approval` 的 mode 触发
+ * 完全看不见它（实测 34 次 ui-design 派发 100% 落在门外）。本函数只记账、不返回裁决，
+ * 也不读写 decideUiToolGate 的任何输出。
+ *
+ * 低噪声口径：只对 `ui-prototype/` 内的写入与 `ui-design.md` 本身记账，其余路径直接返回。
+ */
+function accountStageScope(ctx: GateCtx, tool: UiToolAction): void {
+	try {
+		if (tool.kind !== "mutation" || !tool.targetPath || !ctx.cwd) return;
+		const change = changeNameFromPath(tool.targetPath);
+		if (!change) return;
+		const rel = relInsideChange(tool.targetPath, change);
+		if (!rel) return;
+
+		// 只对原型目录记账（其余路径零噪声）。
+		if (rel !== "ui-prototype" && !rel.startsWith("ui-prototype/")) return;
+
+		// 基线事实 1：change 目录必须真实存在——纯正则能把仓库外路径
+		// （如 /tmp/x/openspec/changes/ghost/…）解析成一个不存在的 change。
+		if (!existsSync(join(ctx.cwd, "openspec/changes", change))) return;
+
+		const uiDesignText = safeRead(
+			join(ctx.cwd, "openspec/changes", change, "ui-design.md"),
+		);
+		const parsed = parseUiStage(uiDesignText);
+
+		let reasonCode: string | null = null;
+		if (parsed.kind === "missing") reasonCode = "ui-stage-missing";
+		else if (parsed.kind === "invalid") reasonCode = "ui-stage-invalid";
+		else if (checkStageScope(parsed.stage, rel) !== null) reasonCode = "ui-stage-scope-out";
+		if (!reasonCode) return;
+
+		// 去重键不带 sessionId：子线程与主线程共用模块实例，带 session 会让
+		// 一次派发乘出 N 条，「低噪声」目标在主场景反而落空。
+		const key = `${change}|${reasonCode}`;
+		if (stageWarned.has(key)) return;
+		stageWarned.add(key);
+		auditPolicy(ctx, change, {
+			policy: "ui-design-gate",
+			action: "warn",
+			reasonCode,
+		});
+	} catch (err) {
+		console.warn(`[ui-design-gate] stage 记账异常（旁路忽略）：${String(err)}`);
+	}
+}
+
 function auditPolicy(
 	ctx: GateCtx,
 	change: string | null | undefined,

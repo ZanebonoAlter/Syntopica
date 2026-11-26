@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -525,4 +527,296 @@ func TestSignalResearchProgressEndpoint(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("unknown candidate: want 404, got %d", w.Code)
 	}
+}
+
+// ── S9：候选忽略与恢复（redesign-enrichment-research-workbench 2.2）────────────
+
+func putJSON(t *testing.T, r *gin.Engine, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPut, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// TestSignalDisposition_IgnoreRestoreLifecycle locks the full S9 lifecycle:
+// ignore persists (detail carries ignored_at after "refresh"), visible index
+// hides it while ignored, ignored candidate's research is 409
+// candidate_ignored unless it is the idempotent already-reported read,
+// restore returns it to the index and research becomes possible again.
+func TestSignalDisposition_IgnoreRestoreLifecycle(t *testing.T) {
+	db := setupHandlerTestDB(t)
+	candidate := seedSignalCandidate(t, db, 5, "2026-08", "可忽略的线索")
+	stub := &stubSignalResearch{resultID: 31}
+	r, _ := newResearchRouter(t, &mockOrchestrator{}, db, stub)
+	dispPath := fmt.Sprintf("/semantic-boards/5/enrichment/analysis/signals/%d/disposition", candidate.ID)
+	researchPath := fmt.Sprintf("/semantic-boards/5/enrichment/analysis/signals/%d/research", candidate.ID)
+	listPath := "/semantic-boards/5/enrichment/analysis/signals?granularity=month&period=2026-08"
+
+	// 忽略：200 携 ignored_at（非 null）。
+	w := putJSON(t, r, dispPath, `{"ignored":true}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ignore: want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	ignored := decodeEnvelope(t, w.Body.Bytes())
+	if _, ok := ignored["ignored_at"].(string); !ok {
+		t.Fatalf("ignore response must carry ignored_at: %v", ignored)
+	}
+	// 可见性筛选：visible 隐藏、ignored 可见、all 保留旧语义。
+	w = getJSON(t, r, listPath+"&visibility=visible")
+	if rows := decodeArrayEnvelope(t, w.Body.Bytes()); len(rows) != 0 {
+		t.Fatalf("ignored candidate must leave the visible index: %v", rows)
+	}
+	w = getJSON(t, r, listPath+"&visibility=ignored")
+	if rows := decodeArrayEnvelope(t, w.Body.Bytes()); len(rows) != 1 {
+		t.Fatalf("ignored view must show exactly the ignored candidate: %v", rows)
+	}
+	// 已忽略候选的新研究：无报告 → 409 candidate_ignored，零 service 调用。
+	w = postJSON(t, r, researchPath, `{}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("ignored research: want 409, got %d body=%s", w.Code, w.Body.String())
+	}
+	if reason := decodeEnvelope(t, w.Body.Bytes())["reason"]; reason != "candidate_ignored" {
+		t.Fatalf("409 must name the ignore reason: %v", reason)
+	}
+	if stub.calls != 0 {
+		t.Fatalf("ignored research must not reach the service, calls=%d", stub.calls)
+	}
+	// 已忽略 + 已有报告：默认 research 仍 200 幂等读取（D1），零新 LLM；
+	// regenerate=true → 409 要求先恢复。
+	report := seedSignalReportResult(t, db, 5, candidate.ID, "2026-08")
+	w = postJSON(t, r, researchPath, `{}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ignored already-reported default read: want 200, got %d", w.Code)
+	}
+	if reuse := decodeEnvelope(t, w.Body.Bytes()); reuse["status"] != "already_reported" || reuse["result_id"] != float64(report.ID) {
+		t.Fatalf("ignored reuse payload: %v", reuse)
+	}
+	w = postJSON(t, r, researchPath, `{"regenerate":true}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("ignored regenerate: want 409, got %d", w.Code)
+	}
+	// 刷新后重进：详情仍携 ignored_at（持久标记）；旧报告 GET 可读。
+	w = getJSON(t, r, fmt.Sprintf("/semantic-boards/5/enrichment/analysis/signals/%d", candidate.ID))
+	detail := decodeEnvelope(t, w.Body.Bytes())
+	if _, ok := detail["ignored_at"].(string); !ok {
+		t.Fatalf("detail must carry the persisted ignored_at: %v", detail)
+	}
+	w = getJSON(t, r, fmt.Sprintf("/semantic-boards/5/enrichment/analysis/signal-reports/%d", report.ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("ignored candidate's report must stay readable, got %d", w.Code)
+	}
+	// 恢复：200 + 幂等重复恢复；visible 索引回来；研究解锁。
+	for i := 0; i < 2; i++ {
+		w = putJSON(t, r, dispPath, `{"ignored":false}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("restore #%d: want 200, got %d body=%s", i+1, w.Code, w.Body.String())
+		}
+	}
+	w = getJSON(t, r, listPath+"&visibility=visible")
+	if rows := decodeArrayEnvelope(t, w.Body.Bytes()); len(rows) != 1 {
+		t.Fatalf("restored candidate must be visible again: %v", rows)
+	}
+	w = postJSON(t, r, researchPath, `{"regenerate":true}`)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("research after restore: want 202, got %d body=%s", w.Code, w.Body.String())
+	}
+	pollJobStatus(t, r, decodeEnvelope(t, w.Body.Bytes())["job_id"].(string))
+	if stub.calls != 1 {
+		t.Fatalf("post-restore research must call the service once, calls=%d", stub.calls)
+	}
+}
+
+// TestSignalDisposition_IgnoreDuringRunningResearch409 locks race order A
+// (研究先启动 → 忽略 409，无标记写入；任务完成后可再忽略)。
+func TestSignalDisposition_IgnoreDuringRunningResearch409(t *testing.T) {
+	db := setupHandlerTestDB(t)
+	candidate := seedSignalCandidate(t, db, 5, "2026-08", "研究中的线索")
+	block := make(chan struct{})
+	stub := &stubSignalResearch{resultID: 41, block: block, entered: make(chan struct{})}
+	r, _ := newResearchRouter(t, &mockOrchestrator{}, db, stub)
+	dispPath := fmt.Sprintf("/semantic-boards/5/enrichment/analysis/signals/%d/disposition", candidate.ID)
+
+	w := postJSON(t, r, fmt.Sprintf("/semantic-boards/5/enrichment/analysis/signals/%d/research", candidate.ID), `{}`)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("research start: want 202, got %d", w.Code)
+	}
+	<-stub.entered // job 已真正进入 service（runner 槽位 running）
+	// 运行中忽略 → 409 携 running 身份，且不写标记（运行中的忽略不可达）。
+	w = putJSON(t, r, dispPath, `{"ignored":true}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("ignore while running: want 409, got %d body=%s", w.Code, w.Body.String())
+	}
+	if conflict := decodeEnvelope(t, w.Body.Bytes()); conflict["job_kind"] != "board_signal_report" {
+		t.Fatalf("409 must identify the running research: %v", conflict)
+	}
+	w = getJSON(t, r, "/semantic-boards/5/enrichment/analysis/signals?granularity=month&period=2026-08&visibility=visible")
+	if rows := decodeArrayEnvelope(t, w.Body.Bytes()); len(rows) != 1 {
+		t.Fatalf("rejected ignore must not write a marker: %v", rows)
+	}
+	// 任务完成后可再忽略。
+	close(block)
+	w = putJSON(t, r, dispPath, `{"ignored":true}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ignore after completion: want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestSignalDisposition_InputValidationAndOwner locks 处理写入故障与越权:
+// missing/string-typed/unknown-field bodies → 400 with no marker written;
+// cross-board and unknown candidates → 404.
+func TestSignalDisposition_InputValidationAndOwner(t *testing.T) {
+	db := setupHandlerTestDB(t)
+	candidate := seedSignalCandidate(t, db, 5, "2026-08", "校验线索")
+	r, _ := newResearchRouter(t, &mockOrchestrator{}, db, &stubSignalResearch{resultID: 51})
+	dispPath := fmt.Sprintf("/semantic-boards/5/enrichment/analysis/signals/%d/disposition", candidate.ID)
+
+	for name, body := range map[string]string{
+		"missing ignored": `{}`,
+		"string boolean":  `{"ignored":"true"}`,
+		"unknown field":   `{"ignored":true,"score":9}`,
+		"content smuggle": `{"ignored":true,"signal":"篡改"}`,
+	} {
+		w := putJSON(t, r, dispPath, body)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: want 400, got %d body=%s", name, w.Code, w.Body.String())
+		}
+	}
+	// 被拒请求不落标记。
+	w := getJSON(t, r, "/semantic-boards/5/enrichment/analysis/signals?granularity=month&period=2026-08&visibility=ignored")
+	if rows := decodeArrayEnvelope(t, w.Body.Bytes()); len(rows) != 0 {
+		t.Fatalf("rejected writes must not leave a marker: %v", rows)
+	}
+	// 跨板块 → 404（不暴露存在性）；不存在候选 → 404。
+	w = putJSON(t, r, fmt.Sprintf("/semantic-boards/6/enrichment/analysis/signals/%d/disposition", candidate.ID), `{"ignored":true}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("cross-board disposition: want 404, got %d", w.Code)
+	}
+	w = putJSON(t, r, "/semantic-boards/5/enrichment/analysis/signals/999/disposition", `{"ignored":true}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unknown candidate disposition: want 404, got %d", w.Code)
+	}
+}
+
+// TestSignalDisposition_IgnoreFirstBlocksResearch locks race order B
+// (忽略先生效 → 新研究 409；旧报告不删除)。
+func TestSignalDisposition_IgnoreFirstBlocksResearch(t *testing.T) {
+	db := setupHandlerTestDB(t)
+	candidate := seedSignalCandidate(t, db, 5, "2026-08", "先忽略再点的线索")
+	stub := &stubSignalResearch{resultID: 61}
+	r, _ := newResearchRouter(t, &mockOrchestrator{}, db, stub)
+	dispPath := fmt.Sprintf("/semantic-boards/5/enrichment/analysis/signals/%d/disposition", candidate.ID)
+	researchPath := fmt.Sprintf("/semantic-boards/5/enrichment/analysis/signals/%d/research", candidate.ID)
+
+	if w := putJSON(t, r, dispPath, `{"ignored":true}`); w.Code != http.StatusOK {
+		t.Fatalf("ignore first: want 200, got %d", w.Code)
+	}
+	// 忽略生效后：无报告默认点击 409、显式重研 409；service 零调用。
+	w := postJSON(t, r, researchPath, `{}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("default research after ignore: want 409, got %d", w.Code)
+	}
+	w = postJSON(t, r, researchPath, `{"regenerate":true}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("regenerate after ignore: want 409, got %d", w.Code)
+	}
+	if stub.calls != 0 {
+		t.Fatalf("both orders must be mutually exclusive, calls=%d", stub.calls)
+	}
+	// 恢复后研究可用。
+	if w := putJSON(t, r, dispPath, `{"ignored":false}`); w.Code != http.StatusOK {
+		t.Fatalf("restore: want 200, got %d", w.Code)
+	}
+	w = postJSON(t, r, researchPath, `{}`)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("research after restore: want 202, got %d body=%s", w.Code, w.Body.String())
+	}
+	pollJobStatus(t, r, decodeEnvelope(t, w.Body.Bytes())["job_id"].(string))
+}
+
+// TestSignalCandidateDetail_CarriesRelatedTopics locks the detail endpoint's
+// frozen-evidence → topic wiring (2.3/S10): refs decode against the batch's
+// frozen snapshot, verified topics return with current labels, unmappable
+// refs land in related_gaps — zero LLM.
+func TestSignalCandidateDetail_CarriesRelatedTopics(t *testing.T) {
+	db := setupHandlerTestDB(t)
+	// SQLite 自增从 1 起：板块 5 的两个真实话题行 = 泳道 1、2。
+	for i := 0; i < 2; i++ {
+		if err := db.Exec(`INSERT INTO board_persistent_topics
+			(semantic_board_id, label, status, first_seen_date, last_seen_date, created_at, updated_at)
+			VALUES (5, ?, 'active', '2026-08-01', '2026-08-31', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+			fmt.Sprintf("话题%d", i+1)).Error; err != nil {
+			t.Fatalf("seed topic: %v", err)
+		}
+	}
+	repo := repository.NewRepository(db)
+	batch := &repository.BoardSignalDiscovery{
+		SemanticBoardID: 5,
+		Granularity:     repository.SignalGranularityMonth,
+		Period:          "2026-08",
+		AnalysisMode:    repository.SignalAnalysisModeCurrent,
+		Cutoff:          time.Now().Add(-time.Hour),
+		SessionID:       "detail-related-seed",
+		InputSnapshot: json.RawMessage(`{"granularity":"month","period":"2026-08","lanes":[
+			{"lane_id":1,"label":"冻结一","status":"active","articles":[{"section_id":1,"period_date":"2026-08-05T12:00:00Z"}]},
+			{"lane_id":2,"label":"冻结二","status":"active","articles":[{"section_id":2,"period_date":"2026-08-06T12:00:00Z"}]}]}`),
+	}
+	saved, _, err := repo.CreateSignalDiscoveryBatch(context.Background(), batch, []*repository.BoardSignalCandidate{{
+		SemanticBoardID: 5, Signal: "关联线索", WhyItMatters: "w", ResearchQuestion: "q",
+		EvidenceRefs: json.RawMessage(`["1","2","404"]`), Score: 7, Rationale: "r",
+	}})
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("seed: err=%v saved=%d", err, len(saved))
+	}
+	r, _ := newResearchRouter(t, &mockOrchestrator{}, db, &stubSignalResearch{resultID: 71})
+
+	w := getJSON(t, r, fmt.Sprintf("/semantic-boards/5/enrichment/analysis/signals/%d", saved[0].ID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("detail: want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	detail := decodeEnvelope(t, w.Body.Bytes())
+	related, ok := detail["related_topics"].([]any)
+	if !ok || len(related) != 2 {
+		t.Fatalf("detail must carry two verified related topics: %v", detail["related_topics"])
+	}
+	first := related[0].(map[string]any)
+	if first["label"] != "话题1" || first["frozen_label"] != "冻结一" {
+		t.Fatalf("related topic must pair current label with frozen label: %v", first)
+	}
+	gaps, ok := detail["related_gaps"].([]any)
+	if !ok || len(gaps) != 1 {
+		t.Fatalf("unmappable ref must land in related_gaps: %v", detail["related_gaps"])
+	}
+}
+
+// view 参数（R-2）：非法 400；pending 视图剔除 live 研究候选（分页前生效）；
+// 省略 view = all 兼容旧客户端。
+func TestSignalList_ViewFilterParam(t *testing.T) {
+	db := setupHandlerTestDB(t)
+	candA := seedSignalCandidate(t, db, 5, "2026-08", "纯待研究A")
+	block := make(chan struct{})
+	stub := &stubSignalResearch{resultID: 81, block: block, entered: make(chan struct{})}
+	r, _ := newResearchRouter(t, &mockOrchestrator{}, db, stub)
+
+	// 非法 view → 400。
+	w := getJSON(t, r, "/semantic-boards/5/enrichment/analysis/signals?granularity=month&period=2026-08&view=bogus")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("bogus view: want 400, got %d", w.Code)
+	}
+	// 启动研究（A 进入 live）→ pending 视图剔除 A。
+	if w := postJSON(t, r, fmt.Sprintf("/semantic-boards/5/enrichment/analysis/signals/%d/research", candA.ID), `{}`); w.Code != http.StatusAccepted {
+		t.Fatalf("research start: want 202, got %d", w.Code)
+	}
+	<-stub.entered
+	w = getJSON(t, r, "/semantic-boards/5/enrichment/analysis/signals?granularity=month&period=2026-08&view=pending")
+	if rows := decodeArrayEnvelope(t, w.Body.Bytes()); len(rows) != 0 {
+		t.Fatalf("pending view must exclude the live research candidate: %v", rows)
+	}
+	// 省略 view（旧客户端语义）→ all，仍能看到 A。
+	w = getJSON(t, r, "/semantic-boards/5/enrichment/analysis/signals?granularity=month&period=2026-08")
+	if rows := decodeArrayEnvelope(t, w.Body.Bytes()); len(rows) != 1 {
+		t.Fatalf("omitted view must keep all rows: %v", rows)
+	}
+	close(block)
 }

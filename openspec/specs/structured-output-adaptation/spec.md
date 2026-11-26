@@ -1,3 +1,5 @@
+<!-- domain: ai-summary -->
+
 # structured-output-adaptation Specification
 
 ## Purpose

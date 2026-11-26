@@ -27,4 +27,14 @@ var (
 	// output directory so the vendor-model migration test can redirect writes
 	// to a t.TempDir() instead of polluting the repo working directory.
 	ExportedVendorSnapshotDir = &vendorSnapshotDir
+
+	// ExportedEmbeddingModelNameTables exposes the table list the
+	// 20261103_0001 migration widens. The integration test asserts its own
+	// coverage list equals this one, so the migration's scope and the test's
+	// scope can never drift apart (fix-embedding-model-column-width).
+	ExportedEmbeddingModelNameTables = func() []string {
+		out := make([]string, len(embeddingModelNameTables))
+		copy(out, embeddingModelNameTables)
+		return out
+	}
 )

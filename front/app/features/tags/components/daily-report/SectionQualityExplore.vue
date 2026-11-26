@@ -52,9 +52,8 @@ const hasBreakdown = computed(() => !!props.breakdown && props.breakdown.length 
         v-for="entry in breakdown"
         :key="entry.tag_id"
         class="section-quality-explore__chip"
-        :class="{ 'section-quality-explore__chip--downgraded': entry.downgraded }"
         :data-tag-id="entry.tag_id"
-        :style="{ borderColor: matchReasonColor(entry.match_reason, entry.downgraded) }"
+        :style="{ borderColor: matchReasonColor(entry.match_reason) }"
       >
         <span class="section-quality-explore__name">{{ entry.label }}</span>
         <span class="section-quality-explore__meta">{{ matchInfoLabel(entry) }}</span>

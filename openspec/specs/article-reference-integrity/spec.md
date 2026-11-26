@@ -1,3 +1,5 @@
+<!-- domain: db, daily-report -->
+
 # article-reference-integrity Specification
 
 ## Purpose

@@ -89,11 +89,23 @@ func RunAutoMigrate(db *gorm.DB) error {
 		// improve-discovery-recommendations: 候选可用性状态（design D7）
 		&models.FirecrawlJob{},
 		&models.TagJob{},
+		// add-ai-generated-article-detection：疑似 AI 生成判定作业队列（独立于打标队列）
+		&models.DetectionJob{},
 		// add-notification-center：通知信箱（白名单=日报终态，写入路径内 500 条上限淘汰）
 		&models.Notification{},
 	}
 	allModels = append(allModels, extraModels...)
 	if err := db.AutoMigrate(allModels...); err != nil {
+		return err
+	}
+	// board-health-triage-advice B-P2-2 self-heal: migration 20261028_0001 may
+	// have run (and recorded its version) on a boot whose AutoMigrate had not
+	// yet created the repair tables — its no-op would then never re-run. Re-ensure
+	// the partial unique mutex index right after a successful model sync, BEFORE
+	// the discovery backfill (which may error and would mask the heal). Only this
+	// change's new-job index is healed; idempotent and table-absent/no-postgres
+	// no-ops, so boot behavior is otherwise unchanged.
+	if err := ensureAuxiliaryDescriptionRepairMutexIndex(db); err != nil {
 		return err
 	}
 	// improve-discovery-recommendations：PG-only 迁移收尾（design.md Migration Plan

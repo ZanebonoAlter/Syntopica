@@ -144,13 +144,15 @@ export function useMarginNoteSelection(options: {
     reportRoot.value?.removeEventListener('click', handleReportClickCapture, true)
   }
 
+  // immediate：阅读台路由页的 reader 初始就是 active（无 false→true 翻转），
+  // 不立即 attach 会漏掉划选保护与 document 级 guard，点 thread 行头会误展开。
   watch(active, (isActive) => {
     if (isActive) attach()
     else {
       detach()
       hideBubble()
     }
-  }, { flush: 'sync' })
+  }, { immediate: true, flush: 'sync' })
 
   // reportRoot 挂载晚于 active 翻转（reader 渲染时序）：每次根节点变化都重挂 mark 委托
   watch(reportRoot, () => {

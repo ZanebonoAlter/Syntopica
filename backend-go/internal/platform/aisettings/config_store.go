@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,7 +19,6 @@ import (
 const openNotebookConfigKey = "open_notebook_config"
 const firecrawlConfigKey = "firecrawl_config"
 const bochaConfigKey = "bocha_config"
-const searxngConfigKey = "searxng_config"
 const comtradeConfigKey = "comtrade_config"
 const fredConfigKey = "fred_config"
 const rsshubConfigKey = "rsshub_config"
@@ -33,6 +33,22 @@ const rsshubDocBaseKey = "rsshub_doc_base"
 const defaultRSSHubDocBase = "https://docs.rsshub.app"
 const analysisPausedKey = "analysis_paused"
 const autoStartModelsKey = "auto_start_models"
+
+// add-ai-generated-article-detection design D11：判定阈值与判定样本长度走 ai_settings
+// 在线可覆盖（误报率是本功能最大的未知数，必须不改代码、不重启就能调）。三个键各自
+// 存裸字符串（数值型存裸字符串，与 daily_report_time 同款），不走 JSON 对象。
+const (
+	aiDetectionThresholdKey  = "ai_detection_threshold"
+	aiDetectionSampleHeadKey = "ai_detection_sample_head"
+	aiDetectionSampleTailKey = "ai_detection_sample_tail"
+)
+
+// 判定参数默认值（design D11）：阈值 0.7、样本首 3000 runes + 尾 2000 runes。
+const (
+	DefaultAIDetectionThreshold  = 0.7
+	DefaultAIDetectionSampleHead = 3000
+	DefaultAIDetectionSampleTail = 2000
+)
 
 // DefaultRSSHubDocBase 返回 rsshub_doc_base 的默认值（design D4），供 handler 透传给前端。
 func DefaultRSSHubDocBase() string { return defaultRSSHubDocBase }
@@ -108,17 +124,6 @@ func LoadBochaConfig() (map[string]interface{}, *models.AISettings, error) {
 // SaveBochaConfig 写入 bocha_config。
 func SaveBochaConfig(config map[string]interface{}, description string) error {
 	return saveConfigByKey(bochaConfigKey, config, description)
-}
-
-// LoadSearxngConfig 读取 searxng_config（页边注问答联网后端本地 SearXNG 的 endpoint + enabled）。
-// 动态读取：调用方每次 Search 前现读，界面改即时生效（对齐 bocha_config 语义；design D7）。
-func LoadSearxngConfig() (map[string]interface{}, *models.AISettings, error) {
-	return loadConfigByKey(searxngConfigKey)
-}
-
-// SaveSearxngConfig 写入 searxng_config。
-func SaveSearxngConfig(config map[string]interface{}, description string) error {
-	return saveConfigByKey(searxngConfigKey, config, description)
 }
 
 // LoadComtradeConfig 读取 comtrade_config（研究数据源 UN Comtrade 的订阅 key + enabled）。
@@ -447,4 +452,128 @@ func LoadAutoStartModelsConfig() (bool, error) {
 func SaveAutoStartModelsConfig(enabled bool) error {
 	config := map[string]interface{}{"enabled": enabled}
 	return saveConfigByKey(autoStartModelsKey, config, "本地模型自动拉起总开关（enabled）")
+}
+
+// AIDetectionConfig 是「疑似 AI 生成」判定参数（add-ai-generated-article-detection design D11）。
+//
+// Threshold：置信分不低于它即标记为疑似（0-1）。SampleHead/SampleTail：判定样本取正文
+// 首 N runes + 尾 M runes。三个字段都经 ai_settings 在线可覆盖，改后立即对后续判定生效
+// （判定服务每次判定现读，不缓存）。
+type AIDetectionConfig struct {
+	Threshold  float64
+	SampleHead int
+	SampleTail int
+}
+
+// DefaultAIDetectionConfig 返回判定参数默认值（阈值 0.7、样本首 3000 + 尾 2000 runes）。
+func DefaultAIDetectionConfig() AIDetectionConfig {
+	return AIDetectionConfig{
+		Threshold:  DefaultAIDetectionThreshold,
+		SampleHead: DefaultAIDetectionSampleHead,
+		SampleTail: DefaultAIDetectionSampleTail,
+	}
+}
+
+// LoadAIDetectionConfig 读取判定参数（阈值 + 样本长度）。
+// 键缺失或值非法时回落到默认值并记警告（fail-safe：配置坏了也不能把判定链路卡死）；
+// 数据库错误直接返回（调用方按失败处理，不静默用旧值）。
+func LoadAIDetectionConfig() (AIDetectionConfig, error) {
+	cfg := DefaultAIDetectionConfig()
+
+	raw, ok, err := loadScalarSetting(aiDetectionThresholdKey)
+	if err != nil {
+		return cfg, err
+	}
+	if ok {
+		value, parseErr := strconv.ParseFloat(raw, 64)
+		if parseErr != nil || value <= 0 || value > 1 {
+			logging.Warnf("Invalid %s value %q, falling back to default %v", aiDetectionThresholdKey, raw, cfg.Threshold)
+		} else {
+			cfg.Threshold = value
+		}
+	}
+
+	if raw, ok, err = loadScalarSetting(aiDetectionSampleHeadKey); err != nil {
+		return cfg, err
+	} else if ok {
+		value, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || value < 0 {
+			logging.Warnf("Invalid %s value %q, falling back to default %d", aiDetectionSampleHeadKey, raw, cfg.SampleHead)
+		} else {
+			cfg.SampleHead = value
+		}
+	}
+
+	if raw, ok, err = loadScalarSetting(aiDetectionSampleTailKey); err != nil {
+		return cfg, err
+	} else if ok {
+		value, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || value < 0 {
+			logging.Warnf("Invalid %s value %q, falling back to default %d", aiDetectionSampleTailKey, raw, cfg.SampleTail)
+		} else {
+			cfg.SampleTail = value
+		}
+	}
+
+	return cfg, nil
+}
+
+// SaveAIDetectionConfig 写入判定参数（阈值 + 样本长度），改后立即对后续判定生效。
+// 校验：阈值必须在 (0, 1]；样本长度不得为负。
+func SaveAIDetectionConfig(cfg AIDetectionConfig) error {
+	if cfg.Threshold <= 0 || cfg.Threshold > 1 {
+		return fmt.Errorf("invalid %s %v: expected (0, 1]", aiDetectionThresholdKey, cfg.Threshold)
+	}
+	if cfg.SampleHead < 0 || cfg.SampleTail < 0 {
+		return fmt.Errorf("invalid ai detection sample lengths: head=%d tail=%d, must be >= 0", cfg.SampleHead, cfg.SampleTail)
+	}
+	if err := saveScalarSetting(aiDetectionThresholdKey, strconv.FormatFloat(cfg.Threshold, 'f', -1, 64),
+		"疑似 AI 判定置信分阈值（0-1，达到即标记疑似）"); err != nil {
+		return err
+	}
+	if err := saveScalarSetting(aiDetectionSampleHeadKey, strconv.Itoa(cfg.SampleHead),
+		"疑似 AI 判定样本首段长度（runes）"); err != nil {
+		return err
+	}
+	return saveScalarSetting(aiDetectionSampleTailKey, strconv.Itoa(cfg.SampleTail),
+		"疑似 AI 判定样本尾段长度（runes）")
+}
+
+// loadScalarSetting 读取一个存裸字符串的 ai_settings 键。
+// 缺失 → (空, false, nil)；DB 错误 → 错误；值为空 → (空, false, nil)。
+func loadScalarSetting(key string) (string, bool, error) {
+	var settings models.AISettings
+	err := database.DB.Where("key = ?", key).First(&settings).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	value := strings.TrimSpace(settings.Value)
+	if value == "" {
+		return "", false, nil
+	}
+	return value, true, nil
+}
+
+// saveScalarSetting 写入一个存裸字符串的 ai_settings 键（存在则更新，不存在则创建）。
+func saveScalarSetting(key, value, description string) error {
+	var settings models.AISettings
+	dbErr := database.DB.Where("key = ?", key).First(&settings).Error
+	if dbErr == nil {
+		settings.Value = value
+		if description != "" {
+			settings.Description = description
+		}
+		return database.DB.Save(&settings).Error
+	}
+	if !errors.Is(dbErr, gorm.ErrRecordNotFound) {
+		return dbErr
+	}
+	return database.DB.Create(&models.AISettings{
+		Key:         key,
+		Value:       value,
+		Description: description,
+	}).Error
 }

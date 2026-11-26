@@ -831,6 +831,12 @@ func (s *DiscoveryRunService) publishRun(ctx context.Context, run *discmodels.Di
 		// board_id 由 D3 归属规则在事务外解析（matchInterestBoard）：无匹配为
 		// NULL——未匹配组，不挂标签不建版块。
 		if interest != nil {
+			// 写入前的维度一致性校验（embedding-dimension-contract）：向量列不再
+			// 带维度约束，维度与向量不符的行会污染后续检索。
+			if err := airouter.ValidateEmbeddingDimension(interest.vec, interest.dim); err != nil {
+				logging.Errorf("discovery run %d: rejecting interest entry: %v", run.ID, err)
+				return fmt.Errorf("interest entry dimension check: %w", err)
+			}
 			if err := tx.Create(&discmodels.DiscoveryInterestEntry{
 				RunID: &run.ID, QueryText: interest.queryText, BoardID: interest.boardID,
 				EmbeddingVec: floatsToPgVector(interest.vec),

@@ -1,0 +1,5 @@
+schema: syntopica-ui
+created: 2026-11-11
+# story-heat-evidence 的六条 Requirement 在本 change 全部退役 → 归档时该能力的主 spec 整体删除。
+# 事件线退役是用户已拍板的产品决策（见 human-feedback.md FB-1），删除可经 git 恢复。
+retire_capabilities: true

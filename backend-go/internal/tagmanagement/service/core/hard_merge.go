@@ -6,6 +6,7 @@ import (
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/reader/search"
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
 
 	"gorm.io/gorm"
@@ -16,7 +17,7 @@ func HardMergeTags(db *gorm.DB, sourceID, targetID uint) error {
 		return fmt.Errorf("cannot merge tag into itself (id=%d)", sourceID)
 	}
 
-	return db.Transaction(func(tx *gorm.DB) error {
+	if err := db.Transaction(func(tx *gorm.DB) error {
 		var source, target models.TopicTag
 		if err := tx.First(&source, sourceID).Error; err != nil {
 			return fmt.Errorf("source tag %d not found: %w", sourceID, err)
@@ -93,5 +94,17 @@ func HardMergeTags(db *gorm.DB, sourceID, targetID uint) error {
 
 		logging.Infof("HardMergeTags: hard-deleted tag %d into %d", sourceID, targetID)
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	// 事务提交成功后失效：源标签已删，其 label 的词典词应从切词候选移除
+	invalidateSearchDictAfterMerge()
+	return nil
+}
+
+// invalidateSearchDictAfterMerge 使搜索联想词典缓存失效：硬合并删除了源标签，
+// 其 label 对应的词典词应从切词候选中移除（add-article-search 2.8 接线，
+// tagmanagement → reader/search 单向依赖、无环）。
+func invalidateSearchDictAfterMerge() {
+	search.DefaultDict().InvalidateDict()
 }

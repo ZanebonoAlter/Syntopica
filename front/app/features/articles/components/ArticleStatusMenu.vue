@@ -11,11 +11,17 @@ export interface ArticleStatusMenuProps {
   showManualSummaryAction: boolean
   /** AI 能力开启时出现「手动打标签」 */
   showManualTaggingAction: boolean
+  /** 出现「标记为疑似 AI 生成 / 取消疑似 AI 标记」（人工结论不依赖 feed 开关与 AI 能力，由宿主显式开） */
+  showManualDetectionAction?: boolean
   /** 任一抓取/总结操作进行中（同一时刻至多一个手动操作） */
   actionBusy: boolean
   manualFirecrawlLoading: boolean
   manualSummaryLoading: boolean
   manualTaggingLoading: boolean
+  /** 人工标记疑似 AI 的请求进行中 */
+  manualDetectionLoading?: boolean
+  /** 「交由模型重新判定」的请求进行中（入队异步作业，不写本地判定字段） */
+  manualRecheckLoading?: boolean
   manualFirecrawlLabel: string
   manualSummaryLabel: string
   manualTaggingLabel: string
@@ -46,10 +52,13 @@ const props = withDefaults(defineProps<ArticleStatusMenuProps>(), {
   showManualFirecrawlAction: false,
   showManualSummaryAction: false,
   showManualTaggingAction: false,
+  showManualDetectionAction: false,
   actionBusy: false,
   manualFirecrawlLoading: false,
   manualSummaryLoading: false,
   manualTaggingLoading: false,
+  manualDetectionLoading: false,
+  manualRecheckLoading: false,
   manualFirecrawlLabel: '手动抓取全文',
   manualSummaryLabel: '手动生成总结',
   manualTaggingLabel: '手动打标签',
@@ -64,6 +73,10 @@ const emit = defineEmits<{
   'manual-firecrawl': []
   'manual-summary': []
   'manual-tagging': []
+  /** 人工标记/取消疑似 AI：suspect=标记疑似 / not_ai=取消标记（就地生效，不弹确认） */
+  'manual-ai-detection': [status: 'suspect' | 'not_ai']
+  /** 显式重新判定：交回模型判（绕过人工结论优先），异步作业 */
+  'recheck-ai-detection': []
   'update:activeContentSource': [source: string]
 }>()
 
@@ -142,6 +155,7 @@ const hasMenuContent = computed(() =>
   props.showManualFirecrawlAction
   || props.showManualSummaryAction
   || props.showManualTaggingAction
+  || props.showManualDetectionAction
   || props.showContentSourceToggle,
 )
 
@@ -270,6 +284,39 @@ onUnmounted(() => {
       >
         <Icon icon="mdi:tag-plus-outline" width="15" height="15" :class="{ 'animate-spin': manualTaggingLoading }" />
         <span>{{ manualTaggingLabel }}</span>
+      </button>
+      <!-- 人工标记/取消疑似 AI：两个固定项（标记 / 取消），不随当前状态增减；
+           就地生效不弹确认，失败落下方内联错误位。取消项同时充当「人工确认非 AI」。 -->
+      <button
+        v-if="showManualDetectionAction"
+        class="asm-menu-item"
+        role="menuitem"
+        :disabled="actionBusy || manualDetectionLoading"
+        @click="emit('manual-ai-detection', 'suspect')"
+      >
+        <Icon icon="mdi:robot-outline" width="15" height="15" />
+        <span>标记为疑似 AI 生成</span>
+      </button>
+      <button
+        v-if="showManualDetectionAction"
+        class="asm-menu-item"
+        role="menuitem"
+        :disabled="actionBusy || manualDetectionLoading"
+        @click="emit('manual-ai-detection', 'not_ai')"
+      >
+        <Icon icon="mdi:check-circle-outline" width="15" height="15" />
+        <span>取消疑似 AI 标记</span>
+      </button>
+      <!-- 第三项：人工结论的退路——显式重判会把结论交回模型（design D10 / review R-6） -->
+      <button
+        v-if="showManualDetectionAction"
+        class="asm-menu-item"
+        role="menuitem"
+        :disabled="actionBusy || manualRecheckLoading"
+        @click="emit('recheck-ai-detection')"
+      >
+        <Icon icon="mdi:refresh" width="15" height="15" :class="{ 'animate-spin': manualRecheckLoading }" />
+        <span>交由模型重新判定</span>
       </button>
 
       <!-- 手动操作行内错误反馈（spec：不恢复正文上方错误横幅） -->

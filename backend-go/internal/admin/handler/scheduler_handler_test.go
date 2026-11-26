@@ -131,3 +131,79 @@ func TestStatusEndpointsNormalModeKeepsSemantics(t *testing.T) {
 	require.Equal(t, http.StatusOK, code)
 	require.Equal(t, true, body["success"])
 }
+
+// ── add-radar-pipeline-status：schedule_deadline ────────────────────────────
+//
+// 契约锚：spec Requirement「日报调度窗口的生成时刻与兜底时刻可读」——状态载荷
+// 同时给出 schedule_time（生成时刻）与 schedule_deadline（兜底时刻）；缺省回落
+// 23:30；兜底早于生成时刻时回落默认值，不输出非法组合。
+
+// seedDailyReportWindow writes the raw ai_settings rows behind the daily
+// report window. An empty value means "the key is absent" (true missing →
+// the default fallback path).
+func seedDailyReportWindow(t *testing.T, db *gorm.DB, timeValue, deadlineValue string) {
+	t.Helper()
+	if timeValue != "" {
+		require.NoError(t, db.Create(&models.AISettings{Key: "daily_report_time", Value: timeValue}).Error)
+	}
+	if deadlineValue != "" {
+		require.NoError(t, db.Create(&models.AISettings{Key: "daily_report_deadline", Value: deadlineValue}).Error)
+	}
+}
+
+// TestSchedulerStatusExposesDailyReportDeadline pins the three deadline
+// scenarios: normal exposure, missing-key fallback, and the illegal pair
+// (deadline earlier than the wall clock) falling back to 23:30.
+func TestSchedulerStatusExposesDailyReportDeadline(t *testing.T) {
+	cases := []struct {
+		name          string
+		timeValue     string
+		deadlineValue string
+		wantTime      string
+		wantDeadline  string
+	}{
+		{
+			name:          "两个时刻都配置",
+			timeValue:     "21:00",
+			deadlineValue: "23:00",
+			wantTime:      "21:00",
+			wantDeadline:  "23:00",
+		},
+		{
+			name:         "缺省回落 23:30",
+			wantTime:     "21:00",
+			wantDeadline: "23:30",
+		},
+		{
+			name:          "兜底早于生成时刻回落 23:30",
+			timeValue:     "21:00",
+			deadlineValue: "20:00",
+			wantTime:      "21:00",
+			wantDeadline:  "23:30",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupSchedulerStatusTestDB(t)
+			seedDailyReportWindow(t, db, tc.timeValue, tc.deadlineValue)
+
+			t.Cleanup(func() { Reg = nil })
+			Reg = &fakeRegistry{
+				items: map[string]interface{}{"daily_report": fakeScheduler{}},
+				order: []string{"daily_report"},
+			}
+
+			r := newSchedulerStatusRouter()
+			code, body := doJSON(t, r, "/api/schedulers/status")
+			require.Equal(t, http.StatusOK, code)
+			data, ok := body["data"].([]any)
+			require.True(t, ok, "data should be a JSON array, got %T", body["data"])
+			require.Len(t, data, 1)
+			entry := data[0].(map[string]any)
+			require.Equal(t, "daily_report", entry["name"])
+			require.Equal(t, tc.wantTime, entry["schedule_time"], "生成时刻必须同时可读")
+			require.Equal(t, tc.wantDeadline, entry["schedule_deadline"], "兜底时刻必须同时可读")
+		})
+	}
+}

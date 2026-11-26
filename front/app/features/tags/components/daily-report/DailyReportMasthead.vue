@@ -1,15 +1,103 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { formatMagazineDate, selectLeadStory } from './dailyReportMagazine'
-import type { DailyReport } from '~/api/dailyReports'
+import { computed, ref, watch } from 'vue'
+import {
+  clusterTagIds,
+  collectClusterThreads,
+  formatMagazineDate,
+  highlightEvidence,
+  selectLeadStory,
+  type ClusterThreadRow,
+  type HighlightEvidence,
+  type LocateRequest,
+} from './dailyReportMagazine'
+import type { DailyReport, DailyReportHighlight } from '~/api/dailyReports'
 
 const props = defineProps<{
   report: DailyReport
   boardTitle?: string
 }>()
 
+const emit = defineEmits<{
+  /** 重点定位意图（D14）：仅可定位条目发出 cluster_id，滚动/高亮由正文分区承接；
+   *  展开区的具体线索额外带 threadId（精确定位，null = 该聚簇正文 DOM 首条）。 */
+  locate: [request: LocateRequest]
+}>()
+
 const lead = computed(() => selectLeadStory(props.report))
 const highlights = computed(() => (props.report.highlights || []).slice(0, 3))
+
+/** 每条重点的展示证据（篇来源/聚簇口径/数据截至/研究时点/定位状态；旧数据全缺省 → 保持现状外观）。 */
+const evidence = computed<HighlightEvidence[]>(() =>
+  highlights.value.map(highlight => highlightEvidence(highlight, props.report)),
+)
+
+/** 依据行文案：缺字段的项整体省略（不显示空括号/0/占位符）。 */
+function metaText(index: number): string {
+  const item = evidence.value[index]
+  if (!item) return ''
+  return [
+    item.articleCount !== null ? `${item.articleCount} 篇来源` : '',
+    item.clusterMode ? `聚簇口径 ${item.clusterMode}` : '',
+    item.dataAsOf ? `数据截至 ${item.dataAsOf}` : '',
+    item.researchAt ? `研究时点 ${item.researchAt}` : '',
+    item.locate === 'missing' ? '本期正文暂无对应线索' : '',
+  ].filter(Boolean).join(' · ')
+}
+
+/** 展开态的条目下标（默认全部收起；切 report 重置）。 */
+const expandedHighlights = ref(new Set<number>())
+
+/** 每条重点可展开的簇内线索（正文现算：thread `tag_ids` ∩ 簇内标签集，DOM 序 + 代表线索置顶）。 */
+const clusterThreads = computed<ClusterThreadRow[][]>(() =>
+  highlights.value.map(highlight => collectClusterThreads(highlight, props.report)),
+)
+
+/** 可展开 = 有簇内标签可匹配，且（有代表标签 cluster_id 或确实匹配到线索）。
+ *  旧标签回退重点（无 cluster_id 且正文无交集）保持静态，不产无信息的展开入口。 */
+const expandable = computed<boolean[]>(() =>
+  highlights.value.map((highlight, index) =>
+    clusterTagIds(highlight).length > 0
+    && (typeof highlight.cluster_id === 'number' || (clusterThreads.value[index]?.length ?? 0) > 0),
+  ),
+)
+
+function toggleCluster(index: number): void {
+  const next = new Set(expandedHighlights.value)
+  if (next.has(index)) next.delete(index)
+  else next.add(index)
+  expandedHighlights.value = next
+}
+
+/** 展开按钮文案：有线索带条数，无匹配不带数字（不伪造 0）。 */
+function expandLabel(index: number): string {
+  const count = clusterThreads.value[index]?.length ?? 0
+  return count > 0 ? `展开簇内线索（${count}）` : '展开簇内线索'
+}
+
+/** 划选文案不触发定位（保留既有划选纪律：非折叠选区时点击只当文本操作）。 */
+function insideSelection(): boolean {
+  const selection = typeof window !== 'undefined' ? window.getSelection() : null
+  return Boolean(selection && !selection.isCollapsed)
+}
+
+function onLocate(clusterId: number | null | undefined): void {
+  if (typeof clusterId !== 'number') return
+  if (insideSelection()) return
+  emit('locate', { clusterId, threadId: null })
+}
+
+/** 展开区单行定位：按 threadId 精确定位该线索（clusterId 供阅读容器预判/分区兑底）。 */
+function onLocateThread(highlight: DailyReportHighlight, row: ClusterThreadRow): void {
+  if (insideSelection()) return
+  emit('locate', {
+    clusterId: typeof highlight.cluster_id === 'number' ? highlight.cluster_id : null,
+    threadId: row.threadId,
+  })
+}
+
+watch(() => props.report.id, () => {
+  expandedHighlights.value = new Set()
+})
 </script>
 
 <template>
@@ -34,12 +122,79 @@ const highlights = computed(() => (props.report.highlights || []).slice(0, 3))
       <p v-if="lead.summary" class="drm-lead__summary" data-mn-anchor="lead">{{ lead.summary }}</p>
     </section>
 
+    <!-- 今日重点：正常态（≥1 条）与空态（null / [] / 字段缺失）互斥渲染，
+         任一时刻只有一个分支存在 → id="report-highlights" 不会重复。
+         retire-story-adopt-event-metrics 3.3：可定位条目标题为键盘可达文字按钮（仅可定位时才有按钮），
+         依据行给「N 篇来源 / 聚簇口径 / 数据截至日 / 研究时点」快照；缺字段整体省略，旧数据外观不变。 -->
     <section v-if="highlights.length" id="report-highlights" class="drm-highlights" aria-label="今日重点">
       <article v-for="(highlight, index) in highlights" :key="`${highlight.title}-${index}`" class="drm-highlight">
         <span class="drm-highlight__index">N°{{ String(index + 1).padStart(2, '0') }}</span>
-        <h3>{{ highlight.title }}</h3>
+        <h3>
+          <button
+            v-if="evidence[index]!.locate === 'ready'"
+            type="button"
+            class="drm-highlight__locate"
+            :data-testid="`highlight-locate-${index}`"
+            :aria-label="`定位正文：${highlight.title}`"
+            title="定位到本期正文中该聚簇的第一条线索"
+            @click="onLocate(highlight.cluster_id)"
+          >{{ highlight.title }}</button>
+          <template v-else>{{ highlight.title }}</template>
+        </h3>
         <p>{{ highlight.reason }}</p>
+        <p
+          v-if="metaText(index)"
+          class="drm-highlight__meta"
+          :data-testid="`highlight-meta-${index}`"
+        >
+          {{ metaText(index) }}
+        </p>
+        <!-- 簇内线索展开（2026-11-11 用户反馈）：默认收起；条目主体仍定位 DOM 首条，
+             展开后逐条列出簇内每篇文章对应的正文线索，行点击精确定位该 thread。 -->
+        <template v-if="expandable[index]">
+          <button
+            type="button"
+            class="drm-highlight__expand"
+            :data-testid="`highlight-expand-${index}`"
+            :aria-expanded="expandedHighlights.has(index)"
+            :aria-controls="`highlight-cluster-${index}`"
+            @click="toggleCluster(index)"
+          >
+            {{ expandedHighlights.has(index) ? '收起簇内线索' : expandLabel(index) }}
+          </button>
+          <div
+            v-if="expandedHighlights.has(index)"
+            :id="`highlight-cluster-${index}`"
+            class="drm-highlight__cluster"
+            :data-testid="`highlight-cluster-${index}`"
+          >
+            <ul v-if="clusterThreads[index]!.length" class="drm-highlight__cluster-list">
+              <li v-for="row in clusterThreads[index]" :key="row.threadId">
+                <button
+                  type="button"
+                  class="drm-highlight__cluster-row"
+                  :data-testid="`highlight-cluster-thread-${row.threadId}`"
+                  :title="`定位正文：${row.title} · ${row.sectionLabel}`"
+                  :aria-label="`定位正文：${row.title} · ${row.sectionLabel}${row.representative ? ' · 代表线索' : ''}`"
+                  @click="onLocateThread(highlight, row)"
+                >
+                  <span class="drm-highlight__cluster-title">{{ row.title }}</span>
+                  <span class="drm-highlight__cluster-meta">
+                    {{ row.sectionLabel }}<template v-if="row.representative"> · 代表线索</template>
+                  </span>
+                </button>
+              </li>
+            </ul>
+            <p v-else class="drm-highlight__cluster-empty" :data-testid="`highlight-cluster-empty-${index}`">
+              本期正文未找到对应线索
+            </p>
+          </div>
+        </template>
       </article>
+    </section>
+    <section v-else id="report-highlights" class="drm-highlights drm-highlights--empty" aria-label="今日重点">
+      <!-- 空态占位：纯静态文本（无按钮 / 无跳转 / 无 data-mn-anchor），不进划选批注、不进目录。 -->
+      <p class="drm-highlights__empty" data-testid="highlights-empty">本期暂无重点</p>
     </section>
   </header>
 </template>
@@ -205,11 +360,155 @@ const highlights = computed(() => (props.report.highlights || []).slice(0, 3))
   line-height: 1.55;
 }
 
+/* 重点定位文字按钮（surface-story-heat-in-report-top）：继承标题排版，只加克制可点暗示；
+   不新增色值，复用主题 token；焦点轮廓走浏览器默认（不抹除）。 */
+.drm-highlight__locate {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  text-align: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--color-border-strong);
+  text-underline-offset: 3px;
+}
+
+.drm-highlight__locate:hover,
+.drm-highlight__locate:focus-visible {
+  color: var(--color-accent);
+}
+
+/* 「进展」徽标：昨日重点再次入选（服务端派生）；克制边框胶囊，非颜色唯一载体（文字可读）。 */
+.drm-highlight__progress {
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 999px;
+  color: var(--color-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.6rem;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  vertical-align: 2px;
+  white-space: nowrap;
+}
+
+/* 来源数快照 + 降级提示行：真实 0 显示 0，快照缺失整行不渲染（不伪造 undefined/占位）。 */
+.drm-highlight p.drm-highlight__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.45rem 0 0;
+  color: var(--color-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.04em;
+}
+
 .drm-highlight p {
   margin: 0;
   color: var(--color-text-secondary);
   font-size: 0.78rem;
   line-height: 1.7;
+}
+
+/* 展开/收起簇内线索：文字按钮，继承克制的刊头排版（不新增色值，复用主题 token）。 */
+.drm-highlight__expand {
+  margin-top: 0.5rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-accent);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--color-border-strong);
+  text-underline-offset: 3px;
+}
+
+.drm-highlight__expand:hover,
+.drm-highlight__expand:focus-visible {
+  color: var(--color-text-primary);
+}
+
+/* 展开区：簇内线索列表（DOM 序、代表线索置顶），行点击定位并高亮。 */
+.drm-highlight__cluster {
+  margin-top: 0.6rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.drm-highlight__cluster-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.drm-highlight__cluster-row {
+  display: grid;
+  gap: 0.15rem;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.drm-highlight__cluster-title {
+  color: var(--color-text-secondary);
+  font-size: 0.76rem;
+  line-height: 1.55;
+  text-decoration: underline dotted transparent;
+  text-underline-offset: 3px;
+}
+
+.drm-highlight__cluster-meta {
+  color: var(--color-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+}
+
+.drm-highlight__cluster-row:hover .drm-highlight__cluster-title,
+.drm-highlight__cluster-row:focus-visible .drm-highlight__cluster-title {
+  color: var(--color-text-primary);
+  text-decoration-color: var(--color-border-strong);
+}
+
+.drm-highlight__cluster-empty {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+  font-style: italic;
+  line-height: 1.6;
+}
+
+/* 空态（highlights 为 null / [] / 字段缺失）：单列弱化文字，占据原三栏区域的位置。
+   边框语言沿用 .drm-highlights（上下双线），只复用既有 CSS 变量，不引入新色值。 */
+.drm-highlights--empty {
+  grid-template-columns: 1fr;
+}
+
+.drm-highlights__empty {
+  margin: 0;
+  padding: 1.5rem clamp(1rem, 2vw, 2rem);
+  color: var(--color-text-secondary);
+  font-size: 0.82rem;
+  font-style: italic;
+  letter-spacing: 0.08em;
+  text-align: center;
 }
 
 @media (max-width: 720px) {

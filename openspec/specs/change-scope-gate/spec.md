@@ -1,3 +1,5 @@
+<!-- domain: harness, dev -->
+
 # change-scope-gate Specification
 
 ## Purpose

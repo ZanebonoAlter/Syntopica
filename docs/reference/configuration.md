@@ -6,7 +6,7 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 
 ### 后端（Go）
 
-以下环境变量会覆盖 `backend-go/configs/config.yaml` 中的值。未设置时使用配置文件默认值。
+以下环境变量会覆盖 `backend-go/configs/config.yaml` 中的值，或为只有环境变量一途的进程开关（如 `DEMO_READ_ONLY` / `COMPRESS_MIN_BYTES` / `FINGENIUS_API_KEY`）。未设置时使用配置文件默认值或代码默认值。
 
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
@@ -16,16 +16,37 @@ Syntopica 使用分层配置系统：后端 YAML 配置文件、覆盖文件值�
 | `DATABASE_DSN` | 否 | `"host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"` | PostgreSQL 连接字符串 |
 | `CORS_ORIGINS` | 否 | `"http://localhost:3000,http://localhost:3000"` | 逗号分隔的允许 CORS 来源列表（首尾空白会被裁剪）。**精确匹配**（`middleware/cors.go` 逐条比对，无通配回退）：跨 origin 部署时须逐个列出浏览器地址栏里的 origin；同源部署（前端由后端同源托管或反代提供）下不参与。见[部署指南](deployment.md)「多机 / 远程访问」节。 |
 | `MIGRATIONS_ALLOW_DESTRUCTIVE` | 否 | *(未设置)* | 仅设为 `"1"` 时启用破坏性数据库迁移（含 `TRUNCATE`/`DROP` 的历史数据清理迁移）。**生产环境绝不设置**；dev/本地开发设 `"1"` 以执行历史数据清理。见 [部署指南](deployment.md#破坏性迁移开关)。 |
+| `DEMO_READ_ONLY` | 否 | *(未设置)* | 公开只读 demo 开关，**仅裸 `1` 生效**（`middleware.IsDemoReadOnly()` 去空白后比较，但 `cmd/server/main.go` 用原值比较——写成 ` 1 ` 会出现「API 只读已生效、后台调度却照常启动」的半开状态）。置 `1` 时：① `/api` 挂 `middleware.ReadOnly()`——放行 OPTIONS 与 GET，其余方法 405 `read-only demo`，两个 merge-preview SSE GET 流也拦；② 不注册 `/ws`；③ 整个 `StartRuntime()` 跳过（无调度器、无启动自愈/序列对齐/孤儿收敛，保证演示快照零写入）。见[部署指南](deployment.md)「公开只读 Demo」与 `demo/docker-compose.demo.yml`（`DEMO_READ_ONLY: "1"`） |
 | `TRACE_SAMPLE_RATIO` | 否 | `0.05` | OTel root span 采样比例（`ParentBased(TraceIDRatioBased)`）。`1.0`=全采；`<1.0` 按比例降采样；被采 root 的所有子 span（DB/出站 HTTP/业务）完整保留。非法值（不可解析或超出 0.0–1.0）回退默认 `0.05` 并打 warn。全采样下 otel_spans 日增 ~82 万行/600MB，故默认低采样；排障时临时设 `1.0` 重启即可恢复全采。 |
 | `TRACE_INSTRUMENT_GORM` | 否 | *(未设置，等效启用)* | 设为 `"0"` 关闭 GORM DB 操作自动埋点（自写 `GORMTracePlugin`）。非 `"0"` 均视为启用。 |
 | `TRACE_INSTRUMENT_HTTP` | 否 | *(未设置，等效启用)* | 设为 `"0"` 关闭出站 HTTP 自动埋点（`httpclient` 工厂的 otelhttp 包装）。非 `"0"` 均视为启用。 |
 | `STORAGE_ICON_DIR` | 否 | `"data/icons"` | feed 图标本地化存储根目录（实际文件在 `feeds/` 子目录），由后端 `/icons` 静态路由对外服务 |
 | `IMAGE_CACHE_MAX_MB` | 否 | `256` | 图片代理（`GET /api/image-proxy`）磁盘缓存总量上限（MB，整数）。超限按最近访问时间（mtime）从旧淘汰到 90% 水位；`"0"` 禁用缓存（每次回源）；负数/非法值回落默认。缓存目录固定 `data/image-cache/`（URL SHA-256 命名），**整目录删除即可热清缓存**（图床内容变更需强一致时），下次访问自动重建。 |
+| `COMPRESS_MIN_BYTES` | 否 | `1024`（1 KiB） | 响应体 gzip 压缩的最小阈值（字节，整数）：小于该值的响应保持 identity（gzip 帧开销超过收益）。压缩在应用进程内做内容协商（`middleware.Compress()`，不交给反代）：每响应写 `Vary: Accept-Encoding`，跳过已压缩媒体类型/已带 `Content-Encoding` 的响应/WebSocket 升级/Range 请求/两个 merge-preview SSE 流。`0` = 全部压缩；负数/非法值回落默认 |
 | `BOCHA_API_KEY` | 否 | *(空)* | **部署兜底**——博查 key 首选在设置界面「博查搜索」配（存 `ai_settings` 表，动态生效）。此 env 仅用于无界面/CI/容器部署，与 `configs/config.yaml` 的 `bocha.api_key` 同为兜底（优先级：界面 DB > env > config.yaml）。全空→`web_search` 降级 Noop（返回错误 JSON，agent 自降级、不阻断） |
 | `BOCHA_ENDPOINT` | 否 | `"https://api.bochaai.com/v1/web-search"` | 博查通搜 endpoint（原始网页结果模式）的**兜底**值；界面可覆盖。仅在需要切换 endpoint（如代理/镜像）时设 |
-| `SEARXNG_URL` | 否 | *(空)* | 本地 SearXNG 实例地址的**兜底**（页边注问答联网补强，daily-report-margin-notes D7）。**首选在设置界面「SearXNG 搜索」配**（存 `ai_settings` 表 `searxng_config`，每次提问现读、即时生效，优先级：界面 DB > env > `configs/config.yaml` `searxng.endpoint`）。空→禁用（问答静默降级为纯文章+模型知识，不报错）。客户端：`internal/platform/searxng` |
 | `COMTRADE_API_KEY` | 否 | *(空)* | UN Comtrade 订阅 key 的**兜底**（研究数据源域，change integrate-research-data-sources）。**首选在设置界面「研究数据源」配**（存 `ai_settings` 表 `comtrade_config`，动态生效免重启，同博查语义）；优先级：界面 DB > env > `configs/config.yaml` `comtrade.api_key`。全空→`un_comtrade` 源在目录中 disabled 且取数报「配置缺失」型 SOURCE_UNAVAILABLE（消息指向配置项），其余三源（EIA/JODI/WDI）匿名可用不受影响。key 获取：comtradedeveloper.un.org 订阅 Free APIs 产品（详见下方「研究数据源」节） |
+| `FINGENIUS_API_KEY` | 否 | *(空)* | FinGenius 个股辩论服务的凭据（可选外部服务：分析员输出 `sectors[].symbols` 后由用户手动触发，6 角色 agent 多轮辩论 + 投票，结果经 `data_enrichment.debate_distill` 提炼存入 `stock_debate_result`）；非空时以 `Authorization: Bearer <key>` 发给 `FINGENIUS_BASE_URL`（默认 `http://localhost:8000`）。**仅环境变量可配**（`configs/config.yaml` 无对应键）；留空 = 不带鉴权头。辩论失败不阻塞循环 B 主流程（non-fatal，见 [flow/data-enrichment.md](flow/data-enrichment.md) §FinGenius 可选辩论） |
 | `FRED_API_KEY` | 否 | *(空)* | FRED API key 的**兜底**（研究数据源域，change add-fast-frequency-datasources，同 Comtrade 动态链）。**首选在设置界面「研究数据源」配**（存 `ai_settings` 表 `fred_config`，动态生效免重启）；优先级：界面 DB > env > `configs/config.yaml` `fred.api_key`。全空→`fred` 源在目录中 disabled 且取数报「配置缺失」型 SOURCE_UNAVAILABLE，其余六源匿名可用不受影响。key 获取：stlouisfed.org 免费注册（1 分钟，详见下方「研究数据源」节） |
+
+### 演示数据导出（dump-sanitizer CLI）
+
+以下变量只对 `backend-go/cmd/dump-sanitizer`（脱敏导出 `demo/seed/seed.sql` 的命令行工具）生效，后端服务进程不读。
+
+| 变量 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `RSSHUB_REWRITE` | 否 | `"rsshub.app=rsshub.app"` | RSSHub **源主机改写规则**，形如 `源host=目标host`：导出时命中 `源host` 的文章链接改写到 `目标host`（scheme 固定 `https`），避免演示数据泄漏自托管实例地址；非 URL / 主机不匹配原样保留。默认值等于「不改写」。仅影响导出产物，不影响运行期抓取。`scripts/deploy/sync-demo-weekly.sh` 优先取同名环境变量，其次读 `demo/seed/.rsshub-rewrite` 首行（gitignore，不入库），两者皆无时 fail-closed 中止导出（除非显式 `ALLOW_NO_RSSHUB_REWRITE=1`） |
+
+### 桌面壳（desktop shell）
+
+桌面壳当前是**远程模式**：窗口装载服务端已托管的 SPA（同源 `/api`），不启动本地后端。目标地址按以下优先级解析（`desktop/shell/src/config.rs`）：
+
+| 来源 | 形式 | 说明 |
+|---|---|---|
+| 启动参数 | `--server-url http://host:5100/` 或 `--server-url=...` | 最高优先级；非法值（无 scheme / 非 http(s)）会被忽略并落到下一级 |
+| 环境变量 | `SYNTOPICA_SERVER_URL` | 同上语义 |
+| 本地配置 | Windows `%LOCALAPPDATA%\Syntopica\shell.json`；Linux/macOS `~/.syntopica/shell.json`（字段 `server_url`） | 由失败页「修改地址」写入（临时文件 + rename 原子写）；文件损坏时回退默认且不覆写 |
+| 默认值 | `http://127.0.0.1:5100/` | 全部缺省时使用 |
 
 ### 前端（Nuxt）
 
@@ -81,8 +102,8 @@ database:
   driver: "postgres"
   dsn: "host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"
   postgres:
-    max_idle_conns: 5
-    max_open_conns: 25
+    max_idle_conns: 25
+    max_open_conns: 40
     conn_max_lifetime_minutes: 60
     conn_max_idle_time_minutes: 10
 ```
@@ -90,8 +111,32 @@ database:
 ### 主要配置段
 
 - **server** — 控制 HTTP 服务器端口和 Gin 运行模式。`release` 模式下 Gin 会抑制调试输出。
-- **database** — 配置持久化层。`driver` 字段始终为 `"postgres"`。PostgreSQL 有独立的连接池调优参数。
+- **database** — 配置持久化层。`driver` 字段始终为 `"postgres"`。PostgreSQL 有独立的连接池调优参数（`max_open_conns` 40 / `max_idle_conns` 25，2026-11-19 起：雷达总览等聚合端点会并发取多个版块的数据，池子过小会让请求排队等连接——表现为「接口慢」而不是「查询慢」；`max_idle_conns` 需接近 `max_open_conns`，否则突发并发后连接被销毁、下次突发要重新握手）。
 - **cors** — 跨域请求的允许来源、HTTP 方法和请求头。来源是列表形式；通过 `CORS_ORIGINS` 环境变量覆盖时，解析为逗号分隔的字符串。
+- **entity_subject** — 全局实体主体归一身份层开关（`entity_subject.mode`，normalize-event-subject-entities）。**默认 `off`**（2026-11-10 决策：影子实验结束，实体层不接入事件线判定；避免实体注册表只增不减成为黑洞。代码与数据都保留，可通过配置切到 `shadow` 继续跑实验态）。本轮只实现 `off` / `shadow`，`active` **显式报错拒绝**。详见下方「实体主体归一（`entity_subject.mode`）」。
+
+### 实体主体归一（`entity_subject.mode`）
+
+事件标签的主体提及可以被归一到一套**全局稳定实体 ID**（`entity_registry` / `entity_mentions` / `entity_aux_links` 三表，见 [`database/tables/entity-subjects.md`](database/tables/entity-subjects.md)）。本开关控制这条链是否跑、写到哪：
+
+| 模式 | 行为 | 部署后可见行为变化 |
+| --- | --- | --- |
+| `off`（默认） | 第一轮提示与 schema 与调用数**逐字不变**（不发 `subject_desc` 字段）；零二轮模型调用；零实体层写入；**不写** `topic_tags.metadata.entity_subject` 键 | **零变化**（= 上线前行为） |
+| `shadow`（实验态） | 第一轮同一次调用额外产出主体原文与**稳定短身份说明**（零新增调用）；写入**限定三处**：实体层三表、正常 AI 审计（`ai_call_logs`）、`topic_tags.metadata.entity_subject` 独立惰性键 | 标签、事件线、日报、话题与界面可见字段全部不变；新字段当前**无读路径** |
+| `active` | **本期未实现**：服务层返回明确错误（`entity_subject.mode=active 本期未实现…不会静默按 shadow 执行`），不静默降级为影子态 | 该链每次被调用时报错日志并跳过（启动阶段不校验、不阻断）；生产启用待有界评测达标后另开 change |
+
+开启影子态（只改部署配置，不改代码）：
+
+```yaml
+entity_subject:
+  mode: "shadow"   # off（默认）| shadow（实验态）| active（本期拒绝）
+```
+
+- 非法的 `entity_subject.mode` 值（如 `on`、`enable`）按 `off` 处理**并返回带原始值的错误**：错误写 error 日志后跳过该次归一，不会静默当 `shadow` 跑；
+- **`shadow` 的延迟代价（同步执行，无异步）**：归一在打标管线内**同步**执行（`article_tagger.go:persistArticleTags` 的 event 分支直接调 `EntitySubjectHook`，**无 goroutine、无排队**），因此单篇打标耗时会叠加归一时长：**单个 event 标签最坏有界 ≤5 分钟**（`DefaultResolverConfig.TotalTimeout`；闸门等待 120s、单次模型调用 60s 各另有上限），**3 个 event 标签的文章最坏约 15 分钟**；且全局单键会话闸门（`entity_gate`）**串行**，吞吐 ≈ 1/闸内时长。**默认是 off，所以这段延迟默认不生效**；切到 `shadow` 才会生效——本地小模型（如 Qwen3.5-4B）单次二判可达数十秒，吞吐会明显下降；需要放开吞吐时保持 `entity_subject.mode` 为 `off`，或后续 change 做成异步；耗时数字是本期明确代价（design Risks），不承诺高并发；
+- 回滚 = 配置改回 `off`（本就是默认）：归一链立即停写（存量数据全程零改动，三张实体表可整层删除，不被任何既有表引用）；
+- 零改动不变量与写入边界见 `flow/topic-graph.md` 红线 13/14/15、`flow/semantic-board.md`、`flow/ai-summary.md`、`flow/daily-report.md` 对应红线；
+- 评测入口 `cmd/entity-resolve-eval` **不受本开关控制**：它走显式影子路径、不写标签业务表，且需单独的真实模型额度授权。
 
 ## 必填与可选设置
 
@@ -124,6 +169,7 @@ database:
 | Tracing instrument GORM | `true` | `tracing.DefaultConfig()` / viper `tracing.instrument_gorm` |
 | Tracing instrument HTTP | `true` | `tracing.DefaultConfig()` / viper `tracing.instrument_http` |
 | Image cache max MB | `256`（`IMAGE_CACHE_MAX_MB` env） | `imageproxy.maxBytesFromEnv`（目录固定 `data/image-cache/`） |
+| Entity subject mode | `"off"` | `viper.SetDefault("entity_subject.mode", "off")` in `config.go`，`configs/config.yaml` 的 `entity_subject.mode` 可覆盖（2026-11-10 决策：影子实验后默认关闭，实体层不接入事件线判定；`shadow` = 实验态，需显式配置开启；`active` 本期显式拒绝） |
 
 ### 前端默认值
 
@@ -131,6 +177,36 @@ database:
 |---|---|---|
 | Public API base | `"http://localhost:5100/api"` | `nuxt.config.ts` |
 | dev server host | `"0.0.0.0"` | `nuxt.config.ts`（修 Windows 下 localhost 只绑 ::1 的问题） |
+
+## 日志
+
+后端日志主干是 slog，`configs/config.yaml` 的 `log` 段：
+
+```yaml
+log:
+  level: "info"            # debug | info | warn | error
+  file:
+    enabled: true          # 关闭时退回纯 stdout（脚本与单测依赖此语义）
+    path: "logs/app.log"
+    max_size_mb: 50        # 单文件上限，超出切分
+    max_backups: 30        # 保留份数
+    max_age_days: 30       # 保留天数
+    compress: true         # 历史文件 gzip
+```
+
+通道约定（2026-11-24 `fix-log-stdout-rotation`）：
+
+| 通道 | 去向 | 说明 |
+| --- | --- | --- |
+| slog（业务主干） | `logs/app.log` | 文件启用时**不再**扇出 stdout |
+| Gin 访问 / 恢复日志 | `logs/app.log` | `gin.DefaultWriter` / `DefaultErrorWriter` 复用同一个 lumberjack 实例 |
+| zap 桥（embedding / merge 队列） | `logs/app.log` | `NewZapLogger` 与 slog 同通道 |
+| 启动横幅 / 进程级崩溃 stderr | `backend-go/nohup.out` | 仅兜底，正常运行时 KB 级 |
+
+- 查看日志：`tail -f backend-go/logs/app.log`
+- 临时回到 stdout（唯一进程级日志开关）：启动前 `LOG_CONSOLE=true`
+- 调整级别：编辑 `log.level` 后重启后端（配置层不提供环境变量覆盖）
+- 背景：改动前 slog / Gin / zap 三路都写 stdout，dev 栈把它重定向到无轮转的 `nohup.out`；2026-11-24 实测长到 756MB / 285 万行，同分区已用 79%。
 
 ## 各环境覆盖
 
@@ -173,7 +249,7 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 | `firecrawl_config` | Firecrawl 集成设置（启用、API URL、API key、模式、超时、最大内容长度） |
 | `open_notebook_config` | Open Notebook digest 导出设置（启用、base URL、API key、model、目标笔记本、prompt 模式、自动发送日报/周报） |
 | `rsshub_config` | RSSHub 实例配置（订阅源发现用，见下「订阅源发现」节；`rsshub_base_url` 缺省回落 `http://rsshub.app`） |
-| `http_proxy_config` | 全局出站代理配置（feed 抓取 / Firecrawl / LLM 等所有外部请求；见下「出站代理」节；`http_proxy_url` 空=直连） |
+| `http_proxy_config` | 全局出站代理配置（**仅外部内容抓取链路**：feed 拉取 / 正文提取 / 文章外链图片；AI 调用等其余出站一律直连，见下「出站代理」节；`http_proxy_url` 空=直连） |
 | `daily_report_time` | 日报生成最早时刻（HH:MM 格式，默认 `21:00`）；实际生成还受队列感知门控（双队列清空才出，见下一条） |
 | `daily_report_deadline` | 日报兜底强制生成时刻（HH:MM 格式，默认 `23:30`；队列未清空时到点强制出报告；早于 `daily_report_time` 回退默认并告警） |
 | `auto_start_models` | 本地模型自动拉起总开关（默认 `false`）：后端启动时，对「探测不通且配了 `start_command`」的 provider 自动执行启动命令拉起本地模型进程。见下「本地模型自动拉起」节 |
@@ -185,15 +261,69 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 | `persistent_topic_lane_l1_threshold` | Lane L1 直挂阈值：当天 tag 到 topic **质心**余弦距离 < 此值直接归属该 topic（不调 LLM）。默认 `0.18`（实测把强挂率从首义向量 14% 提到 62%） |
 | `persistent_topic_lane_l2_threshold` | Lane L2 弱区上限：距离在 `[l1, l2]` 的 tag 交 LLM 在 top-K 候选上做「留/换/新」三选一。默认 `0.30` |
 | `persistent_topic_vacuum_ratio` | 吸尘器判定：topic 近窗口 `strong/(strong+mid)` < 此值则 `is_vacuum=true`，挂到它的 tag 从 L1 降级 L2 交 LLM 裁决。默认 `0.20` |
-| `persistent_topic_centroid_window` | 质心计算取最近 N 条 section embedding 做均权平均；section<2 退化首义向量。默认 `30` |
+| `persistent_topic_centroid_window` | 质心计算取最近 N 条 section embedding 做均权平均（滚动均值侧）；section<2 退化首义向量。默认 `30` |
+| `persistent_topic_centroid_anchor_weight` | 质心混合的**首义权重** α：`centroid = α·首义 embedding + (1-α)·滚动窗口均值`。默认 `0.5`——质心因此只做有界漂移（移动幅度 ≤ 纯滚动位移的 `1-α`），宽口径话题不会漂成「泛新闻磁铁」。α 为线性混合权重（匹配走 cosine 角度，滚动均值模长收缩，实际锚定效果略强于标称比例）。`0` = 纯滚动（旧行为），`1` = 纯首义（话题冻结）；值域外或解析失败回退默认 `0.5` 并告警。见 `flow/topic-graph.md` §话题质心 |
 | `persistent_topic_vacuum_window` | 吸尘器吸引统计窗口（天）：按近 N 天归属该 topic 的 section 统计 strong/mid。默认 `7` |
 | `persistent_topic_l2_candidate_k` | L2 LLM prompt 注入的 top-K 候选 topic 数（按质心距离排序）。默认 `5` |
 | `daily_report_section_merge_enabled` | 同日 section 两阶段合并（确定性 <0.20 + 灰区 LLM 仲裁）总开关。默认 `false`（关）——关闭时 section 按lane 管线原始分组落库；开启时合并仍受锚定边界约束（不同 `persistent_topic_id` / 新叙事↔锚定跨界禁止合并）。见 `flow/daily-report.md` 业务约束 12 |
 | `persistent_topic_candidate_l1_gate_enabled` | **观察期门禁**：candidate topic 是否享有 L1 直挂资格。默认 `true`（开）——开启时最近话题为 candidate 的近距离 tag（距离 < `lane_l1_threshold`）降级进 L2 band 交 LLM 裁决，阻断「一次性新闻标题 candidate 靠同域 tag 无限续命」；关闭时回退 active/candidate 均可直挂的旧行为（在线回滚用，无需发版）。见 `flow/daily-report.md` 业务约束 14 |
+| `daily_report_intra_bucket_enabled` | 泳道内主题分桶总开关（add-intra-lane-theme-bucketing）。默认 `true`——域型泳道的一条过宽 section 会被拆成 2-6 个主题方向；置 `false` 即回滚到「话题 × 天 = 单 section」现状（新列留空不影响读取）。见 `flow/daily-report.md` 业务约束 32 |
+| `daily_report_intra_bucket_min_threads` | 分桶触发阈值（线索数，OR 条件的左支）：当日 thread 数 ≥ 此值触发。默认 `6` |
+| `daily_report_intra_bucket_min_tags` | 分桶触发阈值（tag 数，OR 条件的右支）：聚类 tag 数 ≥ 此值触发。默认 `10`（叙事型泳道单条 ≤5 tags 永不触发，阈值同时是误伤保护） |
+| `daily_report_backfill_budget_minutes` | 日报**缺档补填**整轮预算（分钟，add-daily-report-gap-backfill）。默认 `60`；缺失/非数字/≤0 回退默认并记 warn。耗尽即停止启动新的生成（不打断在途的那一格）、已完成保留、剩余缺口落留档并记终态 `budget_exhausted`。见 `flow/daily-report.md` 业务约束 67 |
 | `tag_edge_retention_days` | 标签边（`article_topic_tags`）保留窗口天数，默认 `7`；缺失/非数字/≤0 回退默认并记 warn。一个键驱动三处同口径：① `aux_label_cleanup` 的边时间窗 GC（删 `created_at` 早于保留窗口下界日（本地日历天零点 − N 天）的边（仅归档文章）+ 收孤儿）；② 日报自动补档扫描窗口 `[today-N, today)`；③ `POST /api/daily-reports/generate` 与 `TriggerNowWithDate` 的重建守卫下界。见 `flow/daily-report.md` 业务约束 19/20 与 `flow/reading.md` 业务约束 6 |
+| `board_health_magnet_gap` | 版块体检**磁铁信号阈值**（board-health-triage-advice）：构成标签对其「`direction_mismatch` 失败挂载子集」与「全部挂载 tag」的贴合均值差 `all_mean − failed_mean` **≥** 此值才判磁铁嫌疑（磁铁失灵病）。默认 `0.08`；取值须在 0-100（非法值/非数字回退默认）。详见下节「版块体检阈值（`ai_settings`）」 |
+| `board_health_magnet_min_failed` | 版块体检**磁铁信号失败子集最小样本量**：本版块 `direction_mismatch=true` 的挂载 tag 数低于此值时，磁铁信号一律标 `insufficient`（**不硬凑**、不给嫌疑结论）。默认 `5`（必须 ≥ 1，否则回退默认）。详见下节「版块体检阈值（`ai_settings`）」 |
+| `related_event_similarity_threshold` | **相关事件相似度阈值**（enable-story-cross-day-continuation，默认 `0.86`，有效闭区间 `[0,1]` 有限数）。在既有「匹配规则」弹窗里与入板匹配参数并列编辑（`GET/PUT /api/semantic-boards/matching-config`），**与入板阈值完全独立**：只决定「相关事件」列表的过滤，不参与命中即停顺序、不影响挂载。改它**不需重算向量**，下次展开即生效；缺行回退 0.86（2026-11-10 S3 实测后由 0.82 上调），存量非法值（非数字/NaN/Inf/越界）告警后同样回退。见下节「相关事件索引（`ai_settings`，related-events）」 |
+| `lane_heat_candidate_weight` | **候选泳道热度权重**（retire-story-adopt-event-metrics D8，默认 `0.5`，有效闭区间 `[0,1]` 有限数）。泳道当天热度 = active 当天线索数 × 1.0 + candidate 当天线索数 × 本权重（`heat-v2-lane-clues-1d`），版块关注度 = 各泳道热度之和；在「匹配规则」弹窗「当天线索热度」块编辑（`GET/PUT /api/semantic-boards/matching-config`），缺项回退 0.5、存量坏值告警回退、非法提交整体拒绝不覆盖旧值。**只进热度，SHALL NOT 参与话题生命周期**（命中计数 / 转正门槛 / 归档都不读它）。见 `flow/semantic-board.md` 红线 29 与 `flow/topic-graph.md` 红线 2 |
+| `related_event_index_generation` | **相关事件索引 generation**（默认 `g1`；不在 UI 暴露，由刷新 CLI `--generation` 写入）。`space_key` 的组成部分：供应商原地更换权重（模型名不变）时必须显式换 generation 并重建索引，否则旧向量仍被当作同空间使用。见下节「相关事件索引（`ai_settings`，related-events）」 |
+
 这些设置通过 `aisettings.LoadSummaryConfig()`、`aisettings.LoadFirecrawlConfig()` 等函数加载，在前端设置页面中配置。
 
 文章手动总结会在每次请求时重新读取 AI Provider 配置：优先使用 `summary` capability 的启用路由；未配置该路由时，回退到任一启用且具有 Base URL 和 Model 的 Provider。因此服务启动后新增 Provider 无需重启。API Key 对本地 Ollama、llama.cpp 或无需鉴权的 OpenAI-compatible 服务是可选项。
+
+### 相关事件索引（`ai_settings`，related-events）
+
+相关事件（`related-events` 能力）的派生向量索引不参与日常拉取，**必须显式刷新**：
+
+```bash
+cd backend-go
+go run ./cmd/related-events --refresh --board <boardId>                # 只补缺失/失效项，可重复跑
+go run ./cmd/related-events --refresh --board <boardId> --generation g2 # 换模型权重后显式换 generation
+go run ./cmd/related-events --experiment --board <boardId>              # 只读历史试验（不写缓存）
+```
+
+- `--refresh`：按版块扫描当前有效 event 标签 → 用确定性文本（名称 + 描述 + 当前有效辅助标签，版本 `related-event-v1`）调 `embedding` 路由（operation `tagmanagement.related_event.embedding`，真实审计行）→ 每批 ≤32 条、30s 超时、串行。文本未变且同空间的行直接复用；失败项**不覆盖**旧有效行，重跑即可恢复。失败原因逐条输出（`invalid_source` / `text_too_long` / `embed_failed` / `space_mismatch` / 空向量/维度/非有限/零范数）。
+- 查询端 `GET /api/semantic-boards/:id/tags/:tagId/related-events` **纯读**：不调模型、不写库；`ready/partial/not_ready` 如实返回覆盖状态（缺索引不会伪装成「没有相关事件」）。
+- 空间解析：`space_key = provider=<vendor>|model=<model>|gen=<generation>`；解析取 `ai_routes(capability=embedding)` 首位可用绑定，只读 DB 不调模型。后备供应商返回**不同模型**时该批按 `space_mismatch` 拒绝写入（同维不同空间不混算）。
+- 换模型/换 generation 后旧行不会参与计算，需重跑 `--refresh`；该表可随时清空重建（派生缓存，删掉只影响相关事件可用性）。
+
+| 键 | 默认 | 含义 |
+| --- | --- | --- |
+| `related_event_similarity_threshold` | `0.86` | 相似度阈值（`[0,1]` 有限数）；缺行/非法回退默认，告警一次 |
+| `related_event_index_generation` | `g1` | 显式索引 generation（`space_key` 组成）；由 `--refresh --generation` 写入 |
+
+### 版块体检阈值（`ai_settings`，board-health-triage-advice）
+
+版块体检（每日纯读统计 + 标签级三病分诊）的全部阈值都存在 `ai_settings` 表（`key` / `value` 两列，唯一键 `key`），每轮体检开始时由 `internal/tagmanagement/service/boardhealth.LoadConfig()` 读取——**缺行或非法值一律回退下表默认**（无需重启，下轮体检即生效）。这组键没有专门的设置界面端点（与版块匹配的 `semantic_board_match_*` 走 `PUT /api/semantic-boards/matching-config` 不同），按 `ai_settings` 键值行维护。
+
+| 键 | 默认 | 含义 |
+| --- | --- | --- |
+| `board_health_min_sample_size` | `5` | 标签级贴合度分布的最小样本量；低于此值该标签标 `insufficient`（分布字段置 `null`） |
+| `board_health_alert_threshold` | `60` | LLM 综合评分**低于**此值才发打扰裁决/通知（严格小于语义，`score >= 阈值` 不通知） |
+| `board_health_notify_cooldown_days` | `3` | 同一版块的异常通知冷却天数 |
+| `board_health_member_candidates_top` | `20` | 手动「版块扩充」主路从最新快照未收编清单取候选的条数上限（快照本身固定持久化 top 50） |
+| `board_health_magnet_gap` | `0.08` | **磁铁信号阈值**：`all_mean − failed_mean ≥` 此值才判磁铁嫌疑（float，非法/非 0-100 回退默认） |
+| `board_health_magnet_min_failed` | `5` | **磁铁信号失败子集最小样本量**（int，≤0 回退默认）；不足则信号 `insufficient`，不硬凑 |
+
+**执行边界（改这两个阈值不会触发任何自动动作）**：
+
+- 体检轮次**纯读**：只写 `board_health_snapshots` 快照（含分诊清单）与少量冷却内通知；**不写**匹配结果表、**不落**任何扩充建议 pending 行、**不改**任何标签描述/向量（红线 20）。
+- 阈值只影响**体检信号计算**与喂给 LLM 分诊的**证据强度**，进而影响分诊建议的判据；**不会**自动摘除任何构成标签、**不会**自动重写描述、**不会**自动扩充版块——摘除走既有手动接口，描述修复必须用户逐项确认（新建持久修复任务），版块扩充建议仍必须用户手动触发（红线 10）。
+- 磁铁信号只是**证据**不是判决：即使 `suspicious=true`，LLM 仍需结合失败挂载流向等证据裁决；「短名天花板」（短实体名 cosine 天然低）不算病症，MUST NOT 仅因 cosine 低判摘除。
+- 调整阈值**不回溯**：历史快照原样保留（体检历史不覆盖），新阈值只影响之后的轮次。
+
+链路背景与三病口径见 `docs/reference/flow/semantic-board.md` §版块体检三病分诊与共享描述修复。
 
 ### Provider 思考开关（`enable_thinking`）
 
@@ -258,9 +388,9 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 - **修改即时生效、无需重启**：airouter 每次调用经 `LoadRouteWithProviders` 现查路由与 provider（`openai_compatible.go` 按当次 `provider.TimeoutSeconds` 建 client 超时）。
 - 另：HTTP 成功但 assistant content 为空的响应会被 airouter 统一规范化为可重试失败（`error_code=empty_response`）并走 ordered fallback，不会把空文本当成功结果消费（board-level-deep-analysis 2026-08-31 修复，见 flow/ai-summary 与 standard/backend/ai-logging）。
 
-#### 6. 分析方法卡（UI 管理，无配置文件项）
+#### 6. 分析方法卡（已整体退役，无配置文件项）
 
-方法卡（`analysis_methods` 表）经设置页「分析方法」section 或 `/api/analysis-methods` CRUD 管理（创建默认停用，启停即时生效）；仅调查链按问题选中 0-2 张注入，不进简报/事实阶段。旧参考角色（`reference_roles`）已退役只读。详见 [api/dataenrichment.md](api/dataenrichment.md)。
+方法卡（`analysis_methods` 表）、设置页「分析方法」分区与 `/api/analysis-methods` CRUD **已于 2026-09-27 `restructure-settings-navigation` 全链移除**（选卡/清洗/注入/仓储/模型/表一并删除，迁移 `20260926_0001` DROP 表；事实零启用零注入，删除无行为损失），调查链前置阶段收敛为「假设生成」单步；旧参考角色（`reference_roles`）同批退役并被同一迁移 DROP。**因此当前没有任何方法卡配置项可配，也没有对应设置页分区**——本文档保留此节只为避免读者按旧文档去找入口。详见 [flow/data-enrichment.md](flow/data-enrichment.md) 变更溯源。
 
 #### 6. 跨版块关系发现（add-evidence-backed-cross-board-relations，默认关闭）
 
@@ -290,13 +420,13 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
-| `http_proxy_url` | *(空)* | 全局出站代理地址；feed 抓取、Firecrawl、LLM 等**外部**请求经此转发。支持 `http`/`https`/`socks5`。空=直连 |
+| `http_proxy_url` | *(空)* | 全局出站代理地址；**仅抓取链路**（feed 拉取、正文提取、文章外链图片）经此转发，AI 调用、数据增强、目录同步等强制直连（narrow-outbound-proxy-scope）。支持 `http`/`https`/`socks5`。空=直连 |
 
 - **回环地址自动直连**：即使配置了代理，目标为回环地址（`localhost` / `127.0.0.0/8` / `::1` / 空 host）的请求一律绕过代理直连（NO_PROXY 惯例）——本地托管模型（llama-server）的探测/推理不被代理 502 拦截（2026-08-19 修复，见 ai-health-reprobe）。
 
 - **代理不可达熔断直连回退**（2026-09-17，见 outbound-proxy-failover）：拨代理本身失败（连接拒绝/拨号超时，如 Clash 进程退出）时，该请求立即直连重试（dial 阶段失败请求未发出，重试无副作用），并打开熔断 60 秒——窗口内所有请求直接直连零等待；到期放行单个请求试探代理（单飞，并发其余直连），代理路径通则自动接回、仍不通则续期。仅「拨代理失败」触发：代理活着但目标侧失败（502/CONNECT 拒绝/目标超时）不熔断也不直连重试（那类站点可能正是依赖代理的）。
-- **保存真正即时生效**：代理 URL 原子存储、包级 failover transport 每请求动态读取——`httpclient.SetProxy` 运行时变更（换址/清空）对**所有已构造 client**（含启动时建好的抓取/AI 单例）立即生效，无需重启；换址同时重置熔断状态（新地址按健康对待）。重启后由 `cmd/server/main.go` 从该配置注入，无需重设。
-- 与 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量的关系：本配置优先；当 `http_proxy_url` 为空时，路由回落标准库 `ProxyFromEnvironment`（即环境变量作兜底）；代理故障降级直连的重试同样保留该兑底。
+- **保存真正即时生效**：代理 URL 原子存储、包级 failover transport 每请求动态读取——`httpclient.SetProxy` 运行时变更（换址/清空）对**所有抓取作用域内已构造 client**（含启动时建好的单例）立即生效，无需重启；换址同时重置熔断状态（新地址按健康对待）。重启后由 `cmd/server/main.go` 从该配置注入，无需重设。
+- 与 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量的关系：本配置优先；当 `http_proxy_url` 为空时，抓取链路回落标准库 `ProxyFromEnvironment`（即环境变量作兜底）；非抓取链路强制直连，不读环境变量（narrow-outbound-proxy-scope）；代理故障降级直连的重试同样保留该兑底。
 - 实现入口：`internal/platform/httpclient/`（`httpclient.go` 的 `SetProxy` 原子 URL + `failover.go` 的包级 failover transport：熔断器 3 态状态机 + `proxyDialContext` 拨号层错误打标，回环直连 `isLoopbackHost` 在路由函数内）；复用 `aisettings` 通用配置存储，与 RSSHub/Firecrawl 配置同机制。
 
 ### 订阅源发现（Feed Discovery）

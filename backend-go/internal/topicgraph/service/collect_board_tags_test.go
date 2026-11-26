@@ -13,22 +13,19 @@ import (
 	"syntopica-backend/internal/topicgraph/repository"
 )
 
-// TestCollectBoardTags_PGHonorsDowngradedColumn is a regression guard for the
+// TestCollectBoardTags_PGHonorsGroupBy is a regression guard for the
 // SQLite↔PostgreSQL GROUP BY semantic gap (see standard/backend/testing.md,
 // "改了发往真实 DB 的 SQL ... 必须有 testcontainer PG 用例").
 //
-// Background: the quality-scoring-observability change added
-// topic_tag_board_labels.downgraded to the SELECT of collectBoardTags but
-// initially omitted it from GROUP BY. SQLite (used by pure-logic unit tests)
-// tolerates a non-aggregated SELECT column absent from GROUP BY, so all unit
-// tests stayed green. PostgreSQL rejects it at runtime with SQLSTATE 42803,
-// which made daily-report generation fail for every board in production.
+// Background（quality-scoring-observability，2026-11-12 前以已退役的
+// downgraded 列承载本守护）：SELECT 里的非聚合列必须进 GROUP BY——SQLite
+// 容忍缺列、PostgreSQL 运行时 SQLSTATE 42803 直接打断全部版块日报。
+// downgraded 列退役后由 match_reason/score 继续承载该契约。
 //
 // This test runs the real collectBoardTags query against a testcontainer
 // pgvector container (production-isomorphic) so the GROUP BY contract is
-// actually exercised. If the column is ever dropped from GROUP BY again, this
-// test fails with 42803.
-func TestCollectBoardTags_PGHonorsDowngradedColumn(t *testing.T) {
+// actually exercised.
+func TestCollectBoardTags_PGHonorsGroupBy(t *testing.T) {
 	db := testutil.SetupTestDB(t)
 
 	// collectBoardTags reads the package-level repository.Repo singleton
@@ -44,7 +41,7 @@ func TestCollectBoardTags_PGHonorsDowngradedColumn(t *testing.T) {
 	board := models.SemanticLabel{Label: "test-board", Slug: "test-board-collect", LabelType: "board"}
 	require.NoError(t, db.Create(&board).Error)
 
-	// Two event tags: one non-downgraded direct_hit, one downgraded max_sim.
+	// Two event tags: direct_hit 与 max_sim 各一（承载 GROUP BY 契约）。
 	tagDirect := models.TopicTag{
 		Slug: "ai-chip", Label: "AI芯片", Category: models.TagCategoryEvent, Status: "active",
 	}
@@ -57,11 +54,11 @@ func TestCollectBoardTags_PGHonorsDowngradedColumn(t *testing.T) {
 	// Board labels carry the per-tag match quality we assert on later.
 	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{
 		TopicTagID: tagDirect.ID, SemanticBoardID: board.ID,
-		MatchReason: "direct_hit", Score: 1.0, Downgraded: false,
+		MatchReason: "direct_hit", Score: 1.0,
 	}).Error)
 	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{
 		TopicTagID: tagDowngraded.ID, SemanticBoardID: board.ID,
-		MatchReason: "max_sim", Score: 0.7, Downgraded: true,
+		MatchReason: "max_sim", Score: 0.7,
 	}).Error)
 
 	// Article published "today" (inside collectBoardTags' [startOfDay, endOfDay)).
@@ -81,16 +78,16 @@ func TestCollectBoardTags_PGHonorsDowngradedColumn(t *testing.T) {
 	require.Len(t, tags, 2, "both seeded event tags should be collected")
 	require.Len(t, articleIDSets, 2)
 
-	// Assert the downgraded flag survives the GROUP BY round-trip — this is
+	// Assert match_reason/score survive the GROUP BY round-trip — this is
 	// the exact data the production bug silently dropped / crashed on.
 	byLabel := make(map[string]repository.TagInput, len(tags))
 	for _, tg := range tags {
 		byLabel[tg.Label] = tg
 	}
-	assert.Equal(t, false, byLabel["AI芯片"].Downgraded, "direct_hit tag should be non-downgraded")
 	assert.Equal(t, "direct_hit", byLabel["AI芯片"].MatchReason)
-	assert.Equal(t, true, byLabel["GPU短缺"].Downgraded, "downgraded flag must round-trip through PostgreSQL GROUP BY")
+	assert.Equal(t, 1.0, byLabel["AI芯片"].Score)
 	assert.Equal(t, "max_sim", byLabel["GPU短缺"].MatchReason)
+	assert.Equal(t, 0.7, byLabel["GPU短缺"].Score)
 }
 
 // TestCollectBoardTags_PopulatesArticleContext verifies the representative article
@@ -112,7 +109,7 @@ func TestCollectBoardTags_PopulatesArticleContext(t *testing.T) {
 	require.NoError(t, db.Create(&tag).Error)
 	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{
 		TopicTagID: tag.ID, SemanticBoardID: board.ID,
-		MatchReason: "direct_hit", Score: 1.0, Downgraded: false,
+		MatchReason: "direct_hit", Score: 1.0,
 	}).Error)
 
 	now := time.Now()

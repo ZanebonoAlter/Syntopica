@@ -478,7 +478,7 @@ func TestRouterEmptyResponseFailureRowCarriesUsageAndFinishReason(t *testing.T) 
 			router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
 				"primary-empty": {content: tc.content,
 					usage:        &TokenUsage{PromptTokens: 100, CompletionTokens: 1536, TotalTokens: 1636, ReasoningTokens: 1536},
-					finishReason:  "length"},
+					finishReason: "length"},
 				"backup": {content: "ok from backup"},
 			}})
 
@@ -549,7 +549,7 @@ func TestRouterParseErrorFailureRowCarriesUsage(t *testing.T) {
 	router.RegisterClient(ProviderTypeOpenAICompatible, &fakeProviderClient{responses: map[string]fakeChatReply{
 		"primary-empty": {content: "not json at all",
 			usage:        &TokenUsage{PromptTokens: 50, CompletionTokens: 80, TotalTokens: 130, ReasoningTokens: 30},
-			finishReason:  "stop"},
+			finishReason: "stop"},
 		"backup": {content: `{"ok":true}`},
 	}})
 

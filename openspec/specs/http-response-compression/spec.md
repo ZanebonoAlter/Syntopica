@@ -1,3 +1,5 @@
+<!-- domain: api -->
+
 # http-response-compression Specification
 
 ## Purpose

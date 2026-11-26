@@ -5,7 +5,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"syntopica-backend/internal/models"
 )
@@ -114,6 +117,63 @@ func TestBuildArticleFromEntryTracksOnlyRunnableStates(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBuildArticleFromEntryCleansDescription locks in the ingestion contract
+// (spec article-description-sanitization): the stored summary is bounded plain
+// text, while the body source field keeps the source document verbatim.
+func TestBuildArticleFromEntryCleansDescription(t *testing.T) {
+	service := NewFeedService()
+	feed := models.Feed{Title: "智源社区"}
+
+	// Verbatim shape of the 智源社区 item description: the whole article HTML
+	// with an invisible (opacity:0) root node.
+	wholeArticleHTML := `<div class="rich_media_content" id="js_content" style="visibility: visible; opacity: 0; ">` +
+		`<h5 style="...">克雷西 发自 凹非寺</h5><p style="...">正文第一段…</p>` +
+		`<section style="..."><img loading="lazy" data-src="https://simg.baai.ac.cn/hub-detail/3a8fed6844ebaaaae1a18986c50781fa1790748001235.webp"></section></div>`
+
+	t.Run("whole article html becomes bounded plain text", func(t *testing.T) {
+		entry := ParsedEntry{
+			Title:       "智源社区文章",
+			Description: wholeArticleHTML,
+			Content:     wholeArticleHTML,
+			Link:        "https://example.com/article",
+		}
+
+		article := service.buildArticleFromEntry(feed, entry)
+
+		require.LessOrEqual(t, len([]rune(article.Description)), 300)
+		require.NotContains(t, article.Description, "<")
+		require.NotContains(t, article.Description, "opacity")
+		require.NotContains(t, article.Description, "正文第一段", "hidden subtrees must not reach the summary")
+		require.Equal(t, wholeArticleHTML, article.Content, "the body source field keeps the source document verbatim")
+	})
+
+	t.Run("long visible html is truncated to 300 runes", func(t *testing.T) {
+		entry := ParsedEntry{
+			Title:       "长摘要",
+			Description: "<p>" + strings.Repeat("导", 900) + "</p>",
+			Content:     "<p>正文</p>",
+		}
+
+		article := service.buildArticleFromEntry(feed, entry)
+
+		require.Len(t, []rune(article.Description), 300)
+		require.True(t, strings.HasSuffix(article.Description, "…"))
+	})
+
+	t.Run("plain text summary is preserved", func(t *testing.T) {
+		entry := ParsedEntry{
+			Title:       "普通摘要",
+			Description: "普通中文摘要",
+			Content:     "<p>正文</p>",
+		}
+
+		article := service.buildArticleFromEntry(feed, entry)
+
+		require.Equal(t, "普通中文摘要", article.Description)
+		require.Equal(t, "<p>正文</p>", article.Content)
+	})
 }
 
 // iconTestServers wires two httptest servers for icon resolution tests:

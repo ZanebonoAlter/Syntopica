@@ -8,8 +8,11 @@
   - none  → approval=not-required、prototype=none，正文只保留「## N/A Reason」
   - minor → approval=not-required、prototype 可为 none，保留四节轻量契约
     （入口与变更 / 受影响状态 / 复用组件与布局模式 / 验收映射）
-  - major → 完整八节 + ui-prototype/ 静态原型，approval 由用户明确确认后
-    才可从 pending 改为 approved；信息架构/主流程/布局模式修订后重置 pending
+  - major → 完整八节 + 三节结构化声明（`## Interaction Decisions` /
+    `## Data Provenance` / `## 明确不做`）+ 可丢弃原型；canvas 主模式用
+    `states/` 三态图 + `interaction-table.md`，其余模式用可点 HTML；
+    approval 由用户明确确认后才可从 pending 改为 approved；
+    信息架构/主流程/布局模式修订后重置 pending
 -->
 
 ## User Journey
@@ -23,6 +26,27 @@
 ## Interaction Contract
 
 <!-- 主/次/危险操作、交互流程、反馈方式（major 必填） -->
+
+## Interaction Decisions
+
+<!-- major/minor 必填；none 可省略。一行一个决策：
+     | ID | 决策 | 模式 | forbidden | 状态 |
+     模式取值限定 7 词表：page / panel / drawer / dialog / inline-edit / canvas / command
+     （完整判据见 docs/reference/standard/frontend/interaction.md）
+     pinned = 用户已定，实现与原型不得替换/简化/合并/改写交互形态/放宽 forbidden；
+     唯一合法变更路径 = 用户明确改口后由 agent 写回并注明「变更来源：用户 <日期>」 -->
+
+## Data Provenance
+
+<!-- major/minor 必填；none 可省略。一行一个用户可见数据项：
+     | 数据项 | source | 说明 |
+     source 取 api <path>（须能在 front/app/api/** 或后端路由 grep 到）/ 表.字段 /
+     派生 <公式> / none（须标 needs-approval 并在对话中取得用户确认） -->
+
+## 明确不做
+
+<!-- major 必填。每条须能读成「不出现在本界面里的具体东西」；
+     禁「暂不支持」这类无对象措辞 -->
 
 ## State Matrix
 
@@ -41,10 +65,16 @@
 
 ## Prototype
 
-<!-- major：ui-prototype/ 静态原型说明（打开方式、fixture 数据、与真实接口的解耦说明）；
+<!-- major：按主模式分流——
+     ① 主模式为 canvas：states/ 三态图（空态 / 编辑中 / 已确认）+ interaction-table.md
+        （操作/触发/前置/结果/反馈/失败），marker 指向 states/ 首张图，不用可点 HTML；
+     ② 其余模式：ui-prototype/ 可点 HTML 原型说明（打开方式、fixture 数据、与真实接口的解耦说明）；
      minor/none：写「无需原型」 -->
 
 ## Acceptance
 
-<!-- major：opencli 主链路断言 + 1440×900 / 1920×1080 两档视觉检查 + 与批准原型的差异说明；
-     minor：组件测试 / opencli / 人工验证映射；none：N/A -->
+<!-- major：agent-browser 主链路断言 + 1440×900 / 1920×1080 两档视觉检查 + 与批准原型的差异说明，
+     证据以 ui-verification/report.md 建账（### A-N 场景【pass|fail|未覆盖】+ 依据行，
+     未覆盖写原因；格式契约见 ui-verification-trace-gate）；
+     minor：验收映射指名道姓——组件测试写真实存在的测试文件路径，
+     或 agent-browser/人工验证在 ui-verification/report.md 建账；none：N/A -->

@@ -6,7 +6,7 @@
  *   - .pi/extensions/spec-gate.ts（归档链 UI 证据检查⑤→⑥）
  *   - .pi/extensions/tests/ui-design-gate.smoke.cjs / spec-gate.smoke.cjs（白盒分支表直测）
  *
- * 纯函数纪律（同 lib/test-case-gate.ts）：不 import fs、不触网、不抛异常——
+ * 纯函数纪律：不 import fs、不触网、不抛异常——
  * 空串/超长/畸形输入返回确定结果；文件存在性与目录清单由调用方快照传入。
  *
  * 契约权威：openspec/changes/make-ui-design-first-class/specs/ui-design-workflow/spec.md
@@ -16,7 +16,7 @@
 /** 新 UI 工作流 schema 名（openspec/schemas/syntopica-ui）；其余（含 spec-driven/null）视为 legacy */
 export const UI_SCHEMA = "syntopica-ui";
 
-/** spec 声明的 reasonCode 白名单（八个，稳定有界值；顺序即文档序） */
+/** spec 声明的 reasonCode 白名单（九个，稳定有界值；顺序即文档序） */
 export const UI_REASON_CODES = [
 	"ui-impact-missing",
 	"ui-impact-mismatch",
@@ -24,6 +24,7 @@ export const UI_REASON_CODES = [
 	"ui-prototype-missing",
 	"ui-approval-pending",
 	"ui-verification-missing",
+	"ui-dispatch-allowed",
 	"explicit-bypass",
 	"ui-gate-check-failed",
 ] as const;
@@ -127,6 +128,116 @@ export function parseUiPrototypeMarker(
 	];
 	if (matches.length !== 1) return null;
 	return matches[0][1];
+}
+
+// ---------------------------------------------------------------------------
+// 原型生产阶段（ui-stage）—— add-ui-stage-accounting design D1–D4
+// 触发条件按写入路径，不依赖 mode；本阶段只记账不阻断（design D4）。
+// ---------------------------------------------------------------------------
+
+/** 原型生产阶段五档（单调阶梯，approved = 全放行且不记账） */
+export const UI_STAGES = [
+	"l0",
+	"skeleton",
+	"interaction",
+	"data",
+	"approved",
+] as const;
+export type UiStage = (typeof UI_STAGES)[number];
+
+/**
+ * stage 记账侧 reasonCode（三个）。**不进 `UI_REASON_CODES` 阻断码白名单**——对齐
+ * `UI_PASS_REASON_CODES` 的既有先例：非阻断码属 harness 事实库词汇表，升为阻断码时
+ * 须作为独立变更扩充 spec 的「九个稳定有界值」。
+ */
+export const UI_STAGE_WARN_REASON_CODES = [
+	"ui-stage-missing",
+	"ui-stage-invalid",
+	"ui-stage-scope-out",
+] as const;
+export type UiStageWarnReasonCode = (typeof UI_STAGE_WARN_REASON_CODES)[number];
+
+/** parseUiStage 三态：missing（无 marker = legacy）/ invalid（非法值或重复）/ ok */
+export type UiStageParse =
+	| { kind: "missing" }
+	| { kind: "invalid" }
+	| { kind: "ok"; stage: UiStage };
+
+/** 解析 `<!-- ui-stage: ... -->`；缺失 → missing；重复或非五档取值 → invalid */
+export function parseUiStage(
+	uiDesignText: string | null | undefined,
+): UiStageParse {
+	if (typeof uiDesignText !== "string" || uiDesignText.length === 0) {
+		return { kind: "missing" };
+	}
+	const matches = [
+		...uiDesignText.matchAll(/<!--\s*ui-stage\s*:\s*([^>]*?)\s*-->/g),
+	];
+	if (matches.length === 0) return { kind: "missing" };
+	if (matches.length > 1) return { kind: "invalid" };
+	const v = matches[0][1].trim();
+	return (UI_STAGES as readonly string[]).includes(v)
+		? { kind: "ok", stage: v as UiStage }
+		: { kind: "invalid" };
+}
+
+/**
+ * 从写入路径解析 change 名：`openspec/changes/<name>/...` → name。
+ * `\` 与 `/` 均接受；`openspec/changes/archive/...` 返回 null（已归档不记账）。
+ */
+export function changeNameFromPath(
+	targetPath: string | null | undefined,
+): string | null {
+	if (typeof targetPath !== "string" || targetPath.length === 0) return null;
+	const p = targetPath.replaceAll("\\", "/");
+	const probe = p.endsWith("/") ? p : `${p}/`;
+	const m = /(?:^|\/)openspec\/changes\/([^/]+)\//.exec(probe);
+	if (!m) return null;
+	const name = m[1];
+	if (name === "archive") return null;
+	if (!/^[A-Za-z0-9._-]+$/.test(name)) return null;
+	return name;
+}
+
+/** 写入路径相对 change 根的路径（`openspec/changes/<change>/` 之后的部分）；不在该 change 内 → null */
+export function relInsideChange(
+	targetPath: string | null | undefined,
+	change: string,
+): string | null {
+	if (typeof targetPath !== "string" || targetPath.length === 0) return null;
+	const p = targetPath.replaceAll("\\", "/");
+	const lead = `openspec/changes/${change}/`;
+	const idx = p.indexOf(`/${lead}`);
+	if (idx >= 0) return p.slice(idx + lead.length + 1);
+	return p.startsWith(lead) ? p.slice(lead.length) : null;
+}
+
+/**
+ * stage 写域判定（design D3，采用「非原型目录一律放行」的低噪声口径）：
+ * - `l0`：除 `ui-prototype/` 外任意路径放行；
+ * - `skeleton`：同上，但 `ui-prototype/skeleton/` 放行；
+ * - `interaction` / `data` / `approved`：全部放行（data 与 interaction 写域相同，
+ *   区别只在记账意图：表示进入填数阶段）。
+ * 返回 null = 合规；否则返回人类可读越域说明。
+ */
+export function checkStageScope(
+	stage: UiStage,
+	relPathFromChangeRoot: string,
+): string | null {
+	if (stage !== "l0" && stage !== "skeleton") return null;
+	const p = relPathFromChangeRoot.replaceAll("\\", "/").replace(/^\.\//, "");
+	if (p !== "ui-prototype" && !p.startsWith("ui-prototype/")) return null;
+	if (
+		stage === "skeleton" &&
+		(p === "ui-prototype/skeleton" || p.startsWith("ui-prototype/skeleton/"))
+	) {
+		return null;
+	}
+	const allowed =
+		stage === "l0"
+			? "l0 阶段不允许写 ui-prototype/（契约未定稿）"
+			: "skeleton 阶段只允许写 ui-prototype/skeleton/";
+	return `${allowed}，本次目标 ${p}`;
 }
 
 /** 解析 `<!-- ui-impact: ... -->`（ui-design.md 内）；多次出现/非法值 → null */
@@ -407,18 +518,42 @@ export function scanImpactMismatch(
 // 工具动作层（test-cases.md §4.2 分支表）——extension 逐 tool_call 调用
 // ---------------------------------------------------------------------------
 
-/** 工具动作分类（extension 侧从 event 归纳；bash 不做写盘判定，归 other） */
-export interface UiToolAction {
-	/** agent 子线程派发（Agent 工具） */
-	kind: "agent-dispatch" | "mutation" | "other";
-	/** mutation 的仓库根相对目标路径（正斜杠）；其他动作为 null */
-	targetPath: string | null;
+/**
+ * 合同未就绪时放行的子线程档位白名单（add-ui-prototype-editor-agent design D2）：
+ * 只读档（explore/plan：无写工具；change-review：只读工具 + shell，shell 通道为既有边界）
+ * + 原型编辑档（ui-design：带 edit/write，写边界由写侧门禁逐个兜住）。
+ * 白名单划分依据是**档位语义**而非工具集（design D2）——change-review 带 shell，不满足
+ * 「无写工具」的严格定义，但其用途限定为审查，故仍放行。
+ * 取舍：显式常量而非「读档位文件的 tools 字段」动态判定——门禁热路径必须零 I/O（D2）；
+ * 代价是档位改名/新增须同步本常量与 `.pi/agents/`（smoke 用例做双向漂移防护）。
+ */
+export const UI_DISPATCH_ALLOWED_AGENTS: readonly string[] = [
+	"explore",
+	"plan",
+	"change-review",
+	"ui-design",
+];
+
+/** 派发档位是否命中放行白名单（大小写不敏感——pi-web 档位解析本身大小写不敏感） */
+export function isDispatchAllowedAgent(
+	subagentType: string | null | undefined,
+): boolean {
+	if (typeof subagentType !== "string") return false;
+	const t = subagentType.trim().toLowerCase();
+	if (t.length === 0) return false;
+	return UI_DISPATCH_ALLOWED_AGENTS.includes(t);
 }
+
+/** 工具动作分类（extension 侧从 event 归纳；bash 不做写盘判定，归 other） */
+export type UiToolAction =
+	| { kind: "agent-dispatch"; subagentType: string | null }
+	| { kind: "mutation"; targetPath: string | null }
+	| { kind: "other"; targetPath: null };
 
 /** decideUiToolGate 入参 */
 export interface UiToolGateInput extends UiContractInput {
-	/** 当前档位（implementation 才介入）；null = 无档位记录 */
-	mode: string | null;
+	/** 当前阶段族（planning / implementation；implementation 才介入）；null = 未绑定阶段 */
+	stageFamily: string | null;
 	/** 绑定的 change 名；null = 未绑定 */
 	boundChange: string | null;
 	tool: UiToolAction;
@@ -428,30 +563,37 @@ export interface UiToolGateInput extends UiContractInput {
 export type UiToolDecision =
 	| { action: "allow"; silent: true; verdict?: UiContractVerdict }
 	| { action: "block"; reasonCode: UiReasonCode; message: string }
-	| { action: "warn-legacy"; reasonCode: "ui-design-missing"; message: string };
+	| { action: "warn-legacy"; reasonCode: "ui-design-missing"; message: string }
+	| { action: "dispatch-allowed"; reasonCode: "ui-dispatch-allowed"; message: string };
 
 /**
  * 工具动作门禁（§4.2）：
- * - 非 implementation 档 / 未绑定 change → allow（requirements 静默）
+ * - 非 implementation 阶段族 / 未绑定 change → allow（planning 静默）
  * - legacy schema：mutation 触及 front/** → warn-legacy（调用方每 session/change 去重一次）；其余 allow
  * - 新 schema 合同 pass → allow（健康放行零噪声）
  * - 新 schema 合同 block：
  *   · other（读/验证/bash）→ allow
  *   · mutation 且目标在当前 change 目录内（修 ui-design.md / ui-prototype/** 等规划制品）→ allow
- *   · mutation 越出当前 change 目录 / Agent 派发 → block
+ *   · mutation 越出当前 change 目录 → block
+ *   · agent 派发：只读档与原型编辑档（UI_DISPATCH_ALLOWED_AGENTS）→ dispatch-allowed（放行并留痕，
+ *     add-ui-prototype-editor-agent design D2/D3/D5）；其余（写能力档如 general-purpose）→ block
+ *     （放行的是「派发」这个动作，子线程经 edit/write 工具的每次写入仍逐个过门禁——写侧边界不放宽，D4）
  * bypass 与 fail-open 由 extension 层处理（本函数不感知环境变量/异常）。
  */
 export function decideUiToolGate(input: UiToolGateInput): UiToolDecision {
-	if (input.mode !== "implementation" || !input.boundChange) {
+	// 介入条件：阶段族 == implementation（族为派生值——stage-driven-constraint-injection D2；
+	// 改造前判据是档位 mode == implementation，语义等价）
+	if (input.stageFamily !== "implementation" || !input.boundChange) {
 		return { action: "allow", silent: true };
 	}
+	const tool = input.tool;
 	const verdict = evaluateUiContract(input);
 
 	if (verdict.kind === "legacy") {
 		if (
-			input.tool.kind === "mutation" &&
-			input.tool.targetPath !== null &&
-			input.tool.targetPath.startsWith("front/")
+			tool.kind === "mutation" &&
+			tool.targetPath !== null &&
+			tool.targetPath.startsWith("front/")
 		) {
 			return {
 				action: "warn-legacy",
@@ -467,11 +609,28 @@ export function decideUiToolGate(input: UiToolGateInput): UiToolDecision {
 	}
 
 	// block 裁决 → 按工具动作分流
-	if (input.tool.kind === "other") return { action: "allow", silent: true };
+	if (tool.kind === "other") return { action: "allow", silent: true };
+	if (tool.kind === "agent-dispatch") {
+		// 只读档与原型编辑档放行（design D2/D3）：只读档（explore/plan 无写工具；change-review
+		// 只读工具 + shell，shell 通道为既有边界）不产生前端实现；原型编辑档服务于
+		// 「修改当前 change 的 UI 设计与原型」这一被 spec 明确允许的路径。放行的是「派发」
+		// 这个动作——子线程经 edit/write 工具的每次写入仍逐个过本门禁，越出 change 目录照常阻断（D4）。
+		if (isDispatchAllowedAgent(tool.subagentType)) {
+			return {
+				action: "dispatch-allowed",
+				reasonCode: "ui-dispatch-allowed",
+				message: `「${input.boundChange}」UI 设计合同未就绪：本次派发（${tool.subagentType}）属只读/原型编辑档，已放行并留痕（reasonCode: ui-dispatch-allowed）；子线程经 edit/write 工具的每次写入仍逐个过门禁，越出当前 change 目录者照常阻断（shell 类通道不在本门禁覆盖范围——既有边界）`,
+			};
+		}
+		return {
+			action: "block",
+			reasonCode: verdict.reasonCode,
+			message: buildBlockMessage(input.boundChange, verdict.reasonCode, verdict.detail),
+		};
+	}
 	if (
-		input.tool.kind === "mutation" &&
-		input.tool.targetPath !== null &&
-		input.tool.targetPath.startsWith(`openspec/changes/${input.boundChange}/`)
+		tool.targetPath !== null &&
+		tool.targetPath.startsWith(`openspec/changes/${input.boundChange}/`)
 	) {
 		return { action: "allow", silent: true }; // 修当前 change 的 UI 合同/原型/规划制品
 	}
@@ -499,24 +658,26 @@ export function buildBlockMessage(
 // 归档证据检查（task 3.5，spec-gate 调用；spec「UI 完成验收必须对照批准基线」）
 // ---------------------------------------------------------------------------
 
-/** 归档 UI 证据检查入参 */
+/** 归档 UI 证据检查入参（验收实物对账已下放脚本，扩展只保留规划制品检查） */
 export interface UiArchiveInput {
 	/** change 绑定 schema；null/legacy → 不检查（旧 change 不硬阻断） */
 	schema: string | null;
 	proposalText: string | null;
 	uiDesignText: string | null;
-	tasksMd: string | null;
 	/** change 目录递归普通文件清单 */
 	changeDirFiles: readonly string[];
 }
 
 /**
- * 归档证据检查（block 级缺项清单；空数组 = 通过）。
+ * 归档证据检查——规划制品完整性项（block 级缺项清单；空数组 = 本函数通过）。
+ * 验收实物对账（report.md 建账/截图/minor 指名道姓）已下放
+ * `scripts/harness/ui-verification-trace.sh`（add-ui-verification-trace-gate：判定单一
+ * 事实源在脚本，spec-gate 检查⑥' 与 archive-readiness 只认其退出码，扩展内不保留
+ * 平行字样匹配），本函数仅保留与验收实物无关的规划制品检查：
  * - legacy schema → 空数组（不硬阻断）
  * - none：N/A 一致性（marker 与 proposal 声明一致 + N/A 节在）
- * - minor：ui-design.md Acceptance/验收节映射到 组件测试|opencli|人工 至少其一
- * - major：approval=approved + 原型存在 + tasks 验证节有 opencli 与 1440×900、1920×1080
- *   证据 + ui-design.md 有差异说明（「差异」字样）
+ * - minor：无（映射实物全在脚本）
+ * - major：approval=approved + 原型文件存在（design D1：属规划制品完整性，与验收实物是两类检查）
  * 前置的合同合法性（marker 缺失等）由 evaluateUiContract 保证——归档时若合同本身
  * 不合法也列缺项（不区分 ui-design-missing/ui-approval-pending，统一
  * ui-verification-missing 语义由调用方记账）。
@@ -541,14 +702,13 @@ export function missingArchiveUiEvidence(input: UiArchiveInput): string[] {
 	}
 
 	if (declared === "minor") {
-		const acc = extractSection(input.uiDesignText, ["Acceptance", "验收"]);
-		if (!/(组件测试|component|opencli|人工)/i.test(acc)) {
-			missing.push("minor 档缺验收映射（ui-design.md 验收节须映射到 组件测试/opencli/人工验证 至少其一）");
-		}
+		// minor 档验收映射实物对账已下放 ui-verification-trace.sh（单一事实源，
+		// add-ui-verification-trace-gate）：扩展内不再保留关键词字样判定
 		return missing;
 	}
 
-	// major
+	// major：仅保留规划制品两项（审批 marker + 原型文件存在，design D1）；
+	// 验收实物（report.md 建账/截图）由 ui-verification-trace.sh 判定
 	const approval = parseUiApprovalMarker(input.uiDesignText);
 	if (approval !== "approved") missing.push("major 档 ui-approval 必须为 approved（原型已获用户确认）");
 	const protoRaw = parseUiPrototypeMarker(input.uiDesignText);
@@ -557,32 +717,5 @@ export function missingArchiveUiEvidence(input: UiArchiveInput): string[] {
 	} else if (validatePrototypePath(protoRaw, input.changeDirFiles) !== null) {
 		missing.push(`major 档原型文件不可用（${protoRaw}）`);
 	}
-	const tasks = input.tasksMd ?? "";
-	const tail = extractTailSections(tasks);
-	if (!/opencli/i.test(tail)) missing.push("tasks.md 验证节缺 opencli 主交互链路断言证据");
-	if (!tail.includes("1440") || !tail.includes("1920")) {
-		missing.push("tasks.md 验证节缺 1440×900 与 1920×1080 两档视觉检查证据");
-	}
-	const accSection = extractSection(input.uiDesignText, ["Acceptance", "验收"]);
-	if (!accSection.includes("差异")) {
-		missing.push("ui-design.md Acceptance 节缺实现与批准原型的差异说明");
-	}
 	return missing;
-}
-
-/** 提取首个命中别名的 `## 节` 正文（到下一个 ## 或文末）；无命中返回空串 */
-function extractSection(text: string, aliases: readonly string[]): string {
-	const re = new RegExp(`^##\\s+.*(?:${aliases.join("|")}).*$`, "im");
-	const m = re.exec(text);
-	if (!m) return "";
-	const start = m.index + m[0].length;
-	const rest = text.slice(start);
-	const next = rest.search(/^##\s+/m);
-	return (next === -1 ? rest : rest.slice(0, next)).trim();
-}
-
-/** 提取 tasks.md 尾部「测试/文档/验证」三节文本（从首个 `## N. 测试` 起到文末；找不到退全文） */
-function extractTailSections(tasksMd: string): string {
-	const m = /^##\s+\d+\.\s*测试/m.exec(tasksMd);
-	return m ? tasksMd.slice(m.index) : tasksMd;
 }

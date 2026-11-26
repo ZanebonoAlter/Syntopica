@@ -1,3 +1,5 @@
+<!-- domain: db, scheduler -->
+
 ## Purpose
 
 统一管理数据库日志表的保留与清理，通过 scheduler 系统定时删除过期数据，替代散落在各模块内的手动清理逻辑。

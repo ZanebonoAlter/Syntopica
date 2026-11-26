@@ -1,76 +1,75 @@
 /**
- * constraint-injection — 强制约束上下文注入 + 跨阶段知识中继（Syntopica 版）
+ * constraint-injection — 阶段驱动的约束路由 + 自主导入（Syntopica 版）
  *
  * 源自用户另一项目实战 extension（快照：docs/research/extensions/extensions/constraint-injection.ts，
  * 移植 change：openspec/changes/port-constraint-injection，设计决策见其 design.md）。
- * 配置文件：.pi/constraint-injection.json（命令表/关键词表/JIT 路径信号/栈信号）。
+ * 配置文件：.pi/constraint-injection.json（命令表/关键词表/栈信号）。
+ *
+ * 形态（stage-driven-constraint-injection D1~D8，本文件为任务组 3 的落地）：
+ * - **进度真相源 = change 目录内 `stage.md` 的 `<!-- stage: -->` marker**（6 档：
+ *   explore/propose/design/implement/verify/archive）；阶段族（planning/implementation）
+ *   是**派生值**（lib/stage.ts），MUST NOT 独立写。marker 缺失/非法 = legacy change，
+ *   按未绑定处理（不阻断任何流程，含归档）。
+ * - **注入形态 = 红线层 + 路由清单**：业务域约束节的**整节正文不再主动注入**；
+ *   ① 阶段首推（增量 steer 消息）送达该 change 声明域的**红线层**（顶层加粗句逐行，
+ *   复用 lib/constraint-redlines.ts 的 extractRedlines，零提取/低于 minSectionBytes
+ *   回退全节）；② 稳定层（system prompt）= **索引文档 + 阶段路由清单**（只有路径 +
+ *   节名 + 取数方式，**零正文**）；③ 细节层由模型**自主 read**（清单给出
+ *   `constraint-digest.sh --brief --domains <域>` 取红线摘要的命令形式）。
+ * - **业务域声明两处并集**：proposal.md 头部 `<!-- constraint-domains: ... -->`（存量位置）
+ *   + **stage.md 头部同名 marker**（实现期活口径——申报实施中新发现的域）；stage.md 不得
+ *   收窄 proposal 的声明（超集安全方向）。生效域 → 红线层 + 路由清单。
+ * - **两条整节正文通道退役**：keyword（对话关键词命中）与 jit-path（编辑路径命中）
+ *   均不再送达正文——命中的文档只**进路由清单**（路径 + 节名），引导模型自行 read。
+ *   证据：改造前 jit-path 单次最坏 27.8KB、keyword 跨域误伤 8KB（见 change proposal）。
+ * - **稳定层快照键 = 阶段族 + 绑定 change**（`stageFamily|boundChange`）：同族内阶段
+ *   切换（explore→propose→design）不重建稳定层（族内切换由稳定层差异机制经 steer
+ *   送达）；族切换才整体重建一次（前缀缓存零失效的红线）。
+ * - **事实库**：`stage.set` 取代 `mode.set`（payload：stage/stageFamily/boundChange/
+ *   source；source 沿用 command/skill/edit-dir/recover/inherit/fallback 六来源）；
+ *   新增 `constraint.read`（读约束文档时记账，归档对账的唯一事实源）。
  *
  * 职责：
- * 0. **会话作用域状态（per-session-constraint-binding）**：档位/绑定 change/turn 绑定锁/
- *    输入窗/JIT 与关键词命中集/pin 去重集/稳定层快照与指纹全部按 `sessionId` 隔离
- *    （`sessionStates`）——一个 pi 进程可同时有多会话（多窗口 + pi-subagents 子线程共用
- *    模块实例），隔离前它们共享同一套全局变量，导致「他会话刚绑定 = 本会话注入归属」
- *    （2026-09-17 事实库取证：会话 A 的注入在另一会话 mode.set 6 秒后漂移到 dedupe-
- *    rss-articles 并带上其声明域）。不变量：
+ * 0. **会话作用域状态（per-session-constraint-binding）**：阶段/阶段族/绑定 change/
+ *    turn 绑定锁/输入窗/命中集/pin 去重集/稳定层快照与指纹全部按 `sessionId` 隔离
+ *    （`sessionStates`）——一个 pi 进程可同时有多会话（多窗口 + pi-subagents 子线程
+ *    共用模块实例），隔离前它们共享同一套全局变量，导致「他会话刚绑定 = 本会话注入
+ *    归属」（2026-09-17 事实库取证）。不变量：
  *    - 注入归属 / 稳定层快照 / 命中集只由**本会话**状态决定；
  *    - 本会话无状态时，仅当父子关系可证（session header 的 `parentSession`，即 fork /
- *      pi-subagents 子线程）才显式继承父会话（记 `mode.set source=inherit`），
- *     否则视为未绑定（仅索引）；**MUST NOT 借用任意他会话的状态**；
+ *      pi-subagents 子线程）才显式继承父会话（记 `stage.set source=inherit`），
+ *      否则视为未绑定（仅索引）；**MUST NOT 借用任意他会话的状态**；
  *    - 会话边界事件（new/resume/fork/reload）只重置**本会话**条目；
  *    - 会话条目有界（上限 + LRU 淘汰），无 `sessionId` 的 stub 语境落单一兜底槽。
  *    回归面：`.pi/extensions/tests/constraint-injection.smoke.cjs` 第 19 组。
- * 1. input 事件：识别阶段命令，设置会话内 mode flag（需求/设计 vs 实现/评审）
- * 2. before_agent_start 事件：约束注入按**混合通道**送达（harden-constraint-injection-channel）：
- *    - **稳定层**（system prompt，本 handler 返回 systemPrompt）：索引 + mode-base + 声明域
- *      红线层。快照 key=mode|boundChange，档位生命周期内**字节恒定**（不再随输入/编辑路径
- *      /findings 变化）→ system prompt 不变则其后全部 history 前缀缓存不失效。
- *    - **动态层**（追加消息，append-only 投递）：关键词命中全节 + JIT 命中全节 + change 级
- *      文件 + 稳定层差异通知。按内容指纹 diff 发送——指纹未变零投递，变化只发增量条目。
- *      turn 起点走 before_agent_start 返回的 message；turn 中途（JIT 命中）走
- *      pi.sendMessage(deliverAs:"steer", triggerTurn:false) 即时送达。
+ * 1. input 事件：输入提及 change 名 → 绑定该 change（阶段由其 stage.md 决定）
+ * 2. before_agent_start 事件：约束注入按**混合通道**送达：
+ *    - **稳定层**（system prompt）：索引文档 + 阶段路由清单。快照
+ *      key=stageFamily|boundChange，**同族阶段生命周期内字节恒定** → system prompt
+ *      不变则其后全部 history 前缀缓存不失效。
+ *    - **动态层**（追加消息，append-only 投递）：阶段首推的声明域红线层 + change 级
+ *      文件（explore-findings / 词汇表）+ 命中文档的路由指针 + 稳定层差异通知。按内容
+ *      指纹 diff 发送——指纹未变零投递，变化只发增量条目。
  *    - compaction 后（session_compact）下一注入时机重发一次约束快照（消息会被摘要掉）。
- *    - 配置 channel="legacy" 可回退旧的「每 turn 全量进 system prompt」行为。
- *    未激活档（无 mode）：仅注入约束索引（docs/reference/constraints-index.md），
- *    不做 change 文本关键词命中——避免「最近活跃 change」的静态文本让无关规范
- *    全文常驻所有会话
- *    - 档位与设置时绑定的活跃 change 关联：change 归档/切换后自动回落未激活档
- *    - 业务域显式声明（constraint-domain-declaration / constraint-declaration-redline）：
- *      proposal.md 头部 `<!-- constraint-domains: daily-report, ... -->` 声明涉及域
- *      → 注入对应 flow 文档「业务约束与不变量」节的红线层（顶层列表项首个加粗块
- *      逐行 + 细节层取回指引尾行；提取 0 条或低于 minSectionBytes 回退全节，
- *      fail-safe；格式规范见 standard/shared/doc-authoring.md「约束节红线句格式」）
- *      （声明为主，每回合重解析不进粘性集合；keyword/jit 命中仍注全节——细节层
- *      经命中通道到达模型）；
- *      change 产物全文不再参与关键词命中——harness/AI 类 change 的正当词汇与业务域
- *      关键词本质重叠，隐式推断必致误注入（harness-facts-tier-a 实测撞车 4 域）
- *    - 节级注入：keywordDocs/jitDocs 带 section 字段时只注「## <节名>」节
- *      （flow 文档只注「业务约束与不变量」节，实测全文 8~20K vs 节 1.7~4.6K）；
- *      配置的节不存在时回落全文（fail-safe，不静默跳过）
- *    - 命中粘性：关键词命中与 JIT 命中会话内只增不减（命中源含最近 N 条输入滚动窗，
- *      若词条滚出窗口就移除会让内容集合抖动）；粘性后投递侧按内容指纹 diff——相同内容
- *      零重复投递
- *    - 关键词命中域限定（harden-constraint-injection-channel D7）：命中文档仅在
- *      「当前 change 声明域 ∪ 栈条件文档 ∪ baseDocs/索引」范围内生效，跨域词
- *      （如做 scheduler change 时聊到 discovery）不再误拉无关域全节
- *    - 二级注入：文档超 digestDocThreshold 且文首有「## 硬规则速览」→ 仅注速览
- *      + 全文目录；无速览小节回落全文（本仓文档暂无速览节，路径备用）
+ *    - 配置 channel="legacy" 可回退「每 turn 全量进 system prompt」行为。
+ *    未绑定阶段（无 stage.md / 未绑定 change）：**稳定层**仅注入约束索引
+ *    （docs/reference/constraints-index.md）。
  * 3. pin_finding 工具：探索阶段持久化关键代码发现到活跃 change 的 explore-findings.md；
- *    research/问答语境（无激活档位）落 docs/research/<topic>/（无 topic 落通用池
+ *    research/问答语境（未绑定阶段）落 docs/research/<topic>/（无 topic 落通用池
  *    单文件 docs/research/explore-findings.md），不碰 openspec/changes/ 与 experience
- * 4. before_agent_start（实现档）：自动把 explore-findings.md 注入 system prompt
- * 5. 事实库记账（harness-facts-tier-a）：constraint.inject（每回合每文档）/ pin.write /
- *    pin.read（会话内去重）经 lib/harness-log 自报，模型零参与
- * 6. 注入预算与分层降级（constraint-injection-tier-b）：注入内容总量受 budgetBytes
- *    限制（缺省 32768；非正数禁用），超线按命中信号强度分层降级（keyword → jit →
- *    change-file digest 收紧 → 域声明 → change-file 占位），永不真丢（占位行保留
- *    标题 + read 路径）；降级确定性（同输入同输出字节）
- * 7. 档位持久化与绑定归因（constraint-injection-tier-b + D5/D6）：档位/绑定**所有**
- *    变化路径记 mode.set（payload 附 source：command/skill/edit-dir/recover/inherit/
- *    fallback，隐性绑定不存在）；绑定修正条件化（read 不抢绑、当前绑定健康时不抢绑、
- *    仅无绑定/绑定 change 消失时兜底）且同 turn 锁定；session_start{reason:resume}
- *    按同 sessionId 恢复，new/fork 清零
- * 8. 记账送达化（D6）：constraint.inject 在内容实际送达时记（稳定层快照变化时 /
- *    动态层消息发出时 / compact 快照重发时），同 session 同 path 内容未变不重复记
+ * 4. 事实库记账（harness-facts-tier-a）：constraint.inject（送达时记）/ constraint.read
+ *    （读约束文档时记）/ stage.set（阶段与绑定变化记）/ pin.write / pin.read 经
+ *    lib/harness-log 自报，模型零参与
+ * 5. 注入预算与分层降级（constraint-injection-tier-b）：注入内容总量受 budgetBytes
+ *    限制（缺省 32768；非正数禁用），超线按信号强度分层降级（红线层 → 路由清单 →
+ *    change-file digest 收紧 → change-file 占位），永不真丢（占位行保留标题 + read 路径）
+ * 6. 阶段持久化与绑定归因：阶段/绑定**所有**变化路径记 stage.set（payload 附 source：
+ *    command/skill/edit-dir/recover/inherit/fallback，隐性绑定不存在）；绑定修正条件化
+ *    （read 不抢绑、当前绑定健康时不抢绑、仅无绑定/绑定 change 消失时兜底）且同 turn 锁定；
+ *    session_start{reason:resume} 按同 sessionId 恢复（`queryLatestStageSet` 双读：
+ *    先 stage.set，无则回退 legacy mode.set 并映射回族），new/fork 清零
+ * 7. 跨进程子线程继承（3.6）：读**父会话**最新 stage.set 取 stage/stageFamily/
+ *    boundChange，**stage 随父会话快照写死，不在子线程重算**
  *
  * 与 AGENTS.md 的关系：注入块头部固定标注「与 AGENTS.md 优先级宪法冲突时以宪法为准」
  * ——extension 注入的内容属"项目文档"层，不能悄悄升权。
@@ -88,8 +87,27 @@ import {
 	readdirSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
-import { logEvent, queryBySession, type HarnessEventRow } from "./lib/harness-log";
+import {
+	logEvent,
+	logStageSet,
+	queryLatestStageSet,
+	logConstraintRead,
+	type HarnessEventRow,
+	type StageSetInfo,
+	type StageSetSource,
+} from "./lib/harness-log";
 import { isChildSession, parentSessionId } from "./lib/child-session";
+import { extractRedlines } from "./lib/constraint-redlines";
+import {
+	readStageFile,
+	stageFamilyOf,
+	buildStageRouting,
+	normalizeRepoPath,
+	isConstraintDocPath,
+	type Stage,
+	type StageFamily,
+	type StageRoutingItem,
+} from "./lib/stage";
 import {
 	listChangeDirs,
 	detectActiveChange,
@@ -97,12 +115,14 @@ import {
 	ARCHIVE_DIR,
 } from "./lib/active-change";
 
-type Mode = "requirements" | "implementation";
-
 interface ConditionalDoc {
 	doc: string;
 	ifStack: "backend" | "frontend";
 }
+/**
+ * legacy 档位配置（stage-driven 改造后**仅用于工作流命令识别**——命令不再决定阶段，阶段恒由绑定 change 的 stage.md 决定）。
+ * group 6 已把仓库配置改为 `stages` 段；本接口只为 legacy 配置形态（临时目录 / 烟测 fixture）保留读取兼容。
+ */
 interface ModeConfig {
 	label: string;
 	commands: string[];
@@ -115,17 +135,32 @@ interface DocEntry {
 	section?: string;
 }
 interface ConstraintConfig {
-	modes: Record<Mode, ModeConfig>;
+	/** legacy 档位配置（可选：group 6 改配置后本段可能缺席——读取处一律容错） */
+	modes?: Record<string, ModeConfig>;
+	/** 阶段配置段（group 6 落地：`stages` 路由表 + 各阶段命令表；读取 commands 与 docs） */
+	stages?: Record<string, {
+		label?: string;
+		commands?: string[];
+		/**
+		 * 本阶段必读文档集合（路由清单数据源；**只写路径**——节名由
+		 * lib/stage.ts 的 ROUTING_DOC_CATALOG 唯一维护）：required 无条件进清单，
+		 * conditional 命中栈才进清单。缺省本段 = 代码兜底（临时目录 / 配置未升级）。
+		 */
+		docs?: {
+			required?: string[];
+			conditional?: Partial<Record<"backend" | "frontend", string[]>>;
+		};
+	}>;
 	keywordDocs: (DocEntry & { keywords: string[] })[];
 	stackSignals: { frontend: string[]; backend: string[] };
-	// skill 文件路径片段 → 档位（agent 自动 read skill 时激活，覆盖斜杠命令外的真实工作流）
+	// skill 文件路径片段（agent 自动 read openspec skill 时触发绑定，覆盖斜杠命令外的真实工作流）
 	skillSignals?: { requirements: string[]; implementation: string[] };
 	indexDoc: string;
 	findingsFile: string;
 	findingsDigestThreshold: number;
 	// change 级词汇表文件名（默认 ubiquitous-language.md）；实现档注入，主线程定义→子线程可见
 	vocabularyFile?: string;
-	// 最近 N 条用户输入参与关键词/栈命中（默认 5）
+	// 最近 N 条用户输入参与关键词/栈判定（默认 5）
 	recentInputWindow?: number;
 	// 会话状态条目上限（默认 32）：仅用于长跑进程内存有界（LRU 淘汰最久未用会话条目），
 	// 不影响注入语义（会话数未超限时行为与上限无关）；非法值（非数字/0/负数）回退默认。
@@ -135,8 +170,9 @@ interface ConstraintConfig {
 	// 节级注入最小字节下限（默认 512）：提取的节内容低于此值视为文档编辑中间态残缺节，
 	// 回退注入全文（fail-safe，与节不存在回落全文同族）。harness-observability-fixes D4。
 	minSectionBytes?: number;
-	// （已移除 jitDocs）JIT pathSignals 单一真相源 = 文档头部 `doc-impact-applies`
+	// JIT pathSignals 单一真相源 = 文档头部 `doc-impact-applies`
 	// frontmatter 标签（docs/reference/flow + standard），见 scanAppliesTags（design D3）
+	// ⚠ 改造后编辑路径命中**不再注入正文**——命中文档只进路由清单（路径 + 节名）。
 	// 注入块总预算（字节，tier-b design D1）：缺省 32768；非正数 = 显式禁用预算。
 	// 32K = 常态上界（findings+词汇表双 6K + 2~3 域节约 10K）+ 余量，只截 43~55K 病态尾部
 	budgetBytes?: number;
@@ -148,10 +184,10 @@ interface ConstraintConfig {
 }
 
 const CONFIG_PATH = ".pi/constraint-injection.json";
-// 预算缺省值（tier-b design D1）：实测重估——16K 会在常态上界触发 keyword 降级，
+// 预算缺省值（tier-b design D1）：实测重估——16K 会在常态上界触发降级，
 // 且让烟测 REPO 场景落入边际降级区（断言随 flow 文档演进漂移）；预算管尾部不管常态
 const DEFAULT_BUDGET_BYTES = 32768;
-// research 库（无档位语境的 pin 落点；规则出处：openspec/specs/research-retention）
+// research 库（未绑定阶段语境的 pin 落点；规则出处：openspec/specs/research-retention）
 const RESEARCH_DIR = "docs/research";
 
 /* ---------- 会话作用域状态（per-session-constraint-binding） ---------- */
@@ -164,15 +200,17 @@ const RESEARCH_DIR = "docs/research";
 //      否则视为未绑定；MUST NOT 借用任意他会话的状态。
 // 无 sessionId 的非真实会话语境（烟测 stub）落单一兜底槽，行为与隔离前等价。
 type ChannelState = {
-	/** 稳定层快照（D2）：key=`mode|boundChange`，档位生命周期内冻结字节；内容差异走动态层 */
+	/** 稳定层快照（D2/D3）：key=`stageFamily|boundChange`，同族阶段生命周期内冻结字节；内容差异走动态层 */
 	stableSnapshot: { key: string; block: string; items: PlanItem[] } | null;
 	/** 动态层已投递指纹（D3）：itemKey → contentHash；指纹未变则零投递 */
 	sentFingerprint: Map<string, string>;
 	/** 已投递指纹的 regime（fix-injection-transition-fingerprint-wipe）：sentFingerprint 各条目
-	 *  投递时的 stableSnapshotKey(mode, boundChange)；null = 尚无动态投递。档位/绑定可
+	 *  投递时的 stableSnapshotKey(stageFamily, boundChange)；null = 尚无动态投递。阶段/绑定可
 	 *  mid-turn 变化而快照重建延迟到下一 turn 起点——延迟重建的指纹清空只看 regime：
-	 *  regime≠新快照 key 才清空，mid-turn 切档后同 turn 已投递的内容不被误清重投。 */
+	 *  regime≠新快照 key 才清空，mid-turn 切阶段后同 turn 已投递的内容不被误清重投。 */
 	fingerprintRegime: string | null;
+	/** 已投递的阶段（阶段首推判据）：某 stage 首次送达 → 消息标「阶段首推」 */
+	lastDeliveredStage: Stage | null;
 	/** compaction 后待重发快照（D4）：session_compact 置位，下一注入时机重发并重置指纹 */
 	pendingSnapshot: boolean;
 	/** 子线程 session_start 已投递稳定层（harden-subagent-constraint-channel T3-rev/D3）：
@@ -182,18 +220,27 @@ type ChannelState = {
 };
 type SessionState = {
 	sessionId: string;
-	/** 本会话档位（requirements / implementation），未激活为 null */
-	mode: Mode | null;
-	/** 设置档位时绑定的活跃 change 名；绑定 change 归档/删除后回落 null（防粘性常驻） */
+	/** 本会话阶段（6 档；由绑定 change 的 stage.md marker 派生；null = 未绑定阶段/legacy） */
+	stage: Stage | null;
+	/** 阶段族（**派生值**：planning/implementation；legacy 恢复时可由 mode.set 映射回族） */
+	stageFamily: StageFamily | null;
+	/** 设置阶段时绑定的活跃 change 名；绑定 change 归档/删除后回落 null（防粘性常驻） */
 	boundChange: string | null;
 	/** turn 绑定锁定（D5）：before_agent_start 重置；turn 内首个生效绑定后置位，同 turn 不再切换 */
 	turnBindLocked: boolean;
+	/** 工作流意图（本会话见过 openspec 工作流命令/skill）：**mtime 兜底绑定的唯一前提**
+	 *  （无意图时不得凭空把「最近改动的 change」当成当前工作对象——改造前对应「档位未激活」）。
+	 *  ⚠ 意图**不决定阶段**：阶段恒由绑定 change 的 stage.md 派生；意图只回答「是否允许
+	 *  mtime 兜底」（planning 意图 = 新想法语境，不兜底——同改造前 requirements 档规则）。 */
+	workflowIntent: "planning" | "implementation" | null;
 	/** 最近 N 条用户输入（ring buffer），与 change 文本合并后做关键词/栈命中 */
 	recentInputs: string[];
-	/** JIT 命中集合（会话内只增不减）：write/edit 路径命中 doc-impact-applies 标签即入列 */
+	/** JIT 命中集合（会话内只增不减）：write/edit 路径命中 doc-impact-applies 标签即入列。
+	 *  改造后**只进路由清单**（路径 + 节名），不再送达整节正文。 */
 	jitDocHits: Map<string, DocEntry>;
 	/** 关键词命中集合（会话内只增不减，@Syntopica）：命中源含滚动输入窗，词条滚出窗口
-	 *  不移除——注入块缩水会让 system prompt 字节变化 → 全部历史前缀缓存报废 */
+	 *  不移除——注入块缩水会让 system prompt 字节变化 → 全部历史前缀缓存报废。
+	 *  改造后只作路由清单的「本次会话提及」标注，不送达正文。 */
 	keywordDocHits: Map<string, DocEntry>;
 	/** pin.read 会话内去重（design D5）：实现档每回合重建注入块，不去重会重复计数 */
 	pinReadSeen: Set<string>;
@@ -219,9 +266,11 @@ const sessionStates = new Map<string, SessionState>();
 function newSessionState(sessionId: string): SessionState {
 	return {
 		sessionId,
-		mode: null,
+		stage: null,
+		stageFamily: null,
 		boundChange: null,
 		turnBindLocked: false,
+		workflowIntent: null,
 		recentInputs: [],
 		jitDocHits: new Map(),
 		keywordDocHits: new Map(),
@@ -233,6 +282,7 @@ function newSessionState(sessionId: string): SessionState {
 			pendingSnapshot: false,
 			childInitDelivered: false,
 		},
+		lastDeliveredStage: null,
 		lastUsedAt: Date.now(),
 	};
 }
@@ -318,7 +368,8 @@ function inheritFromParent(state: SessionState, ctx: ExtCtx | undefined): boolea
 	if (!pid) return false;
 	const parent = sessionStates.get(pid);
 	if (!parent) return false;
-	state.mode = parent.mode;
+	state.stage = parent.stage;
+	state.stageFamily = parent.stageFamily;
 	state.boundChange = parent.boundChange;
 	state.turnBindLocked = parent.turnBindLocked;
 	state.recentInputs = [...parent.recentInputs];
@@ -339,16 +390,17 @@ function inheritFromParent(state: SessionState, ctx: ExtCtx | undefined): boolea
 }
 
 /** 跨进程继承回退（**真实链路主路径**）：父会话的内存态在另一个进程里拿不到，但父会话的
- *  `mode.set` 历史在共享事实库里 → 按父会话 id 取父会话最近一条**可恢复**记录，只采纳
- *  `mode` + `boundChange`（命中集/快照/输入窗是父进程内存态，拿不到就不编造，宁可少注入）。
- *  复用 recoverMode：同 id 单段 + 绑定 change 目录存在性校验（父会话绑定已归档 → 未激活）。
- *  父 id 不可证、无记录、异常 → false（保持未激活，**绝不**借用任意他会话状态）。 */
+ *  `stage.set` 历史在共享事实库里 → 按父会话 id 取父会话最近一条**可恢复**记录，只采纳
+ *  `stage` + `stageFamily` + `boundChange`（命中集/快照/输入窗是父进程内存态，拿不到就不编造，
+ *  宁可少注入）。**stage 值随父会话快照写死，不在子线程重算**（D8）。
+ *  取数走 `queryLatestStageSet`（已内置双读：先 stage.set，无则回退 legacy mode.set 并映射回族）。
+ *  父 id 不可证、无记录、异常 → false（保持未绑定，**绝不**借用任意他会话状态）。 */
 function inheritFromParentHistory(state: SessionState, ctx: ExtCtx | undefined): boolean {
 	const pid = parentSessionId(ctx);
 	if (!pid || !ctx?.cwd) return false;
-	let rec: { mode: Mode; boundChange: string | null } | null = null;
+	let rec: StageSetInfo | null = null;
 	try {
-		rec = recoverMode(ctx.cwd, pid);
+		rec = queryLatestStageSet(pid, ctx.cwd);
 	} catch (e) {
 		console.error(
 			`[constraint-injection] inherit from parent history failed: ${(e as Error).message}`,
@@ -356,7 +408,15 @@ function inheritFromParentHistory(state: SessionState, ctx: ExtCtx | undefined):
 		return false;
 	}
 	if (!rec) return false;
-	state.mode = rec.mode;
+	// 父会话绑定的 change 已归档/删除 → 不继承（回落未绑定）
+	if (
+		rec.boundChange &&
+		!existsSync(join(ctx.cwd, OPENSPEC_CHANGES_DIR, rec.boundChange))
+	) {
+		return false;
+	}
+	state.stage = rec.stage;
+	state.stageFamily = rec.stageFamily;
 	state.boundChange = rec.boundChange;
 	return true;
 }
@@ -364,9 +424,11 @@ function inheritFromParentHistory(state: SessionState, ctx: ExtCtx | undefined):
 /** 会话边界重置（session_start 的 new/resume/fork/reload）：**只清本会话条目**，
  *  他会话状态 MUST NOT 被清零（隔离前是清零全局，等于替所有会话重置）。 */
 function resetSessionState(state: SessionState): void {
-	state.mode = null;
+	state.stage = null;
+	state.stageFamily = null;
 	state.boundChange = null;
 	state.turnBindLocked = false;
+	state.workflowIntent = null;
 	state.recentInputs = [];
 	state.jitDocHits = new Map();
 	state.keywordDocHits = new Map();
@@ -378,6 +440,7 @@ function resetSessionState(state: SessionState): void {
 		pendingSnapshot: false,
 		childInitDelivered: false,
 	};
+	state.lastDeliveredStage = null;
 }
 
 let configCache: { config: ConstraintConfig; mtime: number } | null = null;
@@ -388,6 +451,9 @@ const appliesTagCache = new Map<
 >();
 // 合法业务域缓存（docs/reference/flow/*.md basename）：目录 mtime + 名单
 let flowDomainsCache: { mtime: number; names: string[] } | null = null;
+// read 调用在途登记（review R-4）：tool_execution_start 记 toolCallId → 原始 path，
+// tool_execution_end（成功回执）取回记账后删除；end 事件不带 args，只能经此中转。
+const pendingReadCalls = new Map<string, string>();
 // 关键词匹配器预编译缓存（ASCII 词边界正则；按 config 实例 WeakMap，热更新自然失效）
 const matcherCache = new WeakMap<ConstraintConfig, Map<string, RegExp | null>>();
 /* 混合通道状态（harden-constraint-injection-channel D2~D5）与 pin.read 去重集：
@@ -701,32 +767,10 @@ function extractSection(content: string, sectionName: string): string | null {
 }
 
 /* ---------- 红线层提取（@constraint-declaration-redline design D1/D2/D4） ---------- */
-
-/** 红线层提取结果：lines 为「原文列表标记 + 加粗块」逐行序列，bytes 为 \n 拼接字节数 */
-export interface RedlineLayer {
-	lines: string[]; // 形如 `3. **红线句**`（保留原文顺序与编号）
-	bytes: number;
-}
-
-/**
- * 提取约束节的红线层：顶层列表项（行首无缩进的 `N. ` / `- `）行取首个 `**...**`
- * 加粗块为一条红线句（保留原文顺序与编号）；无加粗块的列表项不取首行文本凑数
- * （细节句冒充红线比回退全节更糟）；引用块 / 自由段落 / 嵌套列表项不属红线层。
- * 0 条提取返回 null；bytes 低于节级最小字节下限时由调用方回退全节（同族 fail-safe）。
- * 纯函数：同一节文本 → 同一输出字节序列（smoke 直跑）。
- */
-export function extractRedlines(sectionText: string): RedlineLayer | null {
-	const lines: string[] = [];
-	for (const line of sectionText.split(/\r?\n/)) {
-		const m = line.match(/^(\d+\.|-)\s+(.*)$/);
-		if (!m) continue; // 非顶层列表项（嵌套项/引用块/自由段落/标题）
-		const bold = m[2].match(/\*\*(.+?)\*\*/);
-		if (!bold) continue; // 无加粗块：不凑数，该条不进红线层
-		lines.push(`${m[1]} **${bold[1]}**`);
-	}
-	if (!lines.length) return null;
-	return { lines, bytes: Buffer.byteLength(lines.join("\n"), "utf8") };
-}
+/* 实现已下沉到 lib/constraint-redlines.ts（单一真相源：extension 与取数脚本
+   scripts/harness/constraint-digest.sh 双引，规则一字不改 —— design D2 / R1）。
+   此处 re-export 保持对外导出面不变（smoke 由 bundle 调 ext.extractRedlines）。 */
+export { extractRedlines, type RedlineLayer } from "./lib/constraint-redlines";
 
 /* ---------- 大文档二级注入（硬规则速览 + 全文目录；本仓文档暂无速览节，路径备用） ---------- */
 
@@ -783,7 +827,7 @@ export interface PlanItem {
 	/** 降级后状态（applyBudget 写入）：digest=收紧摘要 placeholder=占位行 */
 	degradedTo?: "digest" | "placeholder";
 	/** 声明域注入层级（redline=红线层 / full=回退全节或全文）；非 declaration 条目不携带 */
-	layer?: "redline" | "full";
+	layer?: "redline" | "pointer";
 }
 
 const placeholderBody = (it: PlanItem): string =>
@@ -837,6 +881,8 @@ export function applyBudget(
 		};
 	}
 	// 降级程序（D2 分层顺序；层内按装配顺序 = 首次命中顺序）
+	// 改造后顺位：**红线层 → 路由清单 → change-file（digest 收紧 → 占位）**
+	// （keyword / jit-path 整节正文通道已退役，不再有降级层）
 	const actions: { item: PlanItem; to: "digest" | "placeholder" }[] = [];
 	const add = (reason: PlanItem["reason"], to: "digest" | "placeholder") => {
 		for (const it of current) {
@@ -845,10 +891,9 @@ export function applyBudget(
 			actions.push({ item: it, to });
 		}
 	};
-	add("keyword", "placeholder");
-	add("jit-path", "placeholder");
-	add("change-file", "digest");
 	add("declaration", "placeholder");
+	add("routing", "placeholder");
+	add("change-file", "digest");
 	add("change-file", "placeholder");
 	for (const a of actions) {
 		if (measure() <= budgetBytes) break;
@@ -922,22 +967,29 @@ function buildChangeFileItem(
 	}
 }
 
-/** constraint.inject 记账条目（design D5）：注入文档的路径/形态/命中原因/字节数；degraded 仅预算降级回合携带（tier-b D4） */
+/** constraint.inject 记账条目（design D5）：注入内容的路径/形态/命中原因/字节数；degraded 仅预算降级回合携带（tier-b D4） */
 interface InjectedDocEntry {
 	path: string;
 	mode: "section" | "digest" | "full";
+	/**
+	 * 注入原因（改造后词汇收敛）：
+	 *   index       = 约束索引文档（稳定层）
+	 *   routing     = 阶段路由清单（稳定层；只含路径 + 节名，**零正文**）
+	 *   declaration = 声明域红线层（动态层，阶段首推）
+	 *   change-file = change 级文件（explore-findings / 词汇表）
+	 *   route-hit   = 编辑路径/关键词命中文档的**路由指针**（零正文，不单独记账）
+	 * 历史词汇（mode-base / stack-conditional / keyword / jit-path）随整节正文通道退役而不再产生。
+	 */
 	reason:
 		| "index"
-		| "mode-base"
-		| "stack-conditional"
+		| "routing"
 		| "declaration"
-		| "keyword"
-		| "jit-path"
+		| "route-hit"
 		| "change-file";
 	bytes: number;
 	degraded?: boolean;
 	/** 声明域注入层级（@constraint-declaration-redline）：redline=红线层 / full=回退全节或全文；其余 reason 不携带 */
-	layer?: "redline" | "full";
+	layer?: "redline" | "pointer";
 }
 
 /** pin.read 记账条目（design D5）：explore-findings.md 的 pin 标题（research 锚点已剥除） */
@@ -947,18 +999,33 @@ interface PinReadEntry {
 	digested: boolean;
 }
 
+/**
+ * 注入阶段族（append-only 记账字段 tier）：
+ * none=未绑定阶段 / planning / implementation（**派生值**，与 InjectedDocEntry.mode
+ * ——文档形态 section/digest/full——语义不同，MUST NOT 复用；历史记录无 tier → 统计计
+ * 「未知」并剔除分母）。
+ */
+type InjectionTier = "none" | "planning" | "implementation";
+
+const tierOf = (stageFamily: StageFamily | null): InjectionTier =>
+	stageFamily ?? "none";
+
 interface InjectionPlan {
-	mode: Mode | null;
-	modeLabel: string;
+	/** 当前阶段（6 档；null = 未绑定阶段/legacy change） */
+	stage: Stage | null;
+	/** 当前阶段族（派生值；null = 未绑定） */
+	stageFamily: StageFamily | null;
+	/** 阶段展示标签（implement / 未绑定） */
+	stageLabel: string;
 	changeName: string | null;
-	/** 绑定是否来自档位绑定（false = mtime 兜底/无；header 展示 `（档位绑定）` 后缀用） */
+	/** 绑定是否来自阶段绑定（false = mtime 兜底/无；header 展示 `（阶段绑定）` 后缀用） */
 	bound: boolean;
 	docList: string[]; // 实际注入的文档（用于状态展示）
 	docEntries: InjectedDocEntry[]; // 事实库记账（constraint.inject）
 	pinReads: PinReadEntry[]; // 事实库记账（pin.read，注入 explore-findings 成功时）
-	// 业务域声明状态（design D2/D5）：注入块头部 + widget 展示；null = 非档位语境
+	// 业务域声明状态（design D2/D5）：注入块头部 + widget 展示；null = 未绑定 change
 	declNote: string | null;
-	// 预算用量展示（widget；null = 预算禁用或未激活档）：如「预算 12.3K/32K（降级2）」
+	// 预算用量展示（widget；null = 预算禁用或未绑定阶段）：如「预算 12.3K/32K（降级2）」
 	budgetNote: string | null;
 	// 降级后条目（混合通道按 reason 切分稳定层/动态层；legacy 模式不用）
 	items: PlanItem[];
@@ -967,225 +1034,255 @@ interface InjectionPlan {
 	block: string; // 追加进 system prompt 的完整文本
 }
 
+/* ---------- 阶段路由清单装配（stage-driven D4/D5） ---------- */
+
+/** 栈判定 → 路由清单的栈参数（backend 优先：双栈命中时本仓以 Go 后端为主栈） */
+function stackForRouting(stacks: {
+	backend: boolean;
+	frontend: boolean;
+}): "backend" | "frontend" | null {
+	if (stacks.frontend && !stacks.backend) return "frontend";
+	if (stacks.backend) return "backend";
+	return null;
+}
+
+/**
+ * 阶段路由清单装配（lib/stage.ts 的 buildStageRouting + 命中文档追加）。
+ * 清单项**只含路径 + 节名 + 取数方式，零正文**——细节层由模型自主 read。
+ *
+ * 命中文档分两类：
+ *   - 编辑路径命中（jit）：文件系统事实（doc-impact-applies 标签）→ 直接进清单；
+ *   - 关键词命中：仍受**域限定**（D7）约束——仅落在基础清单（声明域 ∪ 栈文档 ∪ 索引）
+ *     内的命中才进清单，跨域词（如做 scheduler change 时聊到 discovery）不误拉无关域。
+ */
+function buildRoutingItems(
+	stage: Stage,
+	declDomains: string[],
+	stacks: { backend: boolean; frontend: boolean },
+	jitHits: DocEntry[],
+	keywordHits: DocEntry[],
+	config: ConstraintConfig,
+): StageRoutingItem[] {
+	const seen = new Set<string>();
+	const items: StageRoutingItem[] = [];
+	const push = (it: StageRoutingItem): void => {
+		if (seen.has(it.path)) return;
+		seen.add(it.path);
+		items.push(it);
+	};
+	// ① 基础清单（索引 + 声明域 + 配置的阶段文档清单 / 无配置回退代码常量）
+	const stack = stackForRouting(stacks);
+	for (const it of buildStageRouting(stage, {
+		domainDocs: declDomains,
+		stack,
+		select: config.stages?.[stage]?.docs,
+		indexDoc: config.indexDoc,
+	})) {
+		push(it);
+	}
+	// ② 关键词命中（域限定内）→ **标注**基础清单里对应条目（不新增文档、不注正文）
+	//    （D7 域限定：集合外命中丢弃——跨域词不再把无关域拉进清单）
+	const allowed = new Set(items.map((i) => i.path));
+	for (const d of filterKeywordDocs(keywordHits, allowed)) {
+		const hit = items.find((i) => i.path === d.doc);
+		if (!hit) continue;
+		if (hit.how.includes('本次会话提及')) continue; // 已标注过（命中粘性）
+		hit.how = `${hit.how}（本次会话提及，优先）`;
+	}
+	// ③ 编辑路径命中 → 进清单（路径标签是文件系统事实，零歧义）
+	for (const d of jitHits) {
+		push({
+			path: d.doc,
+			section: d.section ?? null,
+			how: d.section
+				? `read \`${d.doc}\`「${d.section}」（编辑路径命中，自主导入）`
+				: `read \`${d.doc}\`（编辑路径命中，自主导入）`,
+		});
+	}
+	return items;
+}
+
+/** 路由清单渲染（路径 + 节名 + 取数方式；**不含任何文档正文**；标题由装配条目的 heading 承担） */
+function renderRoutingList(items: StageRoutingItem[]): string {
+	const lines = [
+		`> 正文不再主动注入——需要细节时按下列路径自行 read；取红线摘要用 \`bash scripts/harness/constraint-digest.sh --brief --domains <域>\`。`,
+		``,
+	];
+	for (const it of items) {
+		const sec = it.section ? `「${it.section}」` : "（整篇）";
+		lines.push(`- \`${it.path}\`${sec} — ${it.how}`);
+	}
+	return lines.join("\n");
+}
+
+/**
+ * 声明域红线层条目（阶段首推的核心载体）：取 flow 文档「业务约束与不变量」节的
+ * **顶层加粗红线句逐行**（复用 lib/constraint-redlines.ts 的 extractRedlines，零第二份正则）。
+ * 红线层为空/过短/节缺失 → **回退为取数指引行**（路径 + 节名 + digest 命令，review R-3：
+ * 整节正文回退已退役——「正文永不主动推」对全部域恒成立，注入体量断言才有意义）。
+ */
+function buildRedlineItem(
+	cwd: string,
+	domain: string,
+	minSectionBytes: number,
+): PlanItem | null {
+	const rel = `docs/reference/flow/${domain}.md`;
+	const content = readDoc(cwd, rel);
+	if (content == null) return null;
+	const display = basename(rel);
+	const digestCmd = `bash scripts/harness/constraint-digest.sh --brief --domains ${domain}`;
+	const sec = extractSection(content, "业务约束与不变量");
+	let body: string;
+	let injectMode: InjectedDocEntry["mode"] = "section";
+	let layer: "redline" | "pointer" = "redline";
+	if (sec) {
+		const red = extractRedlines(sec);
+		if (red && red.bytes >= minSectionBytes) {
+			body = `${red.lines.join("\n")}\n\n细节层：read \`${rel}\`「业务约束与不变量」节`;
+		} else {
+			// 红线层为空 / 低于最小字节 → 取数指引（零正文）
+			layer = "pointer";
+			body = `红线层提取为空或过短（< ${minSectionBytes}B）——正文不自动注入。\n细节层：read \`${rel}\`「业务约束与不变量」节\n红线摘要：\`${digestCmd}\``;
+		}
+	} else {
+		// 节不存在 → 取数指引（零正文，不静默跳过）
+		layer = "pointer";
+		body = `「业务约束与不变量」节缺失——正文不自动注入。\n细节层：read \`${rel}\`（整篇）\n红线摘要：\`${digestCmd}\``;
+	}
+	return {
+		key: rel,
+		heading: `### ${display}（${layer === "redline" ? "红线层" : "取数指引"}）`,
+		body,
+		preview: firstLine(body, 120),
+		relPath: rel,
+		short: display,
+		reason: "declaration",
+		mode: injectMode,
+		docLabel: `${display}(${layer === "redline" ? "红线层" : "取数指引"})`,
+		layer,
+	};
+}
+
 function planInjection(
 	cwd: string,
 	config: ConstraintConfig,
 	state: SessionState,
 	fallbackChange: { name: string; dir: string } | null,
 ): InjectionPlan {
-	const mode = state.mode;
+	const stage = state.stage;
+	const stageFamily = state.stageFamily;
 	const boundChangeName = state.boundChange;
 	const docList: string[] = [];
 	const docEntries: InjectedDocEntry[] = [];
 	const pinReads: PinReadEntry[] = [];
 
-	// 文本分析用的 change：优先档位绑定的 change，其次 mtime 最新
-	const bound =
-		mode && boundChangeName
-			? (listChangeDirs(cwd).find((c) => c.name === boundChangeName) ?? null)
-			: null;
-	// 分析源 change：implementation 档未绑定时 mtime 兜底（/opsx-apply 无参语境正确）；
-	// requirements 档与未激活档不兜底——explore/propose 是新想法语境，拿无关 change 的
-	// proposal 文本做关键词命中会让 explore 内容错位（@Syntopica bugfix：新会话 explore
-	// 默认绑 mtime 最新 change，pin 落错库）。此时命中源只剩对话输入本身，聊什么注什么。
+	// 分析源 change：绑定优先；未绑定时按 mtime 兜底（**仅 implementation 族**——
+	// explore/propose 是新想法语境，拿无关 change 的 proposal 做分析会让内容错位）
+	const bound = boundChangeName
+		? (listChangeDirs(cwd).find((c) => c.name === boundChangeName) ?? null)
+		: null;
 	const analysisChange =
-		mode === "implementation" ? (bound ?? fallbackChange) : bound;
+		stageFamily === "implementation" ? (bound ?? fallbackChange) : bound;
 
-	// 未激活档（无 mode）：仅注入索引文档，不做 change 文本分析。
-	// 否则「最近活跃 change」的静态文本会让命中的规范全文常驻本仓库所有会话（命中源错位）。
-	// 关键词命中源 = 仅最近 N 条用户输入（@constraint-domain-declaration：change 产物全文
-	// 退出命中源——harness/AI 类 change 的正当词汇与业务域关键词本质重叠，整会话误注入；
-	// change 文本仅保留给 detectStacks 栈判定，栈信号为路径类词无误伤面）
-	const changeText =
-		mode && analysisChange ? readChangeText(analysisChange) : "";
-	const matchText = mode ? state.recentInputs.join("\n") : "";
-	const stacks = mode
-		? detectStacks(`${changeText}\n${state.recentInputs.join("\n")}`, config)
-		: { backend: false, frontend: false };
-	if (mode) matchKeywordDocs(matchText, config, state); // 命中写本会话粘性集合（只增不减）
+	// 关键词命中源 = 仅最近 N 条用户输入（change 产物全文早退出命中源——harness/AI 类
+	// change 的正当词汇与业务域关键词本质重叠，隐式推断必致误注入）。
+	// 改造后关键词命中**不再送达正文**，只作路由清单的「本次会话提及」标注。
+	const changeText = analysisChange ? readChangeText(analysisChange) : "";
+	if (analysisChange) {
+		matchKeywordDocs(state.recentInputs.join("\n"), config, state);
+	}
+	const stacks = detectStacks(
+		`${changeText}\n${state.recentInputs.join("\n")}`,
+		config,
+	);
 
-	// 业务域声明（design D2 主层）：档位激活 + 有分析源 change → 解析 proposal 头部
-	// constraint-domains 标记；声明域注入对应 flow 约束节。每回合从文件重解析（proposal
-	// 编辑立即生效），不进粘性集合——声明是持久文件不存在滚出窗口问题。
+	// 业务域声明（design D2 主层）：绑定 change → 解析 constraint-domains 标记。
+	// **两处并集**（stage-driven 主线程追加契约）：
+	//   ① proposal.md 头部（存量 change 的既有位置，保持不变）；
+	//   ② stage.md 头部（**实现期活口径**——申报实施过程中新发现的业务域）。
+	// stage.md **不得收窄** proposal.md 已声明的域（域声明按超集安全方向收敛：多声明
+	// 只是多推几行红线，不会漏推）。每回合从文件重解析（proposal/stage 编辑立即生效）。
 	const declDomains: string[] = [];
 	const declUnknown: string[] = [];
-	if (mode && analysisChange) {
-		const proposalText = readDoc(
-			cwd,
-			`${OPENSPEC_CHANGES_DIR}/${analysisChange.name}/proposal.md`,
-		);
-		if (proposalText != null) {
-			const valid = new Set(listFlowDomains(cwd));
-			for (const d of parseDomainDeclaration(proposalText)) {
+	if (analysisChange) {
+		const valid = new Set(listFlowDomains(cwd));
+		const seen = new Set<string>();
+		const addDomains = (text: string | null): void => {
+			if (!text) return;
+			for (const d of parseDomainDeclaration(text)) {
+				if (seen.has(d)) continue;
+				seen.add(d);
 				if (valid.has(d)) declDomains.push(d);
 				else declUnknown.push(d);
 			}
-		}
+		};
+		// ① proposal.md（存量位置）
+		addDomains(
+			readDoc(cwd, `${OPENSPEC_CHANGES_DIR}/${analysisChange.name}/proposal.md`),
+		);
+		// ② stage.md（实现期活口径；readStageFile 的 raw 即文件全文，含同名 marker）
+		addDomains(readStageFile(analysisChange.dir).raw);
 	}
 
-	// 基础文档（按 mode）；无 mode → 仅索引。reason 随 entry 携带（事实库记账的命中原因）
-	let ordered: (DocEntry & { reason: InjectedDocEntry["reason"] })[] = [];
-	if (mode) {
-		ordered = config.modes[mode].baseDocs.map((d) => ({
-			doc: d,
-			reason: "mode-base" as const,
-		}));
-		// 条件文档（仅实现档）
-		if (
-			mode === "implementation" &&
-			config.modes.implementation.conditionalDocs
-		) {
-			for (const cd of config.modes.implementation.conditionalDocs) {
-				if (cd.ifStack === "backend" && (stacks.backend || !stacks.frontend))
-					ordered.push({ doc: cd.doc, reason: "stack-conditional" });
-				if (cd.ifStack === "frontend" && stacks.frontend)
-					ordered.push({ doc: cd.doc, reason: "stack-conditional" });
-			}
-		}
-	} else {
-		ordered = [{ doc: config.indexDoc, reason: "index" }];
-	}
-
-	// 声明域文档（紧跟 baseDocs，语义最相关）→ 关键词文档（粘性集合，首次命中顺序）
-	// → JIT 追加（粘性集合）——后两者只增不减
-	const seen = new Set(ordered.map((e) => e.doc));
-	for (const d of declDomains) {
-		const doc = `docs/reference/flow/${d}.md`;
-		if (!seen.has(doc)) {
-			seen.add(doc);
-			ordered.push({
-				doc,
-				section: "业务约束与不变量",
-				reason: "declaration" as const,
-			});
-		}
-	}
-	// 关键词命中域限定（D7）：仅声明域 ∪ 栈条件文档 ∪ baseDocs/索引 内的命中生效；
-	// 集合外命中丢弃（跨域词不再误拉无关域全节）
-	const allowedKeywordDocs = new Set<string>([
-		config.indexDoc,
-		...(mode ? config.modes[mode].baseDocs : []),
-		...declDomains.map((d) => `docs/reference/flow/${d}.md`),
-		...(mode === "implementation" && config.modes.implementation.conditionalDocs
-			? config.modes.implementation.conditionalDocs
-					.filter((cd) =>
-						cd.ifStack === "backend"
-							? stacks.backend || !stacks.frontend
-							: stacks.frontend,
-					)
-					.map((cd) => cd.doc)
-			: []),
-	]);
-	for (const e of filterKeywordDocs(state.keywordDocHits.values(), allowedKeywordDocs)) {
-		// 关键词命中声明的域 → 以全节形态（细节层）投递，替代声明项（红线层是全集子集，
-		// 避免同文档双重注入）。稳定层快照仍保留激活时刻的红线层条目（冻结语义）。
-		const dup = ordered.findIndex((o) => o.doc === e.doc && o.reason === "declaration");
-		if (dup >= 0) {
-			ordered.splice(dup, 1);
-			seen.delete(e.doc);
-		}
-		if (!seen.has(e.doc)) {
-			seen.add(e.doc);
-			ordered.push({ doc: e.doc, section: e.section, reason: "keyword" });
-		} else {
-			// 同 doc 已因其他 reason 入列（如栈条件）→ 升级为关键词形态（全节）
-			const same = ordered.findIndex((o) => o.doc === e.doc);
-			if (same >= 0) ordered[same] = { doc: e.doc, section: e.section, reason: "keyword" };
-		}
-	}
-	for (const e of state.jitDocHits.values()) {
-		if (!seen.has(e.doc)) {
-			seen.add(e.doc);
-			ordered.push({ doc: e.doc, section: e.section, reason: "jit-path" });
-		}
-	}
-
-	const digestThreshold = config.digestDocThreshold ?? 6144;
 	const items: PlanItem[] = [];
-	for (const entry of ordered) {
-		const content = readDoc(cwd, entry.doc);
-		if (content == null) continue;
-		const rel = entry.doc;
-		const display = basename(rel);
-		// 节级注入：配置了 section 且文档存在该节 → 只注节内容 + 全文指引；
-		// 节不存在或节字节数 < minSectionBytes（编辑中间态残缺节）回落全文（fail-safe）
-		const minSectionBytes = config.minSectionBytes ?? 512;
-		let injected: string | null = null;
-		let injectMode: InjectedDocEntry["mode"] = "full";
-		// 注入块 docList 展示标签（与 docList.push 同步；split 模式稳定层 header 复用）
-		let docLabel = display;
-		// 声明域注入层级（@constraint-declaration-redline）：redline=红线层命中；
-		// full=回退（全节或全文）——记账 bytes 如实记实际注入层级字节数
-		let layer: "redline" | "full" | undefined =
-			entry.reason === "declaration" ? "full" : undefined;
-		docLabel = display;
-		if (entry.section) {
-			const sec = extractSection(content, entry.section);
-			if (
-				sec &&
-				Buffer.byteLength(sec, "utf8") >= minSectionBytes
-			) {
-				// 声明域先试红线层（design D2~D4）：顶层列表项首个加粗块逐行 +
-				// 细节层取回指引尾行；0 条或拼接低于 minSectionBytes 回退全节
-				// （fail-safe，不注残缺红线层）；keyword / jit-path 命中仍注全节
-				// （细节层通道，防误伤）
-				if (entry.reason === "declaration") {
-					const red = extractRedlines(sec);
-					if (red && red.bytes >= minSectionBytes) {
-						injected = `${red.lines.join("\n")}\n\n细节层：read \`${rel}\`「${entry.section}」节`;
-						injectMode = "section";
-						layer = "redline";
-						docLabel = `${display}(红线层)`;
-						docList.push(docLabel);
-					}
-				}
-				if (injected == null) {
-				injected = `${sec}\n\n（本节摘自 \`${rel}\` 的「${entry.section}」节，全文可 \`read ${rel}\`）`;
-				injectMode = "section";
-				docLabel = `${display}(${entry.section.slice(0, 8)}节)`;
-				docList.push(docLabel);
-				}
-			}
-		}
-		if (injected == null) {
-			const digest = extractDocDigest(rel, content, digestThreshold);
-			if (digest) {
-				docLabel = `${display}(速览)`;
-				docList.push(docLabel);
-				items.push({
-					key: rel,
-					heading: `### ${display}（硬规则速览）`,
-					body: digest,
-					preview: firstLine(digest, 120),
-					relPath: rel,
-					short: display,
-					reason: entry.reason,
-					mode: "digest",
-					docLabel,
-				});
-				continue;
-			}
-			docList.push(display);
-			injected = content.trim();
-		}
+	const minSectionBytes = config.minSectionBytes ?? 512;
+
+	// ① 索引文档（稳定层）：「该去哪读」的入口，全阶段共有
+	const indexContent = readDoc(cwd, config.indexDoc);
+	if (indexContent != null) {
+		const display = basename(config.indexDoc);
+		docList.push(display);
 		items.push({
-			key: rel,
+			key: config.indexDoc,
 			heading: `### ${display}`,
-			body: injected,
-			preview: entry.section ? `「${entry.section}」节` : firstLine(injected, 120),
-			relPath: rel,
+			body: indexContent.trim(),
+			preview: firstLine(indexContent, 120),
+			relPath: config.indexDoc,
 			short: display,
-			reason: entry.reason,
-			mode: injectMode,
-			docLabel,
-			...(layer ? { layer } : {}),
+			reason: "index",
+			mode: "full",
+			docLabel: display,
 		});
 	}
 
-	// change 级文件注入（仅实现档 + 有活跃 change）：探索发现 + 词汇表（主线程定义→子线程可见）
+	// ② 阶段路由清单（稳定层）：路径 + 节名 + 取数方式，**零正文**
+	if (stage) {
+		const routing = buildRoutingItems(
+			stage,
+			declDomains,
+			stacks,
+			[...state.jitDocHits.values()],
+			[...state.keywordDocHits.values()],
+			config,
+		);
+		items.push({
+			key: "stage-routing",
+			heading: `### 阶段路由清单（${stage}）`,
+			body: renderRoutingList(routing),
+			preview: `${routing.length} 个文档（自主 read）`,
+			relPath: "stage-routing",
+			short: "路由清单",
+			reason: "routing",
+			mode: "full",
+			docLabel: `路由清单(${stage})`,
+		});
+		docList.push(`路由清单(${stage})`);
+	}
+
+	// ③ 声明域红线层（动态层：阶段首推送达；同阶段内零重复——指纹去重）
+	for (const d of declDomains) {
+		const item = buildRedlineItem(cwd, d, minSectionBytes);
+		if (!item) continue;
+		docList.push(item.docLabel ?? item.short);
+		items.push(item);
+	}
+
+	// ④ 命中文档（编辑路径 / 关键词）已并入 ② 路由清单——**零正文**（随清单变化走稳定层差异）
+
+	// ⑤ change 级文件（**implementation 族** + 有活跃 change）：探索发现 + 词汇表
 	let findingsRaw: string | null = null;
 	let findingsRel = "";
-	if (mode === "implementation" && analysisChange) {
+	if (stageFamily === "implementation" && analysisChange) {
 		findingsRel = `${OPENSPEC_CHANGES_DIR}/${analysisChange.name}/${config.findingsFile}`;
 		const vocabRel = `${OPENSPEC_CHANGES_DIR}/${analysisChange.name}/${config.vocabularyFile ?? "ubiquitous-language.md"}`;
 		const changeFiles = [
@@ -1219,21 +1316,19 @@ function planInjection(
 		}
 	}
 
-	// 声明状态（widget + 注入块头部展示；design D5）：有声明列域，无声明显式提示
-	// （纯工具链 change 合法不阻断），未知域名恒提示
-	const declNote =
-		mode && analysisChange
-			? declDomains.length
-				? `声明域：${declDomains.join(", ")}${declUnknown.length ? `（忽略未知域：${declUnknown.join(", ")}）` : ""}`
-				: `无域声明（纯工具链 change 可忽略）${declUnknown.length ? `；忽略未知域：${declUnknown.join(", ")}` : ""}`
-			: null;
+	// 声明状态（widget + 注入块头部展示）：有声明列域，无声明显式提示（不阻断），未知域名恒提示
+	const declNote = analysisChange
+		? declDomains.length
+			? `声明域：${declDomains.join(", ")}${declUnknown.length ? `（忽略未知域：${declUnknown.join(", ")}）` : ""}`
+			: `无域声明（纯工具链 change 可忽略）${declUnknown.length ? `；忽略未知域：${declUnknown.join(", ")}` : ""}`
+		: null;
 
 	// —— 预算装配（tier-b design D1/D3）：条目 → applyBudget → sections/记账/header ——
 	const budgetBytes = config.budgetBytes ?? DEFAULT_BUDGET_BYTES;
 	const budgetActive = budgetBytes > 0;
 	const declLine = declNote ? `- 域声明：${declNote}` : null;
-	const modeLine = `- 档位：${mode ? config.modes[mode].label : "未激活（仅索引）"}`;
-	const changeLine = `- 活跃变更：${analysisChange ? analysisChange.name : "无"}${bound ? "（档位绑定）" : ""}`;
+	const stageLine = `- 阶段：${stage ? `${stage}（族：${stageFamily}）` : "未绑定（仅索引）"}`;
+	const changeLine = `- 活跃变更：${analysisChange ? analysisChange.name : "无"}${bound ? "（阶段绑定）" : ""}`;
 	const docLine = `- 命中文档：${docList.length ? docList.join("、") : "无"}`;
 	const buildHeader = (degraded: PlanItem[] | null): string =>
 		[
@@ -1241,7 +1336,7 @@ function planInjection(
 			``,
 			`> 与 AGENTS.md 优先级宪法冲突时，以宪法为准。`,
 			``,
-			modeLine,
+			stageLine,
 			changeLine,
 			...(declLine ? [declLine] : []),
 			docLine,
@@ -1302,13 +1397,14 @@ function planInjection(
 		? `\n\n${header}\n---\n\n${outcome.sections.join("\n\n---\n\n")}\n`
 		: "";
 	const budgetNote =
-		budgetActive && mode
+		budgetActive && (stage || stageFamily)
 			? `预算 ${fmtK(outcome.totalBytes)}/${fmtK(budgetBytes)}${outcome.degraded.length ? `（降级${outcome.degraded.length}）` : ""}`
 			: null;
 
 	return {
-		mode,
-		modeLabel: mode ? config.modes[mode].label : "未激活",
+		stage,
+		stageFamily,
+		stageLabel: stage ?? "未绑定",
 		changeName: analysisChange ? analysisChange.name : null,
 		bound: bound !== null,
 		docList,
@@ -1356,117 +1452,217 @@ function hex8(): string {
 	return s;
 }
 
-/* ---------- 档位持久化记账（tier-b design D5 + harden D6） ---------- */
-
-/** 绑定来源（可归因；隐性绑定不存在） */
-type ModeSetSource =
-	| "command"
-	| "skill"
-	| "edit-dir"
-	| "recover"
-	| "inherit"
-	| "fallback";
+/* ---------- 阶段持久化记账（stage.set；取代 legacy mode.set） ---------- */
 
 /**
- * 档位激活/绑定修正时自报 mode.set（payload 含 mode 与绑定 change；change 列同步写）。
- * 每次设置/修正各记一条（审计语义是「何时设的」，resume 取「最近一条」）；
- * 记账失败不阻断档位激活（logEvent 已 fail-loud，此处静默——激活是主路径）。
+ * 阶段/绑定激活记账：写 `stage.set`（payload：stage/stageFamily/boundChange/source）。
+ * **stage 与 stageFamily 恒由 change 的 stage.md 派生**（MUST NOT 独立写）；
+ * legacy change（无/非法 marker）→ stage=null，仅记绑定归因（boundChange 列），
+ * 供 edit-map / doc-impact 等「只用 boundChange 名」的消费点继续归属。
+ * 记账失败不阻断阶段激活（logEvent 已 fail-loud，此处静默——激活是主路径）。
  * 无 sessionId（非真实会话，如烟测 stub）→ 跳过。
  */
-function logModeSet(
+function logStageBinding(
 	cwd: string,
 	sessionId: string | undefined,
-	mode: Mode,
+	stage: Stage | null,
+	stageFamily: StageFamily | null,
 	boundChange: string | null,
-	source: ModeSetSource,
+	source: StageSetSource,
 ): void {
 	if (!sessionId) return;
+	if (stage) {
+		logStageSet(cwd, sessionId, stage, stageFamily ?? "planning", boundChange, source);
+		return;
+	}
 	logEvent(cwd, {
-		kind: "mode.set",
+		kind: "stage.set",
 		sessionId,
 		change: boundChange,
-		payload: { mode, boundChange, source },
+		payload: {
+			stage: null,
+			stageFamily: stageFamily ?? null,
+			boundChange,
+			source,
+		},
 	});
 }
 
-/** 解析单条 mode.set 行为 {mode, boundChange}；payload 损坏/非法 → null */
-function modeSetFromRow(
-	row: HarnessEventRow,
-): { mode: Mode; boundChange: string | null } | null {
-	try {
-		const payload = JSON.parse(row.payload) as {
-			mode?: string;
-			boundChange?: string | null;
-		};
-		if (payload.mode !== "requirements" && payload.mode !== "implementation") {
-			return null;
-		}
-		return { mode: payload.mode, boundChange: payload.boundChange ?? null };
-	} catch {
-		return null; // payload 损坏 → 回落未激活
-	}
+/** 非法 stage marker 的 warn 记账（spec：非法/重复 marker → 降级不阻断 + 记 warn 事件） */
+function logInvalidStageMarker(
+	cwd: string,
+	sessionId: string | undefined,
+	boundChange: string | null,
+): void {
+	if (!sessionId) return;
+	logEvent(cwd, {
+		kind: "stage.set",
+		sessionId,
+		change: boundChange,
+		payload: {
+			stage: null,
+			stageFamily: null,
+			boundChange,
+			source: "fallback",
+			warn: "invalid-stage-marker",
+		},
+	});
 }
 
-/** 同一条 mode.set → 恢复结果（含绑定 change 存在性校验）；不可恢复 → null */
-function recoverFromRow(
+/** change 目录 → 阶段解析（stage.md marker 三态；legacy/invalid → stage=null，不阻断） */
+function resolveStageOfChange(
 	cwd: string,
-	row: HarnessEventRow,
-): { mode: Mode; boundChange: string | null } | null {
-	const rec = modeSetFromRow(row);
-	if (!rec) return null;
-	// 绑定 change 不存在（已归档/删除）→ 回落未激活，不恢复无绑定的旧档
+	changeName: string | null,
+): { stage: Stage | null; family: StageFamily | null; invalid: boolean } {
+	if (!changeName) return { stage: null, family: null, invalid: false };
+	const res = readStageFile(join(cwd, OPENSPEC_CHANGES_DIR, changeName));
+	if (res.kind === "ok" && res.stage) {
+		return {
+			stage: res.stage,
+			family: stageFamilyOf(res.stage),
+			invalid: false,
+		};
+	}
+	return { stage: null, family: null, invalid: res.kind === "invalid" };
+}
+
+/**
+ * mtime 兜底候选：仅当活跃 change 处于 **implementation 族** 才可兜底绑定。
+ * （planning 族 = explore/propose/design 新想法语境，兜底会绑到无关 change——与改造前
+ * 「requirements 档不兜底」同款规则；阶段化后判据从档位换成阶段族。）
+ */
+function fallbackBindableChange(cwd: string): string | null {
+	const active = detectActiveChange(cwd);
+	if (!active) return null;
+	const res = resolveStageOfChange(cwd, active.name);
+	return res.family === "implementation" ? active.name : null;
+}
+
+/**
+ * 绑定 change + 派生阶段 + 记账（stage.set）。
+ * 返回 true = 阶段/绑定发生变化（调用方据此决定是否需要重新投递）。
+ * 阶段恒为 stage.md 派生值；legacy change → stage=null（按未绑定阶段处理）。
+ */
+function bindStage(
+	cwd: string,
+	state: SessionState,
+	changeName: string | null,
+	source: StageSetSource,
+): boolean {
+	const res = resolveStageOfChange(cwd, changeName);
+	const stage = res.stage;
+	const family = stage ? stageFamilyOf(stage) : null;
+	const changed = stage !== state.stage || changeName !== state.boundChange;
+	state.stage = stage;
+	state.stageFamily = family;
+	state.boundChange = changeName;
+	logStageBinding(
+		cwd,
+		realSessionId(state),
+		stage,
+		family,
+		changeName,
+		source,
+	);
+	if (res.invalid) {
+		logInvalidStageMarker(cwd, realSessionId(state), changeName);
+	}
+	return changed;
+}
+
+/**
+ * 恢复路径取数（resume/reload/startup）：`queryLatestStageSet`（**双读**：先 stage.set，
+ * 无结果时回退 legacy mode.set 并按 requirements→planning / implementation→implementation
+ * 映射回族）。仅按**本会话**自己的记录取数，MUST NOT 全局兜底（多 pi 窗口并行是常态，
+ * 「全局最新」几乎必然属其他窗口）。绑定 change 目录已不存在 → 不可恢复（回落未绑定）。
+ */
+function recoverStage(
+	cwd: string,
+	sessionId: string | undefined,
+): StageSetInfo | null {
+	if (!sessionId) return null;
+	let info: StageSetInfo | null = null;
+	try {
+		info = queryLatestStageSet(sessionId, cwd);
+	} catch (e) {
+		console.error(
+			`[constraint-injection] recover stage failed: ${(e as Error).message}`,
+		);
+		return null;
+	}
+	if (!info) return null;
 	if (
-		rec.boundChange &&
-		!existsSync(join(cwd, OPENSPEC_CHANGES_DIR, rec.boundChange))
+		info.boundChange &&
+		!existsSync(join(cwd, OPENSPEC_CHANGES_DIR, info.boundChange))
 	) {
 		return null;
 	}
-	return rec;
+	return info;
 }
 
-/** resume/reload 档位恢复（fix-mode-recovery-cross-session：仅同 sessionId 单段）：
- *  三条恢复路径统一只按本会话自己的 mode.set 取数，MUST NOT 全局兜底——多 pi
- *  窗口并行是常态，「全局最新 mode.set」几乎必然属其他窗口（实测 2026-08-23：
- *  探索窗口 reload 被灌入他窗口 implementation 档）；/resume 切到目标会话文件，
- *  sessionId 即目标会话 id，同 id 取数必中，全局兜底防御的场景不存在 */
-function recoverMode(
-	cwd: string,
-	sessionId: string | undefined,
-): { mode: Mode; boundChange: string | null } | null {
-	if (!sessionId) return null;
-	const rows = queryBySession(cwd, sessionId, ["mode.set"]);
-	if (!rows.length) return null;
-	return recoverFromRow(cwd, rows[rows.length - 1]);
-}
+/* ---------- 命令匹配（工作流命令识别；**不决定阶段**） ---------- */
 
-/* ---------- 命令匹配 ---------- */
-
-function matchCommand(text: string, config: ConstraintConfig): Mode | null {
+/**
+ * 工作流命令匹配：返回 legacy 档位标签（requirements / implementation）作为**工作流意图**。
+ * 改造前命令直接决定 requirements/implementation 档位；现在命令**不决定阶段**——
+ * 阶段恒由绑定 change 的 stage.md 派生（D1：唯一真相源）。命令只回答一件事：
+ * 「是否允许 mtime 兜底绑定」（implementation 意图才兜底；planning = 新想法语境）。
+ */
+function matchWorkflowCommand(
+	text: string,
+	config: ConstraintConfig,
+): "requirements" | "implementation" | null {
 	const firstToken = text.trim().split(/\s+/)[0]?.toLowerCase();
 	if (!firstToken) return null;
-	for (const mode of ["requirements", "implementation"] as Mode[]) {
-		if (config.modes[mode].commands.some((c) => c.toLowerCase() === firstToken))
-			return mode;
+	// 命令表两处兼容：legacy `modes`（改造前配置）与新 `stages` 段（group 6 配置形态）
+	const legacyModes = config.modes;
+	if (legacyModes) {
+		for (const [mode, cfgMode] of Object.entries(legacyModes)) {
+			if (cfgMode.commands?.some((c) => c.toLowerCase() === firstToken)) {
+				return mode === "implementation" ? "implementation" : "requirements";
+			}
+		}
 	}
-	return null;
-}
-
-/* ---------- skill 文件路径匹配（agent 自动 read skill → 阶段激活） ---------- */
-
-function matchSkillPath(path: string, config: ConstraintConfig): Mode | null {
-	const signals = config.skillSignals;
-	if (!signals) return null;
-	for (const mode of ["requirements", "implementation"] as Mode[]) {
-		for (const name of signals[mode] ?? []) {
-			if (
-				path.includes(`/skills/${name}/`) ||
-				path.includes(`\\skills\\${name}\\`)
-			) {
-				return mode;
+	const stages = config.stages;
+	if (stages) {
+		for (const [stage, cfgStage] of Object.entries(stages)) {
+			if (cfgStage.commands?.some((c) => c.toLowerCase() === firstToken)) {
+				// 阶段名本身即族线索：implement/verify/archive → implementation，其余 → planning
+				return stage === "implement" || stage === "verify" || stage === "archive"
+					? "implementation"
+					: "requirements";
 			}
 		}
 	}
 	return null;
+}
+
+/* ---------- skill 文件路径匹配（agent 自动 read openspec skill → 工作流意图） ---------- */
+
+/**
+ * skill 路径 → 工作流意图（implementation / planning）；非 openspec skill → null。
+ * 同 matchWorkflowCommand：**只决定是否允许 mtime 兜底**，不决定阶段。
+ */
+function skillWorkflowIntent(
+	path: string,
+	config: ConstraintConfig,
+): "planning" | "implementation" | null {
+	const signals = config.skillSignals;
+	if (!signals) return null;
+	const hit = (names: string[]): boolean =>
+		names.some(
+			(name) =>
+				path.includes(`/skills/${name}/`) || path.includes(`\\skills\\${name}\\`),
+		);
+	if (hit(signals.implementation ?? [])) return "implementation";
+	if (hit(signals.requirements ?? [])) return "planning";
+	return null;
+}
+
+/** change 目录内的 stage.md 路径判定（写它 → 阶段即时更新） */
+function isStageFilePath(path: string): boolean {
+	const p = path.replaceAll("\\", "/");
+	return /(^|\/)openspec\/changes\/[^/]+\/stage\.md$/.test(p);
 }
 
 /* ---------- 混合通道纯函数（D2~D5/D7；可脱离 pi harness smoke 直跑） ---------- */
@@ -1508,13 +1704,16 @@ export function shouldApplyBind(action: "noop" | "rebind", locked: boolean): boo
 	return action === "rebind" && !locked;
 }
 
-/** 稳定层快照 key（D2）：仅 mode + 绑定 change；内容变化（proposal 编辑/文档更新）不改 key，
- *  改走动态层差异通知——保证 system prompt 在档位生命周期内字节恒定 */
+/**
+ * 稳定层快照 key（D2/D3）：**阶段族** + 绑定 change。
+ * 阶段族而非完整 stage 入键——同族内切换（explore→propose→design）不重建稳定层
+ * （前缀缓存命中率与快照重建频率直接相关）；族切换才整体重建一次。
+ */
 export function stableSnapshotKey(
-	mode: Mode | null,
+	stageFamily: StageFamily | null,
 	boundChange: string | null,
 ): string {
-	return `${mode ?? "none"}|${boundChange ?? "none"}`;
+	return `${stageFamily ?? "none"}|${boundChange ?? "none"}`;
 }
 
 /** 动态层条目（投递/指纹最小单元） */
@@ -1528,6 +1727,8 @@ export interface DynamicItem {
 	mode: InjectedDocEntry["mode"];
 	/** 本条目已被预算降级（记账 degraded 标记） */
 	degraded?: boolean;
+	/** 声明域注入层级（redline 红线层 / pointer 取数指引）——记账 layer 标记用（动态层首推） */
+	layer?: "redline" | "pointer";
 }
 
 /** FNV-1a 32 位十六进制（内容指纹；抗碰撞要求不高，仅用于 diff 判定） */
@@ -1590,12 +1791,14 @@ export function renderDynamicMessage(
 	return { content: lines.join("\n"), display: false };
 }
 
-/** 稳定层/动态层在 system prompt 中的分界线（D1）；legacy 模式下不分层 */
+/** 稳定层/动态层在 system prompt 中的分界线（D1）；legacy 模式下不分层
+ *  （改造后稳定层 = 索引 + **阶段路由清单**——零业务域正文；动态层 = 红线层 +
+ *  change 级文件 + 路由指针） */
 export function splitPlanItems(items: PlanItem[]): {
 	stable: PlanItem[];
 	dynamic: PlanItem[];
 } {
-	const stableReasons = new Set(["index", "mode-base", "stack-conditional", "declaration"]);
+	const stableReasons = new Set(["index", "routing"]);
 	const stable: PlanItem[] = [];
 	const dynamic: PlanItem[] = [];
 	for (const it of items) {
@@ -1620,14 +1823,24 @@ type ExtCtx = {
 	};
 };
 
-/** PlanItem → 记账条目（D6：bytes 取降级后正文） */
-function itemToDocEntry(it: PlanItem): InjectedDocEntry {
+/** PlanItem / DynamicItem → 记账条目（D6：bytes 取降级后正文；layer = 声明域注入层级） */
+function itemToDocEntry(it: {
+	key: string;
+	mode: InjectedDocEntry["mode"];
+	reason: InjectedDocEntry["reason"];
+	body: string;
+	/** PlanItem 的降级标记（digest / placeholder） */
+	degradedTo?: string;
+	/** DynamicItem 的降级标记（布尔） */
+	degraded?: boolean;
+	layer?: "redline" | "pointer";
+}): InjectedDocEntry {
 	return {
 		path: it.key,
 		mode: it.mode,
 		reason: it.reason,
 		bytes: Buffer.byteLength(it.body, "utf8"),
-		...(it.degradedTo ? { degraded: true } : {}),
+		...((it.degradedTo || it.degraded) ? { degraded: true } : {}),
 		...(it.layer ? { layer: it.layer } : {}),
 	};
 }
@@ -1643,6 +1856,7 @@ function toDynamicItems(items: PlanItem[]): DynamicItem[] {
 		reason: it.reason,
 		mode: it.mode,
 		...(it.degradedTo ? { degraded: true } : {}),
+		...(it.layer ? { layer: it.layer } : {}),
 	}));
 }
 
@@ -1654,8 +1868,8 @@ function buildStableHeader(plan: InjectionPlan, stableItems: PlanItem[]): string
 		``,
 		`> 与 AGENTS.md 优先级宪法冲突时，以宪法为准。`,
 		``,
-		`- 档位：${plan.modeLabel}`,
-		`- 活跃变更：${plan.changeName ?? "无"}${plan.bound ? "（档位绑定）" : ""}`,
+		`- 阶段：${plan.stage ? `${plan.stage}（族：${plan.stageFamily}）` : "未绑定（仅索引）"}`,
+		`- 活跃变更：${plan.changeName ?? "无"}${plan.bound ? "（阶段绑定）" : ""}`,
 	];
 	if (plan.declNote) lines.push(`- 域声明：${plan.declNote}`);
 	lines.push(`- 命中文档：${docList.length ? docList.join("、") : "无"}`, ``);
@@ -1685,6 +1899,7 @@ function logConstraintInjects(
 	sessionId: string | undefined,
 	changeName: string | null,
 	entries: InjectedDocEntry[],
+	tier: InjectionTier,
 	source?: string,
 ): void {
 	if (!sessionId) return;
@@ -1693,7 +1908,7 @@ function logConstraintInjects(
 			kind: "constraint.inject",
 			sessionId,
 			change: changeName,
-			payload: source ? { ...d, source } : { ...d },
+			payload: source ? { ...d, tier, source } : { ...d, tier },
 		});
 	}
 }
@@ -1735,7 +1950,10 @@ function deliverDynamic(
 	// 指纹随投递记录 regime（fix-injection-transition-fingerprint-wipe）：延迟重建的
 	// 清空判定据此区分「mid-turn 切档后同 turn 已投递（不清）」与「真实 regime 切换（清）」。
 	// force 且零增量时重写同值，无害。
-	state.channel.fingerprintRegime = stableSnapshotKey(state.mode, state.boundChange);
+	state.channel.fingerprintRegime = stableSnapshotKey(
+		state.stageFamily,
+		state.boundChange,
+	);
 	pi.sendMessage(
 		{
 			customType: "constraint-injection",
@@ -1748,13 +1966,8 @@ function deliverDynamic(
 		ctx,
 		realSessionId(state),
 		changeName,
-		payloadItems.map((it) => ({
-			path: it.key,
-			mode: it.mode,
-			reason: it.reason,
-			bytes: Buffer.byteLength(it.body, "utf8"),
-			...(it.degraded ? { degraded: true } : {}),
-		})),
+		payloadItems.map(itemToDocEntry),
+		tierOf(state.stageFamily),
 		force ? "compact-resend" : undefined,
 	);
 	return increments.length;
@@ -1779,8 +1992,8 @@ function deliverChildInitStable(
 ): void {
 	const plan = planInjection(ctx.cwd, cfg, state, detectActiveChange(ctx.cwd));
 	if (!plan.items.length) return;
-	const { stable } = splitPlanItems(plan.items);
-	const key = stableSnapshotKey(state.mode, state.boundChange);
+	const { stable, dynamic } = splitPlanItems(plan.items);
+	const key = stableSnapshotKey(state.stageFamily, state.boundChange);
 	const stableBlock = renderStableBlock(buildStableHeader(plan, stable), stable);
 	pi.sendMessage(
 		{
@@ -1797,8 +2010,22 @@ function deliverChildInitStable(
 		realSessionId(state),
 		plan.changeName,
 		stable.map(itemToDocEntry),
+		tierOf(state.stageFamily),
 		"child-init",
 	);
+	// 动态层同批送达（红线层 + change 级文件）：pi-web 子会话**无 before_agent_start**，
+	// 红线层若只走动态层会丢失（改造前红线层在稳定层内，随稳定层一并发）。
+	if (dynamic.length) {
+		deliverDynamic(
+			pi,
+			ctx,
+			cfg,
+			state,
+			plan.changeName,
+			toDynamicItems(dynamic),
+			"📎 约束首推（子线程初始化）",
+		);
+	}
 }
 
 /* ---------- extension 主体 ---------- */
@@ -1823,30 +2050,40 @@ export default function (pi: ExtensionAPI) {
 		// reason 是 startup 而非 resume；② pi-subagents 派发子线程 / pi /fork——独立进程、
 		// 各自 sessionId，session header（或 forks/ 路径）带 parentSession。
 		// per-session-constraint-binding：本会话条目为空时按「父子可证 → 继承父会话（内存 →
-		// 事实库）→ 否则按同 sessionId 第 1 段恢复 → 都没有则保持未激活」处理；
+		// 事实库）→ 否则按同 sessionId 第 1 段恢复 → 都没有则保持未绑定」处理；
 		// MUST NOT 借用他会话的状态（隔离前的 bug：全局值被他会话改写后本会话被动继承）。
 		if (reason === "startup") {
-			if (state.mode === null) {
+			if (state.stage === null && state.boundChange === null) {
 				// 子线程/fork 继承：内存路径（同进程）→ 事实库回退（跨进程，真实链路主路径）
 				const inherited =
 					inheritFromParent(state, ctx) || inheritFromParentHistory(state, ctx);
 				if (inherited) {
-					if (state.mode) {
-						logModeSet(ctx.cwd, realSessionId(state), state.mode, state.boundChange, "inherit");
-					}
+					// 继承记账：source=inherit（阶段随父会话快照写死，不在子线程重算——D8）
+					logStageBinding(
+						ctx.cwd,
+						realSessionId(state),
+						state.stage,
+						state.stageFamily,
+						state.boundChange,
+						"inherit",
+					);
 				} else {
+					// 同 sessionId 恢复（queryLatestStageSet 双读：stage.set → legacy mode.set）
 					const sessionId = realSessionId(state);
-					const rows = sessionId
-						? queryBySession(ctx.cwd, sessionId, ["mode.set"])
-						: [];
-					if (rows.length) {
-						const rec = recoverFromRow(ctx.cwd, rows[rows.length - 1]);
-						if (rec) {
-							state.mode = rec.mode;
-							state.boundChange = rec.boundChange;
-							// 恢复路径显式记账（D6）：隐性绑定不存在；source=recover
-							logModeSet(ctx.cwd, sessionId, rec.mode, rec.boundChange, "recover");
-						}
+					const rec = sessionId ? recoverStage(ctx.cwd, sessionId) : null;
+					if (rec) {
+						state.stage = rec.stage;
+						state.stageFamily = rec.stageFamily;
+						state.boundChange = rec.boundChange;
+						// 恢复路径显式记账（D6）：隐性绑定不存在；source=recover
+						logStageBinding(
+							ctx.cwd,
+							sessionId,
+							rec.stage,
+							rec.stageFamily,
+							rec.boundChange,
+							"recover",
+						);
 					}
 				}
 			}
@@ -1861,43 +2098,55 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		if (!["new", "resume", "fork", "reload"].includes(reason)) return;
-		// 会话边界重置**只清本会话条目**（他会话的档位/命中集 MUST NOT 被清零——
+		// 会话边界重置**只清本会话条目**（他会话的阶段/命中集 MUST NOT 被清零——
 		// 隔离前这里清的是全局，等于替所有会话重置）。
 		resetSessionState(state);
-		// fork：父子可证 → 继承父会话（同一份对话继续干同一件事）；不可证 → 未激活。
-		// （旧行为是 fork 一律清零，靠全局值偶然继承，与「无隐性绑定」相悖。）
+		// fork：父子可证 → 继承父会话（同一份对话继续干同一件事）；不可证 → 未绑定。
 		// 继承两条路：内存（同进程）→ 事实库回退（跨进程，真实链路主路径）。
 		if (reason === "fork") {
 			const inherited =
 				inheritFromParent(state, ctx) || inheritFromParentHistory(state, ctx);
-			if (inherited && state.mode) {
-				logModeSet(ctx.cwd, realSessionId(state), state.mode, state.boundChange, "inherit");
+			if (inherited) {
+				logStageBinding(
+					ctx.cwd,
+					realSessionId(state),
+					state.stage,
+					state.stageFamily,
+					state.boundChange,
+					"inherit",
+				);
 			}
 			return;
 		}
-		// resume/reload 档位恢复（fix-mode-recovery-cross-session：仅同 sessionId 单段）：
-		// resume = /resume 切换目标会话（id 即目标会话 id，必中），reload = 同会话扩展
-		// 重载（id 不变，必中）；无本会话记录不恢复（不继承他窗口档位）。粘性命中集合
-		// 不恢复（有意为之——域声明
-		// 节每回合重解析照常注入、JIT 改代码即重新命中，且避免恢复出与「只增不减」历史
-		// 不一致的半状态）。new/fork 维持清零语义（不恢复）。
+		// resume/reload 阶段恢复（仅同 sessionId 单段）：resume = /resume 切换目标会话
+		// （id 即目标会话 id，必中），reload = 同会话扩展重载（id 不变，必中）；无本会话
+		// 记录不恢复（不继承他窗口状态）。粘性命中集合不恢复（有意为之——声明域红线层
+		// 每回合重解析照常送达、编辑路径改代码即重新命中）。
 		if ((reason === "resume" || reason === "reload") && ctx?.cwd) {
 			const sessionId = realSessionId(state);
-			const rec = sessionId ? recoverMode(ctx.cwd, sessionId) : null;
+			const rec = sessionId ? recoverStage(ctx.cwd, sessionId) : null;
 			if (rec) {
-				state.mode = rec.mode;
+				state.stage = rec.stage;
+				state.stageFamily = rec.stageFamily;
 				state.boundChange = rec.boundChange;
 				// 恢复路径显式记账（D6）：source=recover
-				logModeSet(ctx.cwd, sessionId, rec.mode, rec.boundChange, "recover");
+				logStageBinding(
+					ctx.cwd,
+					sessionId,
+					rec.stage,
+					rec.stageFamily,
+					rec.boundChange,
+					"recover",
+				);
 			}
 		}
 	});
-	// 1. 阶段识别（不阻断，仅设 mode flag）
+	// 1. 输入 → 绑定 change（阶段由其 stage.md 决定；命令/skill 不再直接决定档位）
 	pi.on("input", async (event, ctx) => {
 		const cfg = loadConfig(ctx.cwd);
 		if (!cfg) return;
 		const state = stateFor(ctx, cfg);
-		// 最近 N 条用户输入入窗（无论是否命令），参与关键词/栈命中（入窗限本会话）
+		// 最近 N 条用户输入入窗（无论是否命令），参与关键词/栈判定（入窗限本会话）
 		const text = event.text.trim();
 		if (text) {
 			state.recentInputs.push(text.length > 500 ? text.slice(0, 500) : text);
@@ -1906,32 +2155,26 @@ export default function (pi: ExtensionAPI) {
 				state.recentInputs = state.recentInputs.slice(-max);
 			}
 		}
-		const mode = matchCommand(event.text, cfg);
-		if (mode) {
-			state.mode = mode;
-			// 档位绑定：仅明确提及（命令参数/输入文本）
-			// mtime 兜底仅 implementation 档（/opsx-apply 无参语境）；requirements 档
-			// （explore/propose）是新想法语境，兜底会绑到无关 change，explore 内容错位
-			const mentioned = detectMentionedChange(ctx.cwd, event.text)?.name ?? null;
-			state.boundChange =
-				mentioned ??
-				(mode === "implementation"
-					? (detectActiveChange(ctx.cwd)?.name ?? null)
-					: null);
-			// mode.set 记账（tier-b D5 触发点①：input 命令命中；source=command）
-			logModeSet(
-				ctx.cwd,
-				realSessionId(state),
-				mode,
-				state.boundChange,
-				"command",
-			);
+		// turn 绑定锁：同 turn 内首个生效绑定后不再切换
+		if (state.turnBindLocked) return;
+		// ① 输入提及 change 名 → 绑定该 change（source=command）
+		const mentioned = detectMentionedChange(ctx.cwd, event.text)?.name ?? null;
+		if (mentioned) {
+			bindStage(ctx.cwd, state, mentioned, "command");
 			state.turnBindLocked = true;
+			return;
+		}
+		// ② 工作流命令（斜杠命令）→ 记工作流意图；**mtime 兜底绑定在 turn 起点执行**
+		//    （source=fallback；仅 implementation 意图——planning = 新想法语境）
+		const cmdIntent = matchWorkflowCommand(event.text, cfg);
+		if (cmdIntent) {
+			state.workflowIntent =
+				cmdIntent === "implementation" ? "implementation" : "planning";
 		}
 	});
 
-	// 1.5 skill 文件读取即激活（agent 自动 read skill 是斜杠命令外的真实触发源）；
-	//     档位已激活时，写 openspec/changes/<name>/ 下文件修正绑定（propose 先建 change 后写产物 / apply 勾选 tasks 的场景）
+	// 1.5 skill 文件读取即绑定（agent 自动 read skill 是斜杠命令外的真实触发源）；
+	//     已绑定时，写 openspec/changes/<name>/ 下文件修正绑定（propose 先建 change 后写产物 / apply 勾选 tasks 的场景）
 	pi.on("tool_execution_start", async (event, ctx) => {
 		const cfg = loadConfig(ctx.cwd);
 		if (!cfg) return;
@@ -1946,28 +2189,47 @@ export default function (pi: ExtensionAPI) {
 		if (!p) return;
 		const state = stateFor(ctx, cfg);
 		const sessionId = realSessionId(state);
-		const skillMode = matchSkillPath(p, cfg);
-		if (skillMode) {
-			state.mode = skillMode;
-			// 同 input 事件：mtime 兜底仅 implementation 档（agent 读 apply/verify/archive
-			// skill 就是要干活）；requirements skill（explore/propose）仅明确提及才绑定
+
+		// ① 读取记账已移至 tool_execution_end（review R-4）：只在 read **成功完成**时
+		//    记 constraint.read（归档对账唯一事实源）——发起即记会把失败读取（路径拼错/
+		//    文件不存在）也算成证据；start 只登记在途 toolCallId → path。
+		if (event.toolName === "read" && event.toolCallId) {
+			pendingReadCalls.set(event.toolCallId, p);
+		}
+
+		// ② openspec skill 读取 → 记工作流意图 + 绑定 change（阶段由其 stage.md 决定；source=skill）
+		const skillIntent = skillWorkflowIntent(p, cfg);
+		if (skillIntent) {
+			state.workflowIntent = skillIntent;
 			const mentioned =
 				detectMentionedChange(ctx.cwd, state.recentInputs.join("\n"))?.name ?? null;
-			state.boundChange =
-				mentioned ??
-				(skillMode === "implementation"
-					? (detectActiveChange(ctx.cwd)?.name ?? null)
-					: null);
-			// mode.set 记账（tier-b D5 触发点②：skill 路径命中；source=skill）
-			logModeSet(ctx.cwd, sessionId, skillMode, state.boundChange, "skill");
-			state.turnBindLocked = true;
+			if (mentioned) {
+				bindStage(ctx.cwd, state, mentioned, "skill");
+				state.turnBindLocked = true;
+			}
 			return;
 		}
-		// JIT 栈细化（design D3 单一真相源）：写/编辑路径命中文档头部 doc-impact-applies
-		// 标签的 pathSignals → 对应文档会话内追加注入。仅档激活时生效：未激活会话写代码
-		// 不追加（保「未激活=仅索引」不变量，模型按需自读）
+
+		// ③ stage.md 写入/编辑 → 阶段即时更新（marker 是阶段唯一真相源；source=edit-dir）
+		let stageChanged = false;
+		if (
+			(event.toolName === "write" || event.toolName === "edit") &&
+			isStageFilePath(p)
+		) {
+			const name = changeNameFromPath(p);
+			if (name && (state.boundChange === null || state.boundChange === name)) {
+				const before = state.stage;
+				bindStage(ctx.cwd, state, name, "edit-dir");
+				stageChanged = state.stage !== before;
+				state.turnBindLocked = true;
+			}
+		}
+
+		// ④ 编辑路径命中（doc-impact-applies 标签）→ **只进路由清单**（零正文）。
+		//    整节正文通道已退役（改造前最坏 27.8KB/条）；命中文档改为「路径 + 节名」
+		//    出现在路由清单里，由模型自主 read。
 		let jitAdded = false;
-		if (state.mode && (event.toolName === "write" || event.toolName === "edit")) {
+		if (event.toolName === "write" || event.toolName === "edit") {
 			for (const [doc, tag] of scanAppliesTags(ctx.cwd)) {
 				if (tag.signals.some((s) => p.includes(s))) {
 					if (!state.jitDocHits.has(doc)) {
@@ -1981,27 +2243,24 @@ export default function (pi: ExtensionAPI) {
 		// read 永不抢绑；当前绑定健康时不抢绑；仅未绑定/绑定 change 目录消失时兜底绑定。
 		// per-session-constraint-binding：判定读的是**本会话**的绑定与 turn 锁
 		// （他会话的工具调用不得锁住/改写本会话的绑定时机）。
-		if (state.mode) {
-			const bindAction = resolveBindAction({
-				tool: event.toolName,
-				path: p,
-				currentBound: state.boundChange,
-				boundExists:
-					state.boundChange != null &&
-					existsSync(join(ctx.cwd, OPENSPEC_CHANGES_DIR, state.boundChange)),
-			});
-			if (shouldApplyBind(bindAction, state.turnBindLocked)) {
-				const name = changeNameFromPath(p);
-				if (name) {
-					state.boundChange = name;
-					state.turnBindLocked = true;
-					// mode.set 记账（tier-b D5 触发点③：写 change 目录兜底绑定；source=edit-dir）
-					logModeSet(ctx.cwd, sessionId, state.mode, state.boundChange, "edit-dir");
-				}
+		const bindAction = resolveBindAction({
+			tool: event.toolName,
+			path: p,
+			currentBound: state.boundChange,
+			boundExists:
+				state.boundChange != null &&
+				existsSync(join(ctx.cwd, OPENSPEC_CHANGES_DIR, state.boundChange)),
+		});
+		if (shouldApplyBind(bindAction, state.turnBindLocked)) {
+			const name = changeNameFromPath(p);
+			if (name) {
+				bindStage(ctx.cwd, state, name, "edit-dir");
+				state.turnBindLocked = true;
 			}
 		}
-		// JIT 命中即时投递（D3 turn 中途通道）：新命中 → 立即算增量并经 steer 送出
-		if (jitAdded && state.mode && cfg.channel !== "legacy") {
+		// 即时投递（turn 中途通道）：阶段变更 / 新命中路由 → 立即算增量并经 steer 送出。
+		// 改造后送达内容为**红线层 + 路由清单**（无整节正文）。
+		if ((stageChanged || jitAdded) && cfg.channel !== "legacy") {
 			const plan = planInjection(
 				ctx.cwd,
 				cfg,
@@ -2016,13 +2275,36 @@ export default function (pi: ExtensionAPI) {
 				state,
 				plan.changeName,
 				toDynamicItems(dynamic),
-				dynamicLabelWithDegrad("📎 约束补充（JIT 命中）", plan, cfg),
+				dynamicLabelWithDegrad(
+					stageChanged
+						? "📎 约束首推（阶段变更）"
+						: "📎 约束补充（路由更新）",
+					plan,
+					cfg,
+				),
 			);
 		}
 	});
 
+	// 1b. 读取成功回执 → constraint.read 记账（review R-4，归档对账唯一事实源）。
+	//     只在 tool_execution_end 且非 error 时记：发起即记会把失败读取（路径拼错/
+	//     文件不存在）也算成证据；局部读取（offset/limit）成功送达内容同样算读（宽松）。
+	pi.on("tool_execution_end", async (event, ctx) => {
+		if (event.toolName !== "read") return;
+		const rawPath = pendingReadCalls.get(event.toolCallId) ?? null;
+		pendingReadCalls.delete(event.toolCallId);
+		if (!rawPath || event.isError) return;
+		const cfg = loadConfig(ctx.cwd);
+		if (!cfg) return;
+		const rel = normalizeRepoPath(rawPath, ctx.cwd);
+		if (!rel || !isConstraintDocPath(rel)) return;
+		const state = stateFor(ctx, cfg);
+		const sessionId = realSessionId(state);
+		if (sessionId) logConstraintRead(ctx.cwd, sessionId, rel, state.boundChange);
+	});
+
 	// 2. system prompt 注入（每 turn 重建 → 幂等；前缀缓存 → 便宜；抗 compaction）
-	// 2. 约束注入（混合通道 D1~D4）：稳定层进 system prompt（档位生命周期内字节恒定）；
+	// 2. 约束注入（混合通道 D1~D4）：稳定层进 system prompt（阶段族生命周期内字节恒定）；
 	//    动态层走追加消息（指纹 diff，零变化零投递）。channel="legacy" 回退旧全量行为。
 	pi.on("before_agent_start", async (event, ctx) => {
 		const cfg = loadConfig(ctx.cwd);
@@ -2031,34 +2313,39 @@ export default function (pi: ExtensionAPI) {
 		// turn 起点释放绑定锁（D5：同 turn 锁定、跳 turn 再可切）——只解本会话的锁
 		state.turnBindLocked = false;
 		const activeChange = detectActiveChange(ctx.cwd);
-		// 档位回落：仅当绑定的 change 已不存在（归档/删除）→ 回落未激活档；
-		// 不因其他 change 目录 mtime 更新而误掉档（多 change 并行是常态）
+		// 绑定回落：仅当绑定的 change 已不存在（归档/删除）→ 回落未绑定；
+		// 不因其他 change 目录 mtime 更新而误掉绑定（多 change 并行是常态）
 		if (
-			state.mode &&
 			state.boundChange &&
 			!existsSync(join(ctx.cwd, OPENSPEC_CHANGES_DIR, state.boundChange))
 		) {
-			state.mode = null;
+			state.stage = null;
+			state.stageFamily = null;
 			state.boundChange = null;
+		}
+		// 阶段漂移检测：绑定 change 的 stage.md marker 可能在会话中被改（外部编辑）
+		// → 重新派生阶段（source=edit-dir：marker 就在 change 目录里）
+		if (state.boundChange) {
+			const res = resolveStageOfChange(ctx.cwd, state.boundChange);
+			if (res.stage !== state.stage) {
+				bindStage(ctx.cwd, state, state.boundChange, "edit-dir");
+			}
+		}
+		// mtime 兜底显式化（D6）：**implementation 工作流意图**且未绑定时，把活跃 change
+		// 升为显式绑定并记账（source=fallback）——消除「注入挂在 X 名下、boundChange
+		// 仍为空」的账实不符与静默漂移（多 change 并行污染根源之一）。
+		// ⚠ planning 意图 = 新想法语境（explore/propose/design），**不兜底**（同改造前
+		// 「requirements 档不兜底」规则）；无工作流意图时同样不兜底。
+		if (!state.boundChange && state.workflowIntent === "implementation") {
+			const fallback = fallbackBindableChange(ctx.cwd);
+			if (fallback) bindStage(ctx.cwd, state, fallback, "fallback");
 		}
 		const plan = planInjection(ctx.cwd, cfg, state, activeChange);
 		const sessionId = realSessionId(state);
-		// mtime 兜底显式化（D6）：implementation 档无显式绑定时，将 planInjection 内部的
-		// mtime 兜底升为显式绑定并记账（source=fallback）——消除「注入挂在 X 名下、
-		// boundChange 仍为空」的账实不符与静默漂移（多 change 并行污染根源之一）
-		if (
-			state.mode === "implementation" &&
-			state.boundChange === null &&
-			plan.changeName &&
-			existsSync(join(ctx.cwd, OPENSPEC_CHANGES_DIR, plan.changeName))
-		) {
-			state.boundChange = plan.changeName;
-			logModeSet(ctx.cwd, sessionId, state.mode, state.boundChange, "fallback");
-		}
 
 		// 状态展示（始终，让用户看到注入了什么 + 预算用量）
 		if (ctx.hasUI) {
-			const parts: string[] = [`[约束] ${plan.modeLabel}`];
+			const parts: string[] = [`[约束] ${plan.stageLabel}`];
 			if (plan.changeName) parts.push(plan.changeName);
 			if (plan.declNote) parts.push(plan.declNote);
 			if (plan.budgetNote) parts.push(plan.budgetNote);
@@ -2071,7 +2358,13 @@ export default function (pi: ExtensionAPI) {
 		// —— legacy 回退：全量进 system prompt + 每 turn 记账（应急开关，D8）——
 		if (cfg.channel === "legacy") {
 			if (sessionId) {
-				logConstraintInjects(ctx, sessionId, plan.changeName, plan.docEntries);
+				logConstraintInjects(
+					ctx,
+					sessionId,
+					plan.changeName,
+					plan.docEntries,
+					tierOf(state.stageFamily),
+				);
 				for (const p of plan.pinReads) {
 					// 去重集已按会话隔离 → key 用标题即可（不再拼 sessionId）
 					if (state.pinReadSeen.has(p.title)) continue;
@@ -2091,8 +2384,8 @@ export default function (pi: ExtensionAPI) {
 		// —— 混合通道（split）——
 		// 快照/指纹都在本会话的 channel 里：他会话绑定变化不会刷新本会话快照
 		const { stable, dynamic } = splitPlanItems(plan.items);
-		const key = stableSnapshotKey(state.mode, state.boundChange);
-		// 无稳定条目但有内容时仍出 header（档位/活跃变更/域声明对模型可见）
+		const key = stableSnapshotKey(state.stageFamily, state.boundChange);
+		// 无稳定条目但有内容时仍出 header（阶段/活跃变更/域声明对模型可见）
 		const wantBlock = plan.items.length > 0;
 		let stableBlock = "";
 		let extraDynamic: PlanItem[] = [];
@@ -2107,11 +2400,11 @@ export default function (pi: ExtensionAPI) {
 			wantBlock &&
 			(!state.channel.stableSnapshot || state.channel.stableSnapshot.key !== key)
 		) {
-			// 档位/绑定切换（快照已存在但 key 变）→ 按指纹 regime 判定是否重置动态指纹
-			// （fix-injection-transition-fingerprint-wipe）：档位/绑定可 mid-turn 变化、快照重建
-			// 延迟到下一 turn 起点——mid-turn 切档后同 turn 已投递的条目其指纹 regime 已是新 key，
+			// 阶段族/绑定切换（快照已存在但 key 变）→ 按指纹 regime 判定是否重置动态指纹
+			// （fix-injection-transition-fingerprint-wipe）：阶段/绑定可 mid-turn 变化、快照重建
+			// 延迟到下一 turn 起点——mid-turn 切阶段后同 turn 已投递的条目其指纹 regime 已是新 key，
 			// MUST NOT 被当作旧 regime 残留清空而原样重投；仅真实 regime 切换（如 edit-dir 绑定
-			// 修正、档位回落）才清空全量重投。首次建快照（如 JIT 已在快照前投递过）不重置，
+			// 修正、绑定回落）才清空全量重投。首次建快照（如路由更新已在快照前投递过）不重置，
 			// 避免重复投递。
 			const isTransition =
 				state.channel.stableSnapshot !== null &&
@@ -2125,10 +2418,11 @@ export default function (pi: ExtensionAPI) {
 				sessionId,
 				plan.changeName,
 				stable.map(itemToDocEntry),
+				tierOf(state.stageFamily),
 			);
 		} else {
-			// 快照冻结（字节恒定）；稳定层内容后来的变化（如 proposal 新增声明域）
-			// 作为动态层差异条目送达，不改写 system prompt（D2）
+			// 快照冻结（字节恒定）；稳定层内容后来的变化（如 proposal 新增声明域、
+			// 编辑路径新增命中 → 路由清单变化）作为动态层差异条目送达，不改写 system prompt（D2）
 			stableBlock = state.channel.stableSnapshot
 				? state.channel.stableSnapshot.block
 				: "";
@@ -2169,11 +2463,15 @@ export default function (pi: ExtensionAPI) {
 				true,
 			);
 		} else {
-			const label = dynamicLabelWithDegrad(
-				extraDynamic.length ? "📎 约束补充（稳定层差异）" : "📎 约束补充（增量）",
-				plan,
-				cfg,
-			);
+			// 阶段首推 vs 增量：某 stage 首次送达 → 标「阶段首推」（可观测的形态切换点）
+			const isStageFirstPush =
+				plan.stage !== null && state.lastDeliveredStage !== plan.stage;
+			const baseLabel = isStageFirstPush
+				? `📎 约束首推（阶段 ${plan.stage}）`
+				: extraDynamic.length
+					? "📎 约束补充（稳定层差异）"
+					: "📎 约束补充（增量）";
+			const label = dynamicLabelWithDegrad(baseLabel, plan, cfg);
 			delivered = deliverDynamic(
 				pi,
 				ctx,
@@ -2183,6 +2481,7 @@ export default function (pi: ExtensionAPI) {
 				dynamicItems,
 				label,
 			);
+			if (plan.stage) state.lastDeliveredStage = plan.stage;
 		}
 		void delivered;
 
@@ -2202,8 +2501,8 @@ export default function (pi: ExtensionAPI) {
 		name: "pin_finding",
 		label: "Pin Explore Finding",
 		description:
-			"把关键代码事实（表结构/调用链/集成点/数据流/边界枚举/关键算法）持久化到活跃 change 的 explore-findings.md（档激活时实现/评审阶段自动注入 system prompt，避免重复探索）；" +
-			"research/问答语境（无激活档位）则落 docs/research/<topic>/（未传 topic 落通用池单文件），不碰 openspec/changes/。",
+			"把关键代码事实（表结构/调用链/集成点/数据流/边界枚举/关键算法）持久化到活跃 change 的 explore-findings.md（有活跃 change 时实现/评审阶段自动注入 system prompt，避免重复探索）；" +
+			"research/问答语境（无活跃 change）则落 docs/research/<topic>/（未传 topic 落通用池单文件），不碰 openspec/changes/。",
 		promptSnippet: "持久化探索阶段的关键代码发现，供实现阶段自动读取",
 		promptGuidelines: [
 			"Use pin_finding when exploring requirements (explore/propose stage) and you discover a key code fact worth persisting for the implementation stage — e.g. table schema, call chain, integration point, data flow, boundary enum, or core algorithm.",
@@ -2269,12 +2568,12 @@ export default function (pi: ExtensionAPI) {
 				// 绑定读**本会话**的 state（per-session-constraint-binding）：他会话的绑定不得
 				// 决定本会话 pin 落点（隔离前正是全局值造成的落错库）
 				const bound =
-					state.mode && state.boundChange
+					state.boundChange
 						? (changes.find((c) => c.name === state.boundChange) ?? null)
 						: null;
 				const active =
 					bound ??
-					(state.mode === "implementation"
+					(state.stageFamily === "implementation"
 						? detectActiveChange(ctx.cwd)
 						: null);
 				if (active) {

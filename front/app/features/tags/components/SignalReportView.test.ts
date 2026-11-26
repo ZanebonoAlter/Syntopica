@@ -22,6 +22,7 @@ import { nextTick } from 'vue'
 import SignalReportView from './SignalReportView.vue'
 import type { SignalAppendixCall, SignalReportDetail } from '~/api/boardSignals'
 import {
+  answerStatusLabel,
   appendixAnchorId,
   buildAppendixCalcRows,
   buildAppendixObsRows,
@@ -31,10 +32,13 @@ import {
   directionLabel,
   findSection,
   isRetrospectiveReport,
+  isSafeHttpUrl,
   latestObservationPeriod,
   parseSignalReferenceTokens,
   resolveCalcRef,
   resolveDataRef,
+  sourceAnchorId,
+  sourceTemporalLine,
   splitLineSegments,
   validateSignalPeriodFormat,
   type SignalChartPoint,
@@ -320,9 +324,9 @@ describe('SignalReportView 渲染（FE-6/7/9/10）', () => {
     const { wrapper } = mountView(makeReport())
     const refs = wrapper.findAll('button.sr-ref')
     const labels = refs.map(r => r.text())
-    expect(labels).toContain('419.0 MMbbl')
+    expect(labels).toContain('419 MMbbl')
     expect(labels).toContain('-1 MMbbl')
-    expect(labels).toContain('-0.2381 %')
+    expect(labels).toContain('-0.24 %')
     // token 原文不出现在正文
     expect(wrapper.text()).not.toContain('[[data:c1:o2]]')
     // news 引用：非按钮原地展示
@@ -334,7 +338,7 @@ describe('SignalReportView 渲染（FE-6/7/9/10）', () => {
   it('FE-7：点击引用展开附录并高亮对应行（data 观测行 / calc 计算行）', async () => {
     const { wrapper } = mountView(makeReport())
     expect(wrapper.find('[data-testid="signal-appendix"]').attributes('open')).toBeUndefined()
-    const ref = wrapper.findAll('button.sr-ref').find(b => b.text() === '419.0 MMbbl')!
+    const ref = wrapper.findAll('button.sr-ref').find(b => b.text() === '419 MMbbl')!
     await ref.trigger('click')
     await nextTick()
     const appendix = wrapper.find('[data-testid="signal-appendix"]')
@@ -490,11 +494,11 @@ describe('报告 as-of 机械行（5.5）', () => {
     expect(latestObservationPeriod(unparseable)).toBeNull()
   })
 
-  it('标题下渲染 as-of 行：数据截至=观测全局最大期 · 研究时点=generation_meta.cutoff 日期', () => {
+  it('标题下渲染 as-of 行：分源时效（schema2 从 appendix 派生，标各源最大期）· 研究时点=cutoff 日期', () => {
     const { wrapper } = mountView(makeReport())
     const asof = wrapper.find('[data-testid="signal-asof"]')
     expect(asof.exists()).toBe(true)
-    expect(asof.text()).toBe('数据截至 2026-09-11 · 研究时点 2026-09-22')
+    expect(asof.text()).toBe('数据截至 eia_wpsr_table1 2026-09-11 · 研究时点 2026-09-22（各源最大期）')
     wrapper.unmount()
   })
 
@@ -505,5 +509,123 @@ describe('报告 as-of 机械行（5.5）', () => {
     const asof = wrapper.find('[data-testid="signal-asof"]')
     expect(asof.text()).toBe('数据截至 无可用数据期 · 研究时点 2026-09-22')
     wrapper.unmount()
+  })
+})
+
+// ── question-v1 答题范围与文字来源（add-question-driven-news-research 4.2）──
+
+describe('question-v1 答题范围与文字来源（4.2）', () => {
+  function makeQuestionReport(opts: { danglingSource?: boolean } = {}): SignalReportDetail {
+    const r = makeReport()
+    const payload = r.sectors
+    payload.research_contract = 'question-v1'
+    payload.answer = {
+      status: 'partial',
+      reason: '只解释了库存下降的口径，进口侧还没对上。',
+      unanswered: ['净进口为何同步上升', '炼厂投料口径未取得'],
+    }
+    payload.appendix.sources = [
+      {
+        id: 'n1', kind: 'local_article', title: 'EIA 周报报道',
+        text: '仓库里的原油少了，净进口上升。', captured_at: '2026-09-22T03:00:00Z',
+        published_at: '2026-09-18T08:00:00Z', truncated: false, original_runes: 17, hash: 'h1',
+      },
+      {
+        id: 'w1', kind: 'web_page', title: '路透专栏', final_url: 'https://www.reuters.com/example',
+        text: '专栏称调仓节奏异常。', fetched_at: '2026-09-22T03:02:00Z',
+        published_at: '2026-09-17T00:00:00Z', truncated: false, original_runes: 10, hash: 'h2',
+      },
+      {
+        id: 'w2', kind: 'web_page', title: '可疑站点', url: 'javascript:alert(1)',
+        text: '不应渲染为链接。', fetched_at: '2026-09-22T03:03:00Z',
+        truncated: false, original_runes: 8, hash: 'h3',
+      },
+    ]
+    const thesis = payload.report.sections[0]!
+    thesis.text = opts.danglingSource
+      ? '口径存疑，悬空引用 [[source:w9]]。'
+      : '口径以原文为准 [[source:n1]]，另有专栏佐证 [[source:w1]]。'
+    return r
+  }
+
+  it('answer 横幅：partial → 部分回答 + reason + unanswered 逐项（非可信度文案）', () => {
+    const { wrapper } = mountView(makeQuestionReport())
+    const banner = wrapper.find('[data-testid="signal-answer"]')
+    expect(banner.exists()).toBe(true)
+    expect(banner.attributes('data-answer')).toBe('partial')
+    expect(banner.text()).toContain('部分回答')
+    expect(banner.text()).toContain('进口侧还没对上')
+    const items = wrapper.findAll('[data-testid="signal-answer-unanswered"] li')
+    expect(items).toHaveLength(2)
+    expect(items[1]!.text()).toBe('炼厂投料口径未取得')
+    wrapper.unmount()
+  })
+
+  it('旧报告无 answer：不渲染横幅（缺省可读，不猜测补标签）', () => {
+    const { wrapper } = mountView(makeReport())
+    expect(wrapper.find('[data-testid="signal-answer"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('[[source:n1]] 渲染为可点击引用，点击展开附录并高亮来源行', async () => {
+    const { wrapper } = mountView(makeQuestionReport())
+    const ref = wrapper.findAll('button.sr-ref').find(b => b.text().includes('EIA 周报报道'))
+    expect(ref).toBeDefined()
+    await ref!.trigger('click')
+    await nextTick()
+    const appendix = wrapper.find('[data-testid="signal-appendix"]')
+    expect(appendix.attributes('open')).toBeDefined()
+    const row = wrapper.find('#' + sourceAnchorId('n1'))
+    expect(row.exists()).toBe(true)
+    expect(row.classes()).toContain('sr-row-target')
+    expect(row.text()).toContain('仓库里的原油少了，净进口上升。')
+    wrapper.unmount()
+  })
+
+  it('悬空 [[source:w9]]：显示占位且不崩', () => {
+    const { wrapper } = mountView(makeQuestionReport({ danglingSource: true }))
+    expect(wrapper.find('.sr-ref--missing').text()).toBe('数据引用缺失')
+    wrapper.unmount()
+  })
+
+  it('文字来源核查区：http(s) 渲染安全外链（noopener/nofollow），javascript: 只纯文本', () => {
+    const { wrapper } = mountView(makeQuestionReport())
+    const links = wrapper.findAll('[data-testid="signal-source-link"]')
+    expect(links).toHaveLength(1)
+    expect(links[0]!.attributes('href')).toBe('https://www.reuters.com/example')
+    expect(links[0]!.attributes('target')).toBe('_blank')
+    expect(links[0]!.attributes('rel')).toContain('noopener')
+    expect(links[0]!.attributes('rel')).toContain('nofollow')
+    // javascript: 不成为链接（纯文本展示，DOM 无危险 href）
+    const plain = wrapper.findAll('.sr-source-url--plain')
+    expect(plain).toHaveLength(1)
+    expect(plain[0]!.text()).toBe('javascript:alert(1)')
+    // 时间行：发布/取回/事后核查材料
+    const body = wrapper.find('[data-testid="signal-appendix-sources"]')
+    expect(body.text()).toContain('发布 2026-09-17')
+    expect(body.text()).toContain('取回 2026-09-22')
+    expect(body.text()).toContain('事后核查材料')
+    wrapper.unmount()
+  })
+
+  it('纯函数：answerStatusLabel / isSafeHttpUrl / sourceAnchorId / sourceTemporalLine', () => {
+    expect(answerStatusLabel('explained')).toBe('已解释')
+    expect(answerStatusLabel('partial')).toBe('部分回答')
+    expect(answerStatusLabel('unresolved')).toBe('暂无法判断')
+    expect(answerStatusLabel('weird')).toBe('')
+    expect(isSafeHttpUrl('https://a.example/c')).toBe(true)
+    expect(isSafeHttpUrl('http://a.example/c')).toBe(true)
+    expect(isSafeHttpUrl('javascript:alert(1)')).toBe(false)
+    expect(isSafeHttpUrl('ftp://a.example/f')).toBe(false)
+    expect(isSafeHttpUrl('https://user:pass@a.example/')).toBe(false)
+    expect(isSafeHttpUrl(undefined)).toBe(false)
+    expect(sourceAnchorId('n1')).toBe('signal-source-n1')
+    const w1 = makeQuestionReport().sectors.appendix.sources?.[1]
+    const line = sourceTemporalLine(w1!)
+    expect(line).toContain('发布 2026-09-17')
+    expect(line).toContain('取回 2026-09-22')
+    expect(line).toContain('事后核查材料')
+    const n1 = makeQuestionReport().sectors.appendix.sources?.[0]
+    expect(sourceTemporalLine(n1!)).toContain('冻结 2026-09-22')
   })
 })

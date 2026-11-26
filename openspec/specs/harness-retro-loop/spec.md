@@ -1,3 +1,5 @@
+<!-- domain: harness -->
+
 # harness-retro-loop Specification
 
 ## Purpose

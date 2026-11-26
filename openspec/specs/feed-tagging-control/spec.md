@@ -1,3 +1,5 @@
+<!-- domain: discovery -->
+
 # Feed Tagging Control
 
 ## Purpose

@@ -1,0 +1,612 @@
+/* 归档匹配 popover 样式（rework-workshop-into-radar-and-desk 8G.3c）。
+   浮层容器规则：position fixed + inset 0（遮罩），层级由 Z_INDEX 档位表内联注入，
+   <style> 不写死 z-index（layout.md「浮层层级契约」）。 */
+
+/* 遮罩：点外关闭（锚定浮层不遮光，保持页面可读） */
+.amp-mask {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+}
+
+/* popover 本体 */
+.amp-pop {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: min(26rem, calc(100vw - 1.6rem));
+  max-height: min(30rem, calc(100vh - 2rem));
+  overflow-y: auto;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 6px;
+  background: var(--color-bg-elevated, var(--color-bg-base));
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-strong, 0 6px 24px rgb(0 0 0 / 0.14));
+}
+
+.amp-pop.is-narrow {
+  left: 0.6rem !important;
+  right: 0.6rem;
+  top: auto !important;
+  bottom: 0.6rem;
+  width: auto;
+  max-height: 78dvh;
+}
+
+/* 头 */
+.amp-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem;
+  padding: 0.6rem 0.8rem 0.45rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  border-left: 3px solid var(--color-border-medium);
+}
+
+.amp-name {
+  font-family: var(--font-serif, serif);
+  font-size: 0.95rem;
+  color: var(--color-text-primary);
+}
+
+.amp-cat {
+  padding: 0 0.3rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 3px;
+  color: var(--color-text-muted);
+  font-size: 0.66rem;
+}
+
+.amp-rule {
+  padding: 0 0.3rem;
+  border: 1px solid;
+  border-radius: 3px;
+  font-size: 0.68rem;
+}
+
+.amp-score {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.amp-flag {
+  color: var(--color-warning);
+  font-size: 0.68rem;
+}
+
+.amp-flag.is-error {
+  color: var(--color-error);
+}
+
+.amp-close {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.amp-close:hover {
+  color: var(--color-accent);
+}
+
+/* 主体分节：栏线分隔，不用卡片墙 */
+.amp-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.amp-sec {
+  padding: 0.5rem 0.8rem 0.55rem;
+  border-bottom: 1px dashed var(--color-border-subtle);
+}
+
+.amp-sec:last-child {
+  border-bottom: 0;
+}
+
+.amp-k {
+  display: block;
+  margin-bottom: 0.25rem;
+  color: var(--color-text-muted);
+  font-size: 0.64rem;
+  letter-spacing: 0.1em;
+}
+
+.amp-desc {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.amp-note {
+  margin: 0.3rem 0 0;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  line-height: 1.55;
+}
+
+/* 口径标注的警示色（重算值与冻结 score 不一致等） */
+.amp-note.is-warn {
+  color: var(--color-warning);
+}
+
+.amp-missing {
+  margin: 0;
+  padding: 0.45rem 0.8rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-hover);
+  color: var(--color-warning);
+  font-size: 0.7rem;
+}
+
+/* 组合链 */
+.amp-chain {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  padding: 0.1rem 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.74rem;
+}
+
+/* 本文标签 chips */
+.amp-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.amp-mini-tag {
+  padding: 0.02rem 0.3rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 3px;
+  font-size: 0.7rem;
+}
+
+.amp-mini-tag i {
+  margin-left: 0.2rem;
+  color: var(--color-text-muted);
+  font-size: 0.62rem;
+  font-style: normal;
+}
+
+.amp-mini-tag.is-matched {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+/* 辅助标签 × 版块收编 */
+.amp-aux {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.08rem 0;
+  font-size: 0.76rem;
+}
+
+.amp-aux-mark {
+  width: 0.9rem;
+  text-align: center;
+  font-family: var(--font-mono, monospace);
+}
+
+.amp-aux.is-hit .amp-aux-mark {
+  color: var(--color-success, var(--color-match-direct-hit));
+}
+
+.amp-aux.is-miss .amp-aux-mark {
+  color: var(--color-accent);
+}
+
+.amp-aux.is-unknown {
+  opacity: 0.55;
+}
+
+.amp-aux-pair {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.68rem;
+}
+
+/* 私有判定行 */
+/* 头区指标行（口径=相似达标 hits，与 ① 交集「完全相同」分家） */
+.amp-metric {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.68rem;
+}
+
+/* 结论行（一句话因果，替代旧长判定句） */
+.amp-verdict-line {
+  margin: 0;
+  padding: 0.45rem 0.8rem;
+  border-bottom: 1px dashed var(--color-border-subtle);
+  color: var(--color-text-primary);
+  font-size: 0.74rem;
+  line-height: 1.6;
+}
+
+/* 判定过程（逐条：已试过未通过 + 命中步 + ② 参照；命中步之后合并一排） */
+.amp-flow-step {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.35rem 0.5rem;
+  border-left: 2px solid transparent;
+}
+
+.amp-flow-step.is-matched {
+  border-left-color: var(--color-accent);
+  background: var(--color-bg-subtle, transparent);
+}
+
+.amp-flow-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.amp-flow-mark {
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.amp-flow-step.is-matched .amp-flow-mark {
+  color: var(--color-accent);
+}
+
+.amp-flow-step.is-failed .amp-flow-mark {
+  color: var(--color-text-muted);
+}
+
+.amp-flow-no {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.amp-flow-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.amp-flow-state {
+  font-size: 0.64rem;
+  padding: 0 0.28rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 3px;
+}
+
+.amp-flow-state.is-hit {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.amp-flow-state.is-miss {
+  color: var(--color-text-muted);
+}
+
+.amp-flow-state.is-ref {
+  color: var(--color-text-muted);
+  border-style: dashed;
+}
+
+.amp-flow-q {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+.amp-flow-result {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+/* 命中步之后的合并排（未走到） */
+.amp-flow-skipped {
+  margin: 0.2rem 0 0;
+  padding: 0.18rem 0.5rem;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.68rem;
+  opacity: 0.65;
+}
+
+/* 判定过程脚注的口径标注小字（实时重算 vs 冻结 score，全 popover 唯一一处） */
+.amp-verdict-note {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--color-text-muted);
+  font-size: 0.66rem;
+  line-height: 1.5;
+}
+
+.amp-verdict-note.is-warn {
+  color: var(--color-warning);
+}
+
+/* 命中步就地展开的计算明细（默认收起，按钮挂在命中步下） */
+.amp-calc-btn {
+  align-self: flex-start;
+  margin: 0.15rem 0 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.amp-calc-btn:hover {
+  color: var(--color-accent);
+}
+
+.amp-calc {
+  margin: 0.3rem 0 0;
+  padding: 0.35rem 0.6rem;
+  border-left: 2px solid var(--color-border-medium);
+  font-size: 0.78rem;
+}
+
+/* 当前匹配参数（12 项明细，折叠） */
+.amp-config {
+  padding: 0.4rem 0.8rem 0.6rem;
+  font-size: 0.7rem;
+}
+
+.amp-config summary {
+  cursor: pointer;
+  color: var(--color-text-muted);
+}
+
+.amp-config dl {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.18rem;
+  margin: 0.4rem 0 0;
+}
+
+.amp-config dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.amp-config dt {
+  color: var(--color-text-muted);
+  font-size: 0.66rem;
+}
+
+.amp-config dd {
+  margin: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.66rem;
+}
+
+/* 入板过程：阶段分组 */
+.amp-stage {
+  padding: 0.4rem 0.15rem 0.5rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.amp-stage:last-child {
+  border-bottom: 0;
+}
+
+.amp-stage-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  margin-bottom: 0.2rem;
+}
+
+.amp-stage-no {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.amp-stage-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.amp-stage-cnt {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-size: 0.66rem;
+}
+
+.amp-stage-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.14rem 0 0.14rem 1.4rem;
+  font-size: 0.74rem;
+}
+
+.amp-stage-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.amp-win {
+  padding: 0 0.2rem;
+  border: 1px solid var(--color-accent);
+  border-radius: 3px;
+  color: var(--color-accent);
+  font-size: 0.62rem;
+}
+
+/* 弱证据文章的命中徽标（不入板依据，警示色） */
+.amp-win.is-weak {
+  border-color: var(--color-warning);
+  color: var(--color-warning);
+}
+
+.amp-stage-score {
+  margin-left: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.amp-stage-empty {
+  padding: 0.1rem 0 0.1rem 1.4rem;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+}
+
+.amp-stage-empty.is-skipped {
+  opacity: 0.55;
+}
+
+.amp-stage-why {
+  padding: 0.12rem 0 0.12rem 1.4rem;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+/* 窄屏（<768px 底部全宽档）：判定过程行两行折行（主行 + 问法/结果行），不横向滚动 */
+@media (max-width: 767.98px) {
+  .amp-flow-head {
+    flex-wrap: wrap;
+  }
+
+  .amp-flow-q,
+  .amp-flow-result {
+    word-break: break-all;
+    white-space: normal;
+  }
+
+  .amp-config dl div {
+    flex-direction: column;
+    gap: 0;
+  }
+}
+
+/* ── 相关事件（enable-story-cross-day-continuation）：既有卡片内按需展开 ────── */
+.amp-related-toggle {
+  border: 1px solid var(--color-border-subtle);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.amp-related-toggle:hover {
+  color: var(--color-text-primary);
+  border-color: var(--color-border-strong, var(--color-border-subtle));
+}
+
+.amp-related-hint {
+  margin-top: 0.3rem;
+}
+
+.amp-related-meta {
+  margin: 0.25rem 0 0.35rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.66rem;
+  color: var(--color-text-muted);
+}
+
+.amp-related-item {
+  padding: 0.35rem 0;
+  border-top: 1px dashed var(--color-border-subtle);
+}
+
+.amp-related-name {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--color-text-primary);
+  font-size: 0.76rem;
+  min-width: 0;
+}
+
+.amp-related-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.amp-related-sim {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.7rem;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.amp-related-desc {
+  margin-top: 0.25rem;
+  font-size: 0.7rem;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.amp-related-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.25rem;
+  min-width: 0;
+}
+
+.amp-related-source,
+.amp-related-retry {
+  border: 1px solid var(--color-border-subtle);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.68rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.amp-related-source:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.amp-related-source-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.66rem;
+  color: var(--color-text-muted);
+}

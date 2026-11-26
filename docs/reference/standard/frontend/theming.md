@@ -1,7 +1,7 @@
 # 前端双主题系统（Theming）
 
 > **权威源**：本文件是双主题/设计系统的唯一权威。`front/AGENTS.md` 顶部「Frontend-Specific Conventions」的红线要点深链指向本文件。
-> 互补：`architecture/frontend.md` §设计系统 描述设计系统的架构定位。
+> 互补：`architecture/frontend.md` §设计系统 描述设计系统的架构定位；[prototype-content.md](prototype-content.md) V1/V2 定义 token 组合的可读性下限（对比度 4.5:1 / 3:1）——本文件管「取值」，那边管「够不够看清」，token 组合不达标须回本文件修 token。
 
 ## 视觉基调
 
@@ -16,6 +16,17 @@ editorial / magazine（杂志感），**禁止回退到蓝紫色 SaaS 视觉**�
 | Component（Layer 3） | `--dialog-*` 等 | 组件级专用变量 |
 
 **硬约束：组件只引用 Layer 2 语义 token，不直接使用原始色值（`--raw-*`）。**
+
+### 事件语义色 `--color-event`
+
+| 主题 | 取值 | 用途 | 对 `--color-bg-elevated` | 对 `--color-bg-base` |
+|---|---|---|---|---|
+| editorial | `#8f5a17` | 关键事件圆点描边 / 引线 / 日聚焦卡片首行日期 | 5.08:1 | 5.39:1 |
+| dark | `#e0a75a` | 同上 | 8.17:1 | 9.19:1 |
+
+- **与 `--color-tag-event` 是两套口径**：后者是文章事件标签的既有取色（亮色 `rgba(196,136,60,.85)`，对 `elevated` 仅 2.46:1），**只用于标签底色/边框，不得拿它画 1.5px 细线或排小号文字**；本 token 专供细线与正文级小字，两者互不复用、也不得互相改值对齐。
+- **与强调色分工**：`--color-event` = 「事件」，`--color-accent` = 「当前选中」（亮色红 `#d94a4a` / 暗色橙红 `rgba(240,138,75,.85)`）。暗色下两者色相差仅约 11°，因此**选中态 MUST NOT 只靠颜色区分**——同时用整列淡底 + 轴头加粗 + 实心节点三重冗余。事件色 MUST NOT 用于表达选中（`key-event-day-focus-cards`）。
+- 取值以**产品真实底色**为口径（`--color-bg-elevated` = `--raw-stone-100` = `#f5f0e6`、`--color-bg-base` = `--raw-stone-50` = `#faf7f2`）；新增/替换取值时 MUST 按这两个底色复算 ≥4.5:1，MUST NOT 拿纯白或原型内部色值当基准。
 
 ## 主题切换
 
@@ -33,6 +44,9 @@ editorial / magazine（杂志感），**禁止回退到蓝紫色 SaaS 视觉**�
 | 开关 | `AppToggle` |
 | 输入框 | `AppInput` |
 | 区块标题 | `AppSectionHeader` |
+| 页面内部滚动区（`overflow: auto/scroll` 的栏、栏内列表、横向日期条、边注栏） | 全局类 `.scroll-thin`（`app/assets/css/main.css`） |
+
+**滚动条红线**（`unify-inner-scrollbar-style`，2026-11-18）：内部滚动区一律挂 `.scroll-thin`，禁止裸写 `scrollbar-width` 或硬编码颜色。两条机制必须记住——① 一旦声明 `scrollbar-width`/`scrollbar-color`，Chromium(≥121)/Firefox 就接管绘制并**忽略同元素的 `::-webkit-scrollbar`**（伪元素只能当老引擎兜底）；② `scrollbar-color` **继承**、`scrollbar-width` **不继承**，所以**每个滚动容器自己挂类**，指望父级带下去只会得到「颜色变了、宽度没变」。页面级 10px 杂志条（`main.css` 全局 `::-webkit-scrollbar` 段）不在此列。回归由 `app/assets/css/scrollbar-style.test.ts` 机械守住。
 
 页面布局模式与弹窗尺寸档的完整契约（批准基线、双视口验收、例外登记）→ [layout.md](layout.md)。
 

@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -10,21 +9,21 @@ import (
 	"github.com/google/uuid"
 
 	"syntopica-backend/internal/platform/airouter"
-	"syntopica-backend/internal/platform/jsonutil"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/topicgraph/repository"
 )
 
-// ── 泳道滚动态势结算（overview-lane-dynamics design D1/D3）──────────────────
+// ── 泳道滚动态势结算（overview-lane-dynamics → slim-lane-snapshot-trend）────
 //
 // 挂点：GenerateAndSaveReport 成功后 detached goroutine（松耦合红线：结算
 // 失败/panic 绝不影响日报主流程，下个日报日自愈）。
-// 素材：该泳道近 14 个报告日「日期 + section 标题 + 前 3 条 thread 标题」，
+// 素材：该泳道近 14 个报告日「日期 + section 标题 + 前 3 条 thread 标题」
+// + 量级信号段（系统计算的每日线索量与近7/上7合计，不信 LLM 数数），
 // 窗口锚定 MAX(period_date) 而非 now()（日报未跑时窗口不漂移）。
-// 产出：长短两版（lane-trend-overview design D1）——≤100 字中文态势句 +
-// ≤500 字中文成段叙述（同一次调用、同一份素材），upsert 进
-// topic_lane_snapshots（每泳道一行覆盖）。解析失败降级为仅短版，不算失败，
-// 下个日报日自愈。
+// 产出：单版演进叙事态势句（slim-lane-snapshot-trend）——150-200 字中文纯文本，
+// 按「阶段→驱动/转折→当前落点→量级佐证」组织，事件明细职责归逐日事件。
+// upsert 进 topic_lane_snapshots（每泳道一行覆盖）；rolling_detail 固定写空，
+// 存量历史长版随下个日报日结算自然覆盖。
 
 const (
 	// laneSnapshotSettleWindowDays: 态势句素材窗口与时间线窗口同为滚动
@@ -33,18 +32,15 @@ const (
 	// laneSnapshotMaxRunes mechanically clamps the LLM short-form output. The
 	// prompt already demands ≤200字 (relax-lane-snapshot-length-caps: 实测
 	// 100 字高频硬切烂尾); this guard protects the card layout from
-	// over-verbose models.
+	// over-verbose models. 2026-10-28 真库效果核对：38/38 条真实快照顶到上限、
+	// 37 条被从字中间切断（页面显示半截话），故 clamp 优先在句末标点收口
+	// （见 clampLaneSnapshotRunes），纯 rune 硬切只作无标点兜底。
 	laneSnapshotMaxRunes = 200
-	// laneSnapshotDetailMaxRunes mechanically clamps the long-form narrative
-	// (design D1: 成段叙述, rune-safe like the short form;
-	// relax-lane-snapshot-length-caps: 500→1000, 500 实测常态超限).
-	laneSnapshotDetailMaxRunes = 1000
-	// laneSnapshotMaxTokens bounds the single two-version call (design D1:
-	// 两版合计 + JSON 结构开销). Package-level so tests can pin it (SN-9); the
-	// chat fn must keep referencing it. relax-lane-snapshot-length-caps:
-	// 768→1536 — 768 预算下啰嗦模型会把 JSON 掐断在半路，解析失败误走降级
-	// （长版丢失+短版砍半），预算须容纳两版新上限。
-	laneSnapshotMaxTokens = 1536
+	// laneSnapshotMaxTokens bounds the single-call output budget
+	// (slim-lane-snapshot-trend D3): 单版 200 字中文 ≈ 400 token 上浮呼吸
+	// 空间；旧 1536 是双版 JSON 时代的预算，不再需要。Package-level so
+	// tests can pin it; the chat fn must keep referencing it.
+	laneSnapshotMaxTokens = 500
 	// laneSnapshotLaneTimeout bounds ONE lane's settlement (design D1).
 	laneSnapshotLaneTimeout = 60 * time.Second
 )
@@ -75,18 +71,21 @@ var laneSnapshotChatFn = func(ctx context.Context, system, user string) (string,
 }
 
 func laneSnapshotSystemPrompt() string {
-	return "你是新闻态势总结助手。给定一条话题泳道近14天的日报事实清单（每行：日期｜节标题｜线索标题），" +
-		"请输出一个 JSON 对象，含两个字段：\"summary\" 为一句不超过200字的中文态势句；" +
-		"\"detail\" 为一段不超过1000字的中文成段叙述。" +
-		"两版必须基于同一份清单事实：detail 是同一事实集的成段展开，不得另起炉灶。" +
-		"要求：只基于清单内列出的事实，不得编造事件、数字、情绪与因果；不做事态预测或走向判断；" +
-		"直接输出 JSON 本身，不要任何前后缀、代码块围栏、引号或标号。"
+	return "你是新闻态势总结助手。基于一条话题泳道近14天的日报事实清单与量级信号，写一段150-200字的中文态势总结，" +
+		"按演进叙事组织：先划分阶段（各阶段带大致日期锚），说明每阶段的驱动与转折（事件仅作转折标记点出，不展开细节），" +
+		"再给出当前落点与局势判断，最后用量级信号佐证走向。" +
+		"要求：禁止逐日罗列事件；禁止预测未来走向（只描述已发生的变化）；" +
+		"禁止使用清单与量级信号之外的数字；「无报告」日不计入趋势判断。" +
+		"篇幅硬约束：总长（含标点）不得超过200字，并且必须以句号收尾；" +
+		"写不下时压缩阶段描述或合并阶段，宁可少写一个细节，也不得写到一半停下。" +
+		"直接输出这一段纯文本，不要JSON、标题、前后缀或代码块围栏。"
 }
 
 // buildLaneSnapshotUserPrompt renders the material rows: one line per section,
 // "YYYY-MM-DD｜section 标题｜thread1 / thread2 / thread3"（无线索标题时省略
-// 第三段）。
-func buildLaneSnapshotUserPrompt(label string, rows []repository.LaneMaterialRow) string {
+// 第三段），followed by the system-computed magnitude signal block
+// (slim-lane-snapshot-trend D1).
+func buildLaneSnapshotUserPrompt(label string, rows []repository.LaneMaterialRow, counts []repository.LaneDailyCount, anchor time.Time) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "泳道：%s\n\n--- 近14天事实清单 ---\n", label)
 	for _, row := range rows {
@@ -103,42 +102,123 @@ func buildLaneSnapshotUserPrompt(label string, rows []repository.LaneMaterialRow
 		}
 		sb.WriteString("\n")
 	}
+	sb.WriteString(renderLaneMagnitudeSignal(counts, anchor))
+	return sb.String()
+}
+
+// renderLaneMagnitudeSignal renders the magnitude block: per-day thread counts
+// across the material window (days without a report shown explicitly as
+// 无报告 so a gap is never mistaken for a dip) plus a 7-day vs
+// previous-7-day rollup anchored at as_of. All numbers are system-computed
+// from the repository counts — the LLM never counts for itself (D1).
+// Window semantics: the daily rows walk [anchor-14, anchor] — the exact
+// same inclusive window the material rows and ListDailyThreadCounts load
+// under (15 day slots, R-1); the rollups are [anchor-6, anchor] (near) and
+// [anchor-13, anchor-7] (previous).
+func renderLaneMagnitudeSignal(counts []repository.LaneDailyCount, anchor time.Time) string {
+	byDay := make(map[string]repository.LaneDailyCount, len(counts))
+	for _, c := range counts {
+		byDay[c.PeriodDate.Format("2006-01-02")] = c
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n--- 量级信号（系统统计；「无报告」=当日未出日报，不代表热度为零，不计入趋势判断）---\n每日线索量：")
+	windowStart := anchor.AddDate(0, 0, -14)
+	first := true
+	for d := windowStart; !d.After(anchor); d = d.AddDate(0, 0, 1) {
+		if !first {
+			sb.WriteString("｜")
+		}
+		first = false
+		if c, ok := byDay[d.Format("2006-01-02")]; ok {
+			fmt.Fprintf(&sb, "%s %d条", d.Format("01-02"), c.ThreadCnt)
+			if c.SectionCnt > 1 {
+				fmt.Fprintf(&sb, "·%d节", c.SectionCnt)
+			}
+		} else {
+			fmt.Fprintf(&sb, "%s 无报告", d.Format("01-02"))
+		}
+	}
+
+	// Rollups anchored at as_of: near = [anchor-6, anchor], previous =
+	// [anchor-13, anchor-7]. Days-with-report counted per window so an empty
+	// previous window renders as 无报告数据 instead of a misleading 0-total.
+	//
+	// 窗口按「日历日槽位」判定，不按 instant 比较（slim-lane-snapshot-trend
+	// R-12）：period_date 是 PG date 列，扫出来是当日 00:00 UTC，而 anchor
+	// 归一化到 12:00 UTC（NormalizeReportDate）。按 instant 比较时窗首日
+	// 00:00 < 边界 12:00 会被判进前窗——真库实测标称「近7天」实算 6 天、
+	// 「上7天」整体错位一天，与打印的区间标签对不上（LLM 忠实引用错窗
+	// 数字）。此处改为按上方每日行同一套 byDay 日期串遍历，使「标签区间
+	// = 计入区间」由构造保证。缺日不计入也不报负。
+	nearFrom := anchor.AddDate(0, 0, -6)
+	prevFrom := anchor.AddDate(0, 0, -13)
+	nearTotal, prevTotal, prevDays := 0, 0, 0
+	for d := prevFrom; !d.After(anchor); d = d.AddDate(0, 0, 1) {
+		c, ok := byDay[d.Format("2006-01-02")]
+		if !ok {
+			continue // 无报告日不计入
+		}
+		if !d.Before(nearFrom) {
+			nearTotal += c.ThreadCnt
+		} else {
+			prevTotal += c.ThreadCnt
+			prevDays++
+		}
+	}
+	sb.WriteString("\n")
+	if prevDays == 0 {
+		fmt.Fprintf(&sb, "近7天（%s～%s）合计 %d 条｜上个7天（%s～%s）无报告数据",
+			nearFrom.Format("01-02"), anchor.Format("01-02"), nearTotal,
+			prevFrom.Format("01-02"), nearFrom.AddDate(0, 0, -1).Format("01-02"))
+	} else {
+		fmt.Fprintf(&sb, "近7天（%s～%s）合计 %d 条｜上个7天（%s～%s）合计 %d 条",
+			nearFrom.Format("01-02"), anchor.Format("01-02"), nearTotal,
+			prevFrom.Format("01-02"), nearFrom.AddDate(0, 0, -1).Format("01-02"), prevTotal)
+	}
 	return sb.String()
 }
 
 // truncateRunes is package-shared (watch_materialize_keyword.go) — rune-safe
-// clamp, reused for the ≤100字/≤500字 mechanical guards.
+// clamp used by the watch-materialize keyword guards.
 
-// parseLaneSnapshotOutput applies design D1's two-version protocol to the raw
-// LLM output. Fence stripping reuses jsonutil.SanitizeLLMJSON — the same
-// tolerance every other structured daily-report output relies on (SN-7).
-// Returns (summary, detail, degraded):
-//   - JSON valid: fields trimmed; summary empty → error (既有空输出守卫, SN-6);
-//     detail empty/missing is legal (SN-5). Both clamped to their own caps,
-//     rune-safe and independent (SN-2/SN-3).
-//   - JSON broken: degrade (SN-4) — whole output clamped to 100 as summary,
-//     detail empty, degraded=true (caller warns; NOT a settlement failure —
-//     upsert proceeds, next report day heals). Degrade yielding an empty
-//     summary (pure whitespace output) still fails the guard.
-func parseLaneSnapshotOutput(content string) (summary, detail string, degraded bool, err error) {
-	cleaned := jsonutil.SanitizeLLMJSON(content)
-	var raw struct {
-		Summary string `json:"summary"`
-		Detail  string `json:"detail"`
-	}
-	if jerr := json.Unmarshal([]byte(cleaned), &raw); jerr != nil {
-		summary = truncateRunes(strings.TrimSpace(content), laneSnapshotMaxRunes)
-		if summary == "" {
-			return "", "", true, fmt.Errorf("empty llm output")
-		}
-		return summary, "", true, nil
-	}
-	summary = strings.TrimSpace(raw.Summary)
+// parseLaneSnapshotOutput applies the plain-text three-step guard
+// (slim-lane-snapshot-trend D3): trim → empty/whitespace fails the settlement
+// (snapshot keeps its old value, retried next report day) → clamp to
+// laneSnapshotMaxRunes at a sentence boundary. There is deliberately NO JSON
+// parsing and no degrade branch: the prompt demands a single plain paragraph,
+// and stray fences/quotes (if a model emits them anyway) land in the text as-is.
+func parseLaneSnapshotOutput(content string) (string, error) {
+	summary := clampLaneSnapshotRunes(strings.TrimSpace(content), laneSnapshotMaxRunes)
 	if summary == "" {
-		return "", "", false, fmt.Errorf("empty llm output")
+		return "", fmt.Errorf("empty llm output")
 	}
-	detail = strings.TrimSpace(raw.Detail)
-	return truncateRunes(summary, laneSnapshotMaxRunes), truncateRunes(detail, laneSnapshotDetailMaxRunes), false, nil
+	return summary, nil
+}
+
+// clampLaneSnapshotRunes clamps text to max runes without cutting a sentence
+// in half: when the over-cap window contains a sentence terminator (。！？… or
+// a newline) late enough to keep ≥60% of the budget, the text is cut right
+// after the last such terminator; otherwise it falls back to a plain rune cut.
+//
+// 2026-10-28 真库效果核对（slim-lane-snapshot-trend 5.3）: every settled lane
+// hit the cap and 37/38 sentences were cut mid-word (「…停用并移除DeepSeek」
+// 「…SK」). The prompt now also demands a complete final sentence; this is the
+// mechanical backstop that keeps a dangling fragment off the reading view.
+func clampLaneSnapshotRunes(text string, max int) string {
+	runes := []rune(text)
+	if len(runes) <= max {
+		return text
+	}
+	window := runes[:max]
+	floor := max * 3 / 5
+	for i := len(window) - 1; i >= floor; i-- {
+		switch window[i] {
+		case '。', '！', '？', '…', '\n':
+			return strings.TrimSpace(string(window[:i+1]))
+		}
+	}
+	return string(window)
 }
 
 // settleBoardLaneSnapshots settles the rolling snapshot for the board's
@@ -203,22 +283,24 @@ func settleLaneSnapshot(ctx context.Context, lane repository.BoardPersistentTopi
 	if len(rows) == 0 {
 		return nil // silent lane — nothing to settle, no LLM call
 	}
-	content, err := laneSnapshotChatFn(ctx, laneSnapshotSystemPrompt(), buildLaneSnapshotUserPrompt(lane.Label, rows))
+	counts, err := repository.Repo.ListDailyThreadCounts(lane.ID, from, anchor)
+	if err != nil {
+		return fmt.Errorf("load daily counts: %w", err)
+	}
+	content, err := laneSnapshotChatFn(ctx, laneSnapshotSystemPrompt(), buildLaneSnapshotUserPrompt(lane.Label, rows, counts, anchor))
 	if err != nil {
 		return fmt.Errorf("llm call: %w", err)
 	}
-	summary, detail, degraded, err := parseLaneSnapshotOutput(content)
+	summary, err := parseLaneSnapshotOutput(content)
 	if err != nil {
 		return err
 	}
-	if degraded {
-		logging.Warnf("lane-snapshot: lane %d (%s) llm output not valid JSON — degraded to short form only, long form retried next report day",
-			lane.ID, lane.Label)
-	}
+	// slim-lane-snapshot-trend: rolling_detail 停止产出，固定写空串；存量
+	// 历史长版随本次覆盖自然清空（列保留，无 migration）。
 	return repository.Repo.UpsertLaneSnapshot(&repository.TopicLaneSnapshot{
 		PersistentTopicID: lane.ID,
 		RollingSummary:    summary,
-		RollingDetail:     detail,
+		RollingDetail:     "",
 		AsOfDate:          anchor,
 	})
 }

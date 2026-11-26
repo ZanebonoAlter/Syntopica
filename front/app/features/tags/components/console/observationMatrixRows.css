@@ -1,0 +1,240 @@
+/* 正式/休眠泳道与当日其他话题共用同一行高、标题、热度及选中规则。 */
+.omx-lane {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--color-bg-base);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  height: 2.9rem;
+  padding: 0.25rem 0.4rem 0.25rem 0;
+  border: none;
+  color: var(--color-text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.omx-lane-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.86rem;
+}
+
+/* 行头容器内的名称按钮（lane-manual-correction-loop 6.3）：行头改为 div 容器，
+   名称与「⋯」入口各自是独立按钮（嵌套 button 非法）；按钮占满剩余宽度，名称超长省略。 */
+.omx-lane-name-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.omx-lane-name-btn:focus-visible {
+  outline: none;
+}
+
+.omx-lane:hover .omx-lane-name {
+  color: var(--color-text-primary);
+}
+
+.omx-lane.is-selected .omx-lane-name {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.omx-lane.is-selected::before {
+  content: '';
+  width: 2px;
+  height: 1rem;
+  border-radius: 1px;
+  background: var(--color-accent);
+  margin-left: -0.5rem;
+  flex: 0 0 auto;
+}
+
+.omx-lane-watch,
+.omx-lane-dormant-tag {
+  flex: 0 0 auto;
+  font-size: 0.58rem;
+  padding: 0 0.22rem;
+  border-radius: 2px;
+  border: 1px solid var(--color-border-medium);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+/* 行头就地改名输入框（lane-matrix-coverage-and-others-row）：与名称按钮同一位置与字重，
+   提交/取消期间不改变行高（矩阵行密度不变）。 */
+.omx-lane-rename-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 1.6rem;
+  padding: 0 0.3rem;
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  background: var(--color-bg-base);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 0.82rem;
+}
+
+.omx-lane-rename-input:focus {
+  outline: none;
+}
+
+/* 覆盖组行的名字是静态标签（该泳道不在本窗名单，不可选中）。 */
+.omx-lane-name-static {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--color-text-secondary);
+}
+
+/* 长名字先省略（不挤占 ⋯ 入口）。 */
+.omx-lane-name-static .omx-lane-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.omx-lane-watch {
+  color: var(--color-info);
+  border-color: color-mix(in srgb, var(--color-info) 30%, var(--color-bg-base));
+}
+
+.omx-cell {
+  position: relative;
+  min-width: 0;
+  height: 2.9rem;
+  border: none;
+  border-radius: 3px;
+  display: grid;
+  place-items: center;
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+  background: color-mix(in srgb, var(--color-text-primary) 4%, var(--color-bg-base));
+  cursor: pointer;
+}
+
+/* 选中列淡底（console-rails-live-signals D7）：选中日**整列**加一层淡底——
+   不描边、不改列头高亮、不动格子自身颜色（用伪元素叠一层，不覆盖格值色阶）。
+   只铺在有分区的那天（`is-col-selected` 只给 content 格）；无分区的历史日不铺。 */
+.omx-cell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: transparent;
+  pointer-events: none;
+}
+
+.omx-cell.is-col-selected::after {
+  background: color-mix(in srgb, var(--color-accent) 7%, transparent);
+}
+
+.omx-cell:hover:not(:disabled) {
+  /* 不用 scale：横向滚动容器会裁掉上下 2–3px；用描边强调 */
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+  z-index: 2;
+}
+
+.omx-cell:disabled {
+  cursor: default;
+}
+
+.omx-cell.is-b1 {
+  background: color-mix(in srgb, var(--color-accent) 13%, var(--color-bg-base));
+  color: var(--color-text-secondary);
+}
+
+.omx-cell.is-b2 {
+  background: color-mix(in srgb, var(--color-accent) 26%, var(--color-bg-base));
+}
+
+.omx-cell.is-b3 {
+  background: color-mix(in srgb, var(--color-accent) 44%, var(--color-bg-base));
+}
+
+.omx-cell.is-b4 {
+  background: color-mix(in srgb, var(--color-accent) 66%, var(--color-bg-base));
+  /* 不覆盖前景色：反白色在 66% accent 上双主题对比度均 <3:1 */
+  font-weight: 600;
+}
+
+/* 色深（2026-11-11 用户看版后修订，tasks 3.5）：底色的深浅 = 该格当日线索合计在本行可见窗内的
+   归一比例（0 = 底色不着色、行内峰值 = 66% accent，线性插值）；跨行不归一，冷泳道不被热门泳道压白。
+   颜色只是冗余强化通道——格值数字 + title/aria 仍承载全部信息（无颜色仍完全可用）。 */
+.omx-cell.is-clue-depth {
+  background: color-mix(in srgb, var(--color-accent) var(--omx-clue-mix, 0%), var(--color-bg-base));
+}
+
+.omx-cell.is-today {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 45%, var(--color-bg-base));
+}
+
+.omx-cell.is-gap,
+.omx-cell.is-unknown {
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+.omx-cell.is-gap {
+  opacity: 0.7;
+}
+
+.omx-cell.is-selected {
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+
+.omx-cell.is-dormant {
+  opacity: 0.55;
+}
+
+.omx-lane.is-dormant {
+  opacity: 0.55;
+}
+
+/* 名称看全卡片（2026-11-26 用户反馈「泳道名展示不全」）：标签列放不下全名时，悬停/聚焦出卡
+   显示全名与本行指标。卡片 Teleport 到 body（矩阵滚动容器会裁剪浮层），层级由组件按
+   `Z_INDEX` 档位表内联绑定——此处不写层级数字。 */
+.omx-lane-card {
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-width: 22rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 6px;
+  background: var(--color-bg-elevated);
+  box-shadow: 0 8px 20px rgb(0 0 0 / 0.28);
+  color: var(--color-text-primary);
+  line-height: 1.4;
+}
+
+.omx-lane-card-name {
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.omx-lane-card-meta {
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}

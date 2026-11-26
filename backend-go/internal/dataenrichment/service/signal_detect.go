@@ -59,11 +59,15 @@ func (e *SignalStageError) Unwrap() error { return e.Err }
 
 // SignalDetection is one validated detect output row (design §3 contract:
 // 非空字段 + 白名单证据 + 达标分数). Evidence refs are normalized to the
-// material slice ids they cite.
+// material slice ids they cite. question-v1（add-question-driven-news-research
+// D1）：unknown/verification 由 detect 生成并验证（trim Unicode 空白后
+// 1～600rune，空白/超长按非法输出重试处理，失败不存半批）。
 type SignalDetection struct {
 	Signal           string
 	WhyItMatters     string
 	ResearchQuestion string
+	Unknown          string
+	Verification     string
 	EvidenceRefs     []string
 	Score            int
 	Rationale        string
@@ -101,16 +105,17 @@ func (d *SignalDetector) detectSystemPrompt() string {
 	return signalDetectSystemPrompt + "\n\n" + d.sourceCapability
 }
 
-const signalDetectSystemPrompt = `你是一位新闻板块的信号侦察员。输入是某板块一个时间周期内的冻结材料（各泳道的周期切片与摘要）。你的任务不是罗列内容，而是找出会改变对该板块未来判断的异动信号：突变、反常、初现、背离。
+const signalDetectSystemPrompt = `你是一位新闻板块的研究选题编辑。输入是某板块一个时间周期内的冻结材料（各泳道的周期切片与摘要）。你的读者是不具备专业研究方法的普通人：他们不需要先懂政治或经济研究方法，也能从新闻中获得解释。你的任务是找出值得理解的变化、解释与影响问题，不是罗列内容，也不局限于市场异动。
 
-评分纪律（score 为 1~10 的整数）：按异动强度、报道密度、判断价值打分；只有 ≥6 分的信号才值得成为候选。没有达标信号是正常结果，返回空数组即可，不要硬凑。
+评分纪律（score 为 1~10 的整数）：按理解价值（能不能帮读者看懂这件事）、未知的具体性（不确认的部分说得清不清）、核查路径（第一步去查什么是否明确）打分；只有 ≥6 分的问题才值得成为候选。没有达标问题是正常结果，返回空数组即可，不要硬凑。不为了凑数强加预测，不为了跨泳道拼接无关线索。
 
 输出严格 JSON（不要 markdown 包裹、不要任何其他内容）：
-{"signals":[{"signal":"一句话说清异常本身","why_it_matters":"为什么值得查：它会怎样改变判断","research_question":"深入分析要回答的研究问题","evidence_refs":["材料切片ID"],"score":7,"rationale":"评分理由（对照三项评分维度）"}]}
+{"signals":[{"signal":"一句话说清变化/现象本身","why_it_matters":"为什么值得理解：它能解释什么","research_question":"一个中心研究问题","unknown":"还不清楚什么（具体、可核查的未知）","verification":"准备先查什么（首个核查方向）","evidence_refs":["材料切片ID"],"score":7,"rationale":"评分理由（对照三项评分维度）"}]}
 
 纪律：
 - evidence_refs 只能原样引用输入材料里出现的切片 ID，禁止编造或引用材料之外的编号
-- 每条信号必须至少引用一条真实存在的切片作为依据
+- 每条信号必须至少引用一条真实存在的切片作为依据；一个候选聚焦一个主要疑问
+- unknown 与 verification 必须是非空文本（各不超过 600 字），说明具体未知与首个核查方向
 - 不要输出 JSON 以外的任何内容`
 
 // Detect executes one detect run (≤2 LLM attempts). Empty material short-
@@ -248,6 +253,24 @@ func validateSignalDetection(m map[string]any, index int) (SignalDetection, erro
 	if err != nil {
 		return SignalDetection{}, err
 	}
+	// question-v1：unknown/verification 必填非空（1～600rune，trim Unicode
+	// 空白）；空白/超长/类型错误按非法输出处理（detect 重试，失败不存半批）。
+	unknown, err := nonEmpty("unknown")
+	if err != nil {
+		return SignalDetection{}, err
+	}
+	unknown, verr := ValidateSignalBriefText("unknown", unknown)
+	if verr != nil {
+		return invalid("unknown " + verr.Error())
+	}
+	verification, err := nonEmpty("verification")
+	if err != nil {
+		return SignalDetection{}, err
+	}
+	verification, verr = ValidateSignalBriefText("verification", verification)
+	if verr != nil {
+		return invalid("verification " + verr.Error())
+	}
 	scoreFloat, ok := m["score"].(float64)
 	if !ok || scoreFloat != math.Trunc(scoreFloat) || scoreFloat < 1 || scoreFloat > 10 {
 		return invalid("score must be an integer 1..10")
@@ -268,6 +291,8 @@ func validateSignalDetection(m map[string]any, index int) (SignalDetection, erro
 		Signal:           signal,
 		WhyItMatters:     why,
 		ResearchQuestion: question,
+		Unknown:          unknown,
+		Verification:     verification,
 		EvidenceRefs:     refs,
 		Score:            int(scoreFloat),
 		Rationale:        rationale,
@@ -366,6 +391,25 @@ func (s *SignalDiscoveryService) DiscoverSignals(ctx context.Context, boardID ui
 		return nil, &SignalStageError{Stage: SignalStageDetect, Err: err}
 	}
 
+	// question-v1 冻结（D2）：detect 选出候选后才从本地按关联取样冻结有界正
+	// 文——正文不进入 detect 输入，不逐篇调用模型，不抓网页。数据库读写失败
+	// 是 save 错误：整批失败，不以「没原文」掩盖 DB 故障。
+	material.ResearchContract = SignalResearchContractQuestionV1
+	sectionIDs, sectionLane := signalMaterialSectionIndex(material)
+	articles, badThreads, aerr := LoadSignalSourceArticles(ctx, s.builder.db, boardID, sectionIDs, sectionLane)
+	if aerr != nil {
+		return nil, &SignalStageError{Stage: SignalStageSave, Err: fmt.Errorf("load frozen sources: %w", aerr)}
+	}
+	freeze := FreezeSignalQuestionSources(material, detections, articles, s.now())
+	material.Sources = freeze.Sources
+	for _, g := range freeze.Gaps {
+		material.Gaps = append(material.Gaps, SignalMaterialGap{Reason: g})
+	}
+	// L5：损坏的 related_article_ids 行按缺失处理，但必须可见（不静默）。
+	if badThreads > 0 {
+		material.Gaps = append(material.Gaps, SignalMaterialGap{Reason: fmt.Sprintf("有 %d 条 thread 的 related_article_ids 损坏，相关文章按缺失处理", badThreads)})
+	}
+
 	// save 不报 phase：phase 枚举只有 prepare|detect|research|compose；
 	// save 失败经 SignalStageError 落 error_stage。
 	snapshot, err := json.Marshal(material)
@@ -375,6 +419,17 @@ func (s *SignalDiscoveryService) DiscoverSignals(ctx context.Context, boardID ui
 	candidates, err := SignalDetectionsToCandidates(detections)
 	if err != nil {
 		return nil, &SignalStageError{Stage: SignalStageSave, Err: err}
+	}
+	// brief 逐候选挂接（unknown/verification 来自校验后 detect；source_ids
+	// 来自代码核实的冻结关联——模型自报的 id 不进白名单）。
+	for i := range candidates {
+		if i < len(freeze.Briefs) && freeze.Briefs[i] != nil {
+			bj, bjErr := freeze.Briefs[i].ToJSON()
+			if bjErr != nil {
+				return nil, &SignalStageError{Stage: SignalStageSave, Err: bjErr}
+			}
+			candidates[i].ResearchBrief = bj
+		}
 	}
 	batch := &repository.BoardSignalDiscovery{
 		SemanticBoardID: boardID,

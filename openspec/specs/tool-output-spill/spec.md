@@ -1,3 +1,5 @@
+<!-- domain: harness -->
+
 # tool-output-spill Specification
 
 ## Purpose

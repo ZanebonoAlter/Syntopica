@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, daily-report, topic-graph -->
+
 # topic-watch
 
 ## Purpose

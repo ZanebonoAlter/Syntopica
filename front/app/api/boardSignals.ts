@@ -132,6 +132,9 @@ export interface SignalCandidateRow {
   research_question: string;
   /** 新闻依据＝候选白名单里的新闻切片 ID（展示用，不跳转）。 */
   evidence_refs: string[];
+  /** question-v1 研究简要（还不清楚什么/准备先查什么/冻结来源 id）；旧候选
+   * NULL=缺省兼容，不猜填。 */
+  research_brief?: SignalResearchBrief | null;
   /** 1~10 内部阈值分：不展示为可信度/收益预测。 */
   score: number;
   rationale: string;
@@ -143,6 +146,41 @@ export interface SignalCandidateRow {
   /** 上次研究进展摘要（tasks 4.7「断了不能白跑」）：候选从未研究过 → null。
    * 研究失败错误提示从这里读「已保留 N 轮进展」。 */
   last_research_progress: SignalResearchProgressSummary | null;
+  /** 忽略标记（redesign-enrichment-research-workbench）：null=未忽略。 */
+  ignored_at?: string | null;
+}
+
+/** 相关话题（2.3：从冻结材料解析，可验证归属； archived 也可返回）。 */
+export interface SignalRelatedTopic {
+  topic_id: number;
+  label: string;
+  frozen_label: string;
+  frozen_status: string;
+  section_ids: number[];
+}
+
+/** 候选详情（GET /signals/:id）：字段来源与列表一致，外加忽略标记/研究进展/
+ * 冻结边界与相关话题（零 LLM）。 */
+export interface SignalCandidateDetail extends SignalCandidateRow {
+  discovery_id: number;
+  cutoff: string;
+  analysis_mode: string;
+  /** 发现时冻结的研究协议（question-v1 / 空=旧协议）；未知协议拒绝研究。 */
+  research_contract?: string;
+  ignored_at: string | null;
+  related_topics: SignalRelatedTopic[];
+  related_gaps: string[];
+  last_research: {
+    job_id: string;
+    rounds_done: number;
+    source_calls: number;
+    calculation_calls: number;
+    ledger: unknown;
+    status: string;
+    stop_reason: string | null;
+    error: string | null;
+    updated_at: string;
+  } | null;
 }
 
 /** 候选行/列表内的进展摘要（不含 ledger 全量账本）。 */
@@ -193,6 +231,8 @@ export interface SignalSnapshot {
 export interface SignalReportSection {
   kind: "thesis" | "facts" | "causal" | "implication";
   text: string;
+  /** ── schema3：受控块（存在时优先渲染；text 为代码生成的兼容文本）── */
+  blocks?: SignalReportBlock[];
   /** ── 仅 implication ── */
   verdict?: string;
   /** up|down|diverge|conditional。 */
@@ -200,6 +240,34 @@ export interface SignalReportSection {
   horizon?: string;
   trigger_condition?: string;
   self_doubt?: string;
+}
+
+/** schema3 受控块：仅三种平面类型（paragraph|evidence_table|chart），不嵌套。 */
+export interface SignalReportBlock {
+  type: "paragraph" | "evidence_table" | "chart" | string;
+  text?: string;
+  title?: string;
+  rows?: SignalReportEvidenceRow[];
+  chart_id?: string;
+}
+
+/** 证据表行：label 不含数值；值由前端从 appendix 渲染。 */
+export interface SignalReportEvidenceRow {
+  label: string;
+  refs: string[];
+}
+
+/** schema3 机械分源时效（代码生成，非模型产物）。 */
+export interface SignalReportSourceFreshness {
+  tool: string;
+  latest?: string;
+}
+
+export interface SignalReportDataFreshness {
+  sources: SignalReportSourceFreshness[];
+  cutoff: string;
+  generated_at: string;
+  has_observations: boolean;
 }
 
 export interface SignalReportChart {
@@ -259,6 +327,50 @@ export interface SignalAppendixGap {
   reason: string;
 }
 
+/** question-v1 候选研究简要（还不清楚什么/准备先查什么/冻结来源 id）。 */
+export interface SignalResearchBrief {
+  unknown: string;
+  verification: string;
+  source_ids: string[];
+}
+
+/** question-v1 报告答题范围：模型基于本次证据的回答程度声明（非可信度、
+ * 非 job 状态）；explained=已解释、partial=部分回答、unresolved=暂无法判断。 */
+export interface SignalReportAnswer {
+  status: "explained" | "partial" | "unresolved" | string;
+  reason: string;
+  unanswered?: string[];
+}
+
+/** question-v1 已读文字证据（appendix.sources 行）：本地冻结 nN / 外部网页
+ * wN；搜索摘要永不进入此集合。 */
+export interface SignalAppendixSource {
+  id: string;
+  kind: "local_article" | "web_page" | string;
+  title: string;
+  url?: string;
+  final_url?: string;
+  published_at?: string | null;
+  published_from?: string;
+  captured_at?: string;
+  fetched_at?: string;
+  text: string;
+  hash: string;
+  truncated: boolean;
+  original_runes: number;
+  temporal_note?: string;
+}
+
+/** question-v1 检索/读取调用流水（appendix.text_calls 行）。 */
+export interface SignalTextCall {
+  tool: "web_search" | "read_source" | "fetch_page" | string;
+  kind: string;
+  target?: string;
+  status: "ok" | "error" | "rejected" | string;
+  error?: string;
+  at: string;
+}
+
 export interface SignalReportGenerationMeta {
   session_id: string;
   attempts: number;
@@ -273,9 +385,9 @@ export interface SignalReportGenerationMeta {
   cutoff: string;
 }
 
-/** sectors payload（schema_version=2）：报告本体 + 代码生成附录 + 真实计数。 */
+/** sectors payload：报告本体 + 代码生成附录 + 真实计数。schema2=四段文本；schema3 另有受控块与 data_freshness。 */
 export interface SignalReportPayload {
-  schema_version: number; // 2
+  schema_version: number; // 2 | 3
   signal_snapshot: SignalSnapshot;
   report: {
     title: string;
@@ -286,8 +398,16 @@ export interface SignalReportPayload {
     calls: SignalAppendixCall[];
     calculations: SignalCalculation[];
     gaps: SignalAppendixGap[];
+    /** question-v1：已读文字证据与检索/读取流水（旧载荷缺省）。 */
+    sources?: SignalAppendixSource[];
+    text_calls?: SignalTextCall[];
   };
   generation_meta: SignalReportGenerationMeta;
+  /** 仅 schema3：机械分源时效（非模型产物）。 */
+  data_freshness?: SignalReportDataFreshness;
+  /** question-v1：研究协议与答题范围（旧 schema2/schema3 缺省可读）。 */
+  research_contract?: string;
+  answer?: SignalReportAnswer;
 }
 
 // ── 报告列表/详情行 ─────────────────────────────────────────────────────────
@@ -312,12 +432,16 @@ export interface SignalReportDetail extends SignalReportRow {
   input_snapshot?: unknown;
 }
 
-/** 列表查询参数（before_id 游标排他；limit 默认 20 最大 100）。 */
+/** 列表查询参数（before_id 游标排他；limit 默认 20 最大 100）。visibility：
+ * visible=无忽略标记 / ignored=已忽略 / all=不筛（旧客户端省略参数的兼容语义）。 */
 export interface SignalListParams {
   granularity: SignalGranularity;
   period: string;
   before_id?: number;
   limit?: number;
+  visibility?: "visible" | "ignored" | "all";
+  /** view 筛选（R-2）：pending=无成功报告（剔 live 研究候选）、readable=存在成功报告；省略 all。 */
+  view?: "all" | "pending" | "readable";
 }
 
 // ── API factory ─────────────────────────────────────────────────────────────
@@ -363,7 +487,11 @@ export function useBoardSignalsApi() {
   async function getBoardAnalysisStatus(
     boardId: number,
   ): Promise<ApiResponse<SignalAnalysisJobStatus>> {
-    return apiClient.get(`${boardBase(boardId)}/enrichment/analysis-status`);
+    // R-16：真实路由是根级 /enrichment/analysis-status?scope=board&id=（板块级
+    // 子路径后端从未注册，旧实现一直 404 静默失败——刷新/重进恢复不可用）。
+    return apiClient.get(
+      `/enrichment/analysis-status?scope=board&id=${boardId}`,
+    );
   }
 
   /** 候选最近研究进展全量（tasks 4.7）。候选不存在/跨板块 → 404；
@@ -403,6 +531,27 @@ export function useBoardSignalsApi() {
     );
   }
 
+  /** 候选详情（含 ignored_at/相关话题/冻结边界；分页外选中项用）。404 跨板块/不存在。 */
+  async function getSignalCandidate(
+    boardId: number,
+    candidateId: number,
+  ): Promise<ApiResponse<SignalCandidateDetail>> {
+    return apiClient.get(`${boardBase(boardId)}/signals/${candidateId}`);
+  }
+
+  /** 候选忽略/恢复（幂等；零 LLM）。400 非法 body；404 跨板块/不存在；
+   * 409 同板块任务在跑（运行中的忽略不可达）。 */
+  async function putSignalDisposition(
+    boardId: number,
+    candidateId: number,
+    ignored: boolean,
+  ): Promise<ApiResponse<{ candidate_id: number; ignored: boolean; ignored_at: string | null }>> {
+    return apiClient.put(
+      `${boardBase(boardId)}/signals/${candidateId}/disposition`,
+      { ignored },
+    );
+  }
+
   return {
     triggerSignalDiscovery,
     listSignalCandidates,
@@ -412,6 +561,8 @@ export function useBoardSignalsApi() {
     listSignalReports,
     getSignalReport,
     getSignalJobStatus,
+    getSignalCandidate,
+    putSignalDisposition,
   };
 }
 

@@ -1,0 +1,5 @@
+schema: syntopica-ui
+created: 2026-11-26
+# 4 个旧 capability 的 Requirement 迁入 board-upgrade（就地扩容）与 board-api。
+# 空 spec 校验失败会整次中止归档，必须显式授权退役。
+retire_capabilities: true

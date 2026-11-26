@@ -80,6 +80,52 @@ describe("useBoardEnrichmentApi — endpoint contracts (data-enrichment P6)", ()
 				"/persistent-topics/7/enrichment/contexts/year/regenerate?period=2025",
 			);
 		});
+
+		// ── 可选归属校验参数 semanticBoardId（redesign-enrichment-research-workbench 4.3）──
+		it("listContexts(board) → GET .../contexts?granularity=week&semantic_board_id=5（追加归属校验参数）", async () => {
+			const api = useBoardEnrichmentApi();
+			await api.listContexts(7, "week", 5);
+			expect(getMock).toHaveBeenCalledWith(
+				"/persistent-topics/7/enrichment/contexts?granularity=week&semantic_board_id=5",
+			);
+		});
+
+		it("listContexts(仅 board) → GET .../contexts?semantic_board_id=5（无粒度过滤时也拼归属参数）", async () => {
+			const api = useBoardEnrichmentApi();
+			await api.listContexts(7, undefined, 5);
+			expect(getMock).toHaveBeenCalledWith(
+				"/persistent-topics/7/enrichment/contexts?semantic_board_id=5",
+			);
+		});
+
+		it("getContext(board) → GET .../contexts/:granularity/:period?semantic_board_id=5", async () => {
+			const api = useBoardEnrichmentApi();
+			await api.getContext(7, "week", "2026-W27", 5);
+			expect(getMock).toHaveBeenCalledWith(
+				"/persistent-topics/7/enrichment/contexts/week/2026-W27?semantic_board_id=5",
+			);
+		});
+
+		it("updateContext(board) → PUT .../contexts/:granularity/:period?semantic_board_id=5，body 不变", async () => {
+			const api = useBoardEnrichmentApi();
+			await api.updateContext(7, "month", "2026-06", { content: "hello" }, 5);
+			expect(putMock).toHaveBeenCalledWith(
+				"/persistent-topics/7/enrichment/contexts/month/2026-06?semantic_board_id=5",
+				{ content: "hello" },
+			);
+		});
+
+		it("regenerateContext(period+board) → POST ...?period=…&semantic_board_id=5；仅 board 时省略 period 段", async () => {
+			const api = useBoardEnrichmentApi();
+			await api.regenerateContext(7, "year", "2025", 5);
+			expect(postMock).toHaveBeenCalledWith(
+				"/persistent-topics/7/enrichment/contexts/year/regenerate?period=2025&semantic_board_id=5",
+			);
+			await api.regenerateContext(7, "year", undefined, 5);
+			expect(postMock).toHaveBeenCalledWith(
+				"/persistent-topics/7/enrichment/contexts/year/regenerate?semantic_board_id=5",
+			);
+		});
 	});
 
 	// ── Table 2: topic_enrichment_result (topic dimension) ──────────────────

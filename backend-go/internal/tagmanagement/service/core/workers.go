@@ -36,7 +36,7 @@ var embQueueSvc *EmbeddingQueueService
 var embQueueOnce sync.Once
 
 func StartEmbeddingQueueWorker() {
-	embQueueOnce.Do(func() { embQueueSvc = NewEmbeddingQueueService(nil) })
+	embQueueOnce.Do(func() { embQueueSvc = NewEmbeddingQueueService(logging.NewZapLogger()) })
 	embQueueSvc.Start()
 }
 

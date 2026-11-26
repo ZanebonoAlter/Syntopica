@@ -106,7 +106,7 @@ func TestModelTagConstraints_MaterializedInDB(t *testing.T) {
 		{"semantic_labels", "aliases", false, "["},           // default '[]'::jsonb
 		{"semantic_labels", "context_layers", false, "week"}, // default array contains "week"
 		{"topic_tag_board_labels", "score", true, "0"},
-		{"topic_tag_board_labels", "downgraded", true, "false"},
+		// downgraded 列已于 2026-11-12 随 retire-downgraded-mount 退役删除
 		{"topic_tag_board_labels", "direction_mismatch", true, "false"},
 	}
 

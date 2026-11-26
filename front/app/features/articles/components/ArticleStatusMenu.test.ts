@@ -230,4 +230,78 @@ describe('ArticleStatusMenu', () => {
     expect(wrapper.find('.asm-status-pop').exists()).toBe(false)
     expect(wrapper.find('.asm-menu-pop').exists()).toBe(true)
   })
+
+  // ===== 人工标记疑似 AI（add-ai-generated-article-detection）=====
+
+  it('手动操作组含「标记为疑似 AI 生成」与「取消疑似 AI 标记」两项，点击分别发出 suspect / not_ai', async () => {
+    const onDetection = vi.fn()
+    const wrapper = mount(ArticleStatusMenu, {
+      props: baseProps({ showManualDetectionAction: true }),
+      attrs: { onManualAiDetection: onDetection },
+    })
+    await wrapper.find('[aria-label="更多操作"]').trigger('click')
+    const menu = wrapper.find('.asm-menu-pop')
+    expect(menu.text()).toContain('标记为疑似 AI 生成')
+    expect(menu.text()).toContain('取消疑似 AI 标记')
+
+    const items = wrapper.findAll('.asm-menu-item')
+    // 菜单尾三顶：标记 / 取消 / 重判（review R-6 新增第三项）
+    const mark = items[items.length - 3]!
+    const unmark = items[items.length - 2]!
+    expect(mark.find('.icon-stub').attributes('data-icon')).toBe('mdi:robot-outline')
+    expect(unmark.find('.icon-stub').attributes('data-icon')).toBe('mdi:check-circle-outline')
+
+    await mark.trigger('click')
+    expect(onDetection).toHaveBeenCalledTimes(1)
+    expect(onDetection).toHaveBeenCalledWith('suspect')
+
+    await unmark.trigger('click')
+    expect(onDetection).toHaveBeenCalledTimes(2)
+    expect(onDetection).toHaveBeenCalledWith('not_ai')
+  })
+
+  it('人工标记失败走菜单内联错误位（不弹窗、不做整页错误）', async () => {
+    const wrapper = mount(ArticleStatusMenu, {
+      props: baseProps({ showManualDetectionAction: true, manualActionError: '标记失败：服务不可用' }),
+    })
+    await wrapper.find('[aria-label="更多操作"]').trigger('click')
+    const errors = wrapper.findAll('.asm-menu-error')
+    expect(errors.length).toBe(1)
+    expect(errors[0]!.text()).toContain('标记失败：服务不可用')
+  })
+
+  it('人工标记项默认不出现（宿主显式开才渲染）', async () => {
+    const wrapper = mount(ArticleStatusMenu, { props: baseProps() })
+    await wrapper.find('[aria-label="更多操作"]').trigger('click')
+    expect(wrapper.find('.asm-menu-pop').text()).not.toContain('疑似 AI')
+  })
+
+  // ===== 显式重新判定（review R-6）=====
+
+  it('第三项「交由模型重新判定」：渲染 + 点击发出 recheck 事件（不直接改判定字段）', async () => {
+    const onRecheck = vi.fn()
+    const wrapper = mount(ArticleStatusMenu, {
+      props: baseProps({ showManualDetectionAction: true }),
+      attrs: { onRecheckAiDetection: onRecheck },
+    })
+    await wrapper.find('[aria-label="更多操作"]').trigger('click')
+    const items = wrapper.findAll('.asm-menu-item')
+    const recheck = items[items.length - 1]!
+    expect(recheck.text()).toBe('交由模型重新判定')
+    expect(recheck.find('.icon-stub').attributes('data-icon')).toBe('mdi:refresh')
+
+    await recheck.trigger('click')
+    expect(onRecheck).toHaveBeenCalledTimes(1)
+  })
+
+  it('重判 pending 时按钮置灰（不重复入队）', async () => {
+    const wrapper = mount(ArticleStatusMenu, {
+      props: baseProps({ showManualDetectionAction: true, manualRecheckLoading: true }),
+    })
+    await wrapper.find('[aria-label="更多操作"]').trigger('click')
+    const items = wrapper.findAll('.asm-menu-item')
+    const recheck = items[items.length - 1]!
+    expect(recheck.text()).toBe('交由模型重新判定')
+    expect(recheck.attributes('disabled')).toBeDefined()
+  })
 })

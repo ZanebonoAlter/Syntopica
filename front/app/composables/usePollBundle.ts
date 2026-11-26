@@ -38,6 +38,8 @@ interface PollStates {
   aiHealthRoutes: Ref<SchedulerAIHealthRoute[]>
   tagQueueStatus: Ref<{ pending: number; processing: number; completedToday: number; failed: number }>
   tagQueueLastReconciledAt: Ref<number>
+  embeddingQueueStatus: Ref<{ pending: number; processing: number; completedToday: number; failed: number }>
+  embeddingQueueReady: Ref<boolean>
   unreadCount: Ref<number>
   browsingSessionActive: Ref<boolean>
   lastFeedbackAt: Ref<number>
@@ -70,6 +72,15 @@ function bindStates(): PollStates {
         failed: 0,
       })),
       tagQueueLastReconciledAt: useState<number>('tag-queue-progress:last', () => 0),
+      // embedding 队列（单位：标签）——日报双队列清空判据的第二环。
+      embeddingQueueStatus: useState('embedding-queue-progress:status', () => ({
+        pending: 0,
+        processing: 0,
+        completedToday: 0,
+        failed: 0,
+      })),
+      // 响应里带 embedding_queue 段才算 ready（旧后端无该段 → 不断言已清空）。
+      embeddingQueueReady: useState<boolean>('embedding-queue-progress:ready', () => false),
       unreadCount: useState<number>('notifications:unread-count', () => 0),
       // 浏览会话标记（useNotifications 定义）：面板开着时对账不回写未读数，
       // 避免 markAllRead 落库失败（fail-open）时角标在浏览会话内闪烁回跳。
@@ -156,6 +167,18 @@ async function reconcile(): Promise<boolean> {
         failed: response.data.tag_queue.failed ?? 0,
       }
       s.tagQueueLastReconciledAt.value = Date.now()
+    }
+    // embedding 队列计数（单位：标签）——日报生成的双队列清空判据需要它：
+    // 只给标签队列会让人误以为「队列已清空」→ 定时任务应该已经出报错了。
+    // 段缺失时保持旧值 + ready=false（不产出「已清空」结论）。
+    if (response.data.embedding_queue) {
+      s.embeddingQueueStatus.value = {
+        pending: response.data.embedding_queue.pending ?? 0,
+        processing: response.data.embedding_queue.processing ?? 0,
+        completedToday: response.data.embedding_queue.completed_today ?? 0,
+        failed: response.data.embedding_queue.failed ?? 0,
+      }
+      s.embeddingQueueReady.value = true
     }
     // 未读数：浏览会话内跳过回写（见 browsingSessionActive 注释）
     if (response.data.notifications && !s.browsingSessionActive.value) {

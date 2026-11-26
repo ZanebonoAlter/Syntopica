@@ -84,7 +84,7 @@ func TestCreateSignalDiscoveryBatchAtomicSave(t *testing.T) {
 
 	// Rows exist with owner/period stamped from the batch; discovery time
 	// comes from the batch row (S1: 发现时间来自批次).
-	stored, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", 0, 20)
+	stored, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", 0, 20, repository.SignalVisibilityAll, repository.SignalCandidateViewAll, 0)
 	require.NoError(t, err)
 	require.Len(t, stored, 2)
 	require.Equal(t, discovery.ID, stored[0].DiscoveryID)
@@ -133,7 +133,7 @@ func TestCreateSignalDiscoveryBatchZeroCandidates(t *testing.T) {
 	count, err := repo.CountSignalDiscoveriesByPeriod(ctx, boardID, "month", "2026-08")
 	require.NoError(t, err)
 	require.Equal(t, int64(1), count)
-	list, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", 0, 20)
+	list, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", 0, 20, repository.SignalVisibilityAll, repository.SignalCandidateViewAll, 0)
 	require.NoError(t, err)
 	require.Len(t, list, 1, "empty new batch must not clear existing candidates")
 }
@@ -163,7 +163,7 @@ func TestCreateSignalDiscoveryBatchDedupesWithinBatchOnly(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, 0, deduped2)
-	list, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", 0, 20)
+	list, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", 0, 20, repository.SignalVisibilityAll, repository.SignalCandidateViewAll, 0)
 	require.NoError(t, err)
 	require.Len(t, list, 4, "re-discovery appends a new batch instead of overwriting")
 }
@@ -239,17 +239,17 @@ func TestListSignalCandidatesByPeriodCursorAndFilter(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	list, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", 0, 20)
+	list, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", 0, 20, repository.SignalVisibilityAll, repository.SignalCandidateViewAll, 0)
 	require.NoError(t, err)
 	require.Len(t, list, 2)
 	require.Greater(t, list[0].ID, list[1].ID, "newest batch first")
 
 	// Cursor: before_id = head candidate's id drops it.
-	page1, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", list[0].ID, 20)
+	page1, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", list[0].ID, 20, repository.SignalVisibilityAll, repository.SignalCandidateViewAll, 0)
 	require.NoError(t, err)
 	require.Len(t, page1, 1)
 	// Cursor past the tail → empty page.
-	page2, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", list[1].ID, 20)
+	page2, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", list[1].ID, 20, repository.SignalVisibilityAll, repository.SignalCandidateViewAll, 0)
 	require.NoError(t, err)
 	require.Empty(t, page2)
 
@@ -271,4 +271,54 @@ func TestSignalEvidenceRefHelpers(t *testing.T) {
 	require.Equal(t, a, b)
 	require.NotEqual(t, a, repository.ComputeSignalCandidateDedupeKey("同一 标题", []string{"a:1"}))
 	require.Len(t, a, 64)
+}
+
+// view 筛选（redesign-enrichment-research-workbench R-2）：pending=无成功报告、
+// readable=存在成功报告（SQL EXISTS 分页前过滤）；excludeCandidateID 剔除 live
+// 研究候选（handler 传入）；省略 view=all 兼容旧客户端。
+func TestListSignalCandidatesByPeriodViewFilter(t *testing.T) {
+	repo := setupSignalCandidateDB(t)
+	ctx := context.Background()
+	boardID := uint(93151)
+
+	withReport := signalCandidate(boardID, "已有报告的候选", []string{"article:1"})
+	noReport := signalCandidate(boardID, "纯待研究候选", []string{"article:2"})
+	discovery := newSignalDiscovery(boardID, "2026-08", "signal-view-filter")
+	persisted, _, err := repo.CreateSignalDiscoveryBatch(ctx, discovery, []*repository.BoardSignalCandidate{withReport, noReport})
+	require.NoError(t, err)
+	require.Len(t, persisted, 2)
+	var reported *repository.BoardSignalCandidate
+	for _, c := range persisted {
+		if c.Signal == "已有报告的候选" {
+			reported = c
+		}
+	}
+	require.NotNil(t, reported)
+	// 给「已有报告的候选」落一条成功报告（真实 result 行驱动 EXISTS）。
+	require.NoError(t, repo.DB().Exec(`INSERT INTO topic_enrichment_result
+		(semantic_board_id, analysis_scope, result_kind, sectors, session_id, granularity, period, source_signal_id)
+		VALUES (?, 'board', 'signal_report', '{}'::jsonb, 'signal-view-filter-report', 'month', '2026-08', ?)`,
+		boardID, reported.ID).Error)
+
+	pending, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", 0, 20, repository.SignalVisibilityVisible, repository.SignalCandidateViewPending, 0)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	require.Equal(t, noReport.ID, pending[0].ID)
+
+	readable, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", 0, 20, repository.SignalVisibilityVisible, repository.SignalCandidateViewReadable, 0)
+	require.NoError(t, err)
+	require.Len(t, readable, 1)
+	require.Equal(t, reported.ID, readable[0].ID, "重研中（live job）不影响 readable 存在成功报告的语义")
+
+	// live 候选排除：pending 视图剔除正在研究的候选。
+	pendingExcluded, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", 0, 20, repository.SignalVisibilityVisible, repository.SignalCandidateViewPending, noReport.ID)
+	require.NoError(t, err)
+	require.Empty(t, pendingExcluded)
+
+	all, err := repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", 0, 20, repository.SignalVisibilityVisible, repository.SignalCandidateViewAll, 0)
+	require.NoError(t, err)
+	require.Len(t, all, 2)
+
+	_, err = repo.ListSignalCandidatesByPeriod(ctx, boardID, "month", "2026-08", 0, 20, repository.SignalVisibilityVisible, "bogus", 0)
+	require.Error(t, err)
 }

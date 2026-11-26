@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { Icon } from '@iconify/vue'
 import { useSemanticBoardsApi, type SemanticBoard } from '~/api/semanticBoards'
 import { useDailyReportsApi } from '~/api/dailyReports'
 import { useDailyReportProgress } from '~/composables/useDailyReportProgress'
+import { todayKey } from '~/utils/todayKey'
 
 const props = defineProps<{
   visible: boolean
@@ -12,6 +13,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   cancel: []
+  /** 生成真实完成（进度 done 首次为 true）；壳层据此刷新元信息与 A 档。 */
+  completed: []
 }>()
 
 const show = computed({
@@ -22,7 +25,13 @@ const show = computed({
 const { generateDailyReport } = useDailyReportsApi()
 const { progress, done, totalSaved, totalBoards, reset } = useDailyReportProgress()
 
-const selectedDate = ref(new Date().toISOString().slice(0, 10))
+watch(done, (value, previous) => {
+  if (value && !previous) emit('completed')
+})
+
+// 默认日期用**本地**日（todayKey）——`toISOString()` 是 UTC 截断，在 UTC+8 的
+// 00:00–08:00 会得到「昨天」（默认日期落在昨天 = 生成窗口错一天）。
+const selectedDate = ref(todayKey())
 const selectedBoardId = ref<number | null>(null) // null = all
 const generating = ref(false)
 const jobId = ref<string | null>(null)

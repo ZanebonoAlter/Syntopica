@@ -1,0 +1,557 @@
+/* 归档视图样式（rework-workshop-into-radar-and-desk 8G.3c，2026-10-31 归档重做）。
+   语言：报刊风——暖纸/墨线（主题 token 承接）、栏线分组、mono 时间与分数，
+   行四列「时间 | 主体 | 最强匹配 | 状态」。 */
+
+.archive {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 0 var(--space-6);
+}
+
+/* deck 行（v11 / FB-14）：一行计数 + 已入比例条 + 口径小字。
+   不再做四格卡片 + serif 大数字：那条与列表的密排语言分行，也和下方 chip 计数重复。 */
+.ar-deck {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0 0 0.45rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.ar-deck-nums {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.55rem;
+  font-size: 0.76rem;
+  color: var(--color-text-muted);
+}
+.ar-deck-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.ar-deck-date,
+.ar-deck-total {
+  font-family: var(--font-mono, monospace);
+  color: var(--color-text-primary);
+}
+.ar-deck-dot {
+  color: var(--color-border-medium);
+}
+.ar-deck-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.ar-deck-num {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.ar-deck-rule {
+  width: 1px;
+  height: 0.85rem;
+  background: var(--color-border-medium);
+}
+.ar-deck-bar {
+  display: inline-block;
+  width: 6.5rem;
+  height: 5px;
+  border-radius: 2px;
+  background: var(--color-border-subtle);
+  overflow: hidden;
+}
+.ar-deck-bar i {
+  display: block;
+  height: 100%;
+  background: var(--color-success, var(--color-match-direct-hit));
+}
+.ar-deck-pct {
+  font-family: var(--font-mono, monospace);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+}
+.ar-deck-hint {
+  font-size: 0.68rem;
+  opacity: 0.85;
+}
+.ar-deck-note {
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--color-text-muted);
+}
+
+.ar-list-head,
+.ar-toolbar,
+.ar-toolbar-leading,
+.ar-active-filters,
+.ar-deck-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px clamp(8px, 1vw, 16px);
+}
+.ar-list-head,
+.ar-toolbar {
+  justify-content: space-between;
+}
+.ar-list-head {
+  margin-top: clamp(14px, 1.2vw, 22px);
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+}
+.ar-list-head h2 {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.ar-toolbar {
+  margin: 8px 0 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border-medium);
+}
+.ar-active-filters {
+  margin-bottom: 12px;
+}
+.ar-deck-meta .ar-deck-note {
+  margin-right: auto;
+}
+.ar-filters {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.ar-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.65rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ar-chip:hover {
+  color: var(--color-text-primary);
+  border-color: var(--color-text-muted);
+}
+.ar-chip.is-active {
+  background: var(--color-text-primary);
+  border-color: var(--color-text-primary);
+  color: var(--color-bg-base);
+}
+
+/* 时间导航块（archive-time-chart-range）：日期表单 + 主图 + 全历史导航条 */
+.ar-time-nav {
+  margin-top: 10px;
+  min-width: 0;
+}
+.ar-time-nav .orc-feedback:empty { margin: 0; min-height: 0; }
+.ar-time-error {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+/* 筛选 / 匹配流程入口 */
+.ar-gear {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+.ar-gear:hover,
+.ar-gear[aria-expanded="true"] {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.ar-filter-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px clamp(12px, 1.4vw, 24px);
+  padding: 10px clamp(10px, 1.2vw, 16px);
+  margin-bottom: 12px;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 6px;
+}
+.ar-select {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-text-muted);
+  font-size: 0.74rem;
+}
+.ar-select select {
+  flex: 1;
+  max-width: 18rem;
+  padding: 0.25rem 0.35rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 4px;
+  background: var(--color-input-bg);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-size: 0.76rem;
+}
+
+/* 匹配流程说明 */
+.ar-flow-note {
+  margin: 0 0 0.6rem;
+  color: var(--color-text-muted);
+  font-size: 0.74rem;
+  line-height: 1.6;
+}
+.ar-flow-note.is-error {
+  color: var(--color-error);
+}
+.ar-flow-step {
+  padding: 0.45rem 0.1rem;
+  border-top: 1px dotted var(--color-border-subtle);
+}
+.ar-flow-step-head strong {
+  font-size: 0.78rem;
+  color: var(--color-text-primary);
+}
+.ar-flow-step-desc,
+.ar-flow-step-result {
+  margin: 0.15rem 0 0;
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+.ar-flow-step-result {
+  font-family: var(--font-mono, monospace);
+}
+
+/* 状态区 */
+.ar-truncated {
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  color: var(--color-warning);
+}
+.ar-state,
+.ar-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  padding: var(--space-8) var(--space-4);
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  border: 1px dashed var(--color-border-medium);
+  border-radius: var(--radius-md, 6px);
+}
+.ar-state.is-error {
+  color: var(--color-error);
+}
+.ar-empty p {
+  margin: 0;
+  color: var(--color-text-primary);
+}
+.ar-empty small {
+  font-size: 0.74rem;
+}
+.ar-text-btn {
+  border: none;
+  background: none;
+  color: var(--color-accent);
+  cursor: pointer;
+  font-size: 0.8rem;
+  text-decoration: underline;
+}
+.ar-spinner {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid var(--color-border-medium);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: ar-spin 0.8s linear infinite;
+}
+@keyframes ar-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 日期分组 */
+.ar-days {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.ar-day {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--color-bg-base);
+}
+.ar-day-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  padding: 0.45rem 0.75rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-elevated, var(--color-bg-base));
+}
+.ar-day-date {
+  margin: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.ar-day-count,
+.ar-day-sort {
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+}
+.ar-day-weak {
+  font-size: 0.7rem;
+  color: var(--color-warning);
+}
+.ar-day-sort {
+  margin-left: auto;
+}
+
+/* 文章行：四列 */
+.ar-row {
+  display: grid;
+  grid-template-columns: 5.2rem minmax(0, 1fr) 9rem 5.6rem;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  cursor: pointer;
+}
+.ar-row:last-child {
+  border-bottom: 0;
+}
+.ar-row:hover {
+  background: var(--color-bg-hover);
+}
+.ar-row-time {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+.ar-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+  min-width: 0;
+}
+.ar-row-title {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 0.86rem;
+  font-weight: 500;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ar-row-title:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.ar-row-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  min-width: 0;
+}
+.ar-row-feed {
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+.ar-row-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+/* 标签 chip：规则色边框 + 规则色分数；降级半透明；方向不符虚线边 + ⊘ */
+.ar-tag {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  padding: 0.04rem 0.4rem;
+  border: 1px solid;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 0.7rem;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.ar-tag:hover {
+  border-style: solid;
+}
+.ar-tag-score {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.66rem;
+  font-weight: 600;
+}
+.ar-tag-mark {
+  font-size: 0.66rem;
+}
+.ar-tag.is-mismatch {
+  border-style: dashed;
+}
+.ar-tag.is-empty {
+  color: var(--color-text-muted);
+  border: 1px dashed var(--color-border-medium);
+  cursor: default;
+}
+.ar-tag-more {
+  padding: 0.04rem 0.4rem;
+  border: 1px dashed var(--color-border-medium);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+
+/* 入板 chip：虚线边区分于普通标签 */
+.ar-flow-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  padding: 0.04rem 0.4rem;
+  border: 1px dashed;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.7rem;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.ar-flow-chip:hover {
+  border-style: solid;
+}
+.ar-flow-no {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+/* 疑似 AI 生成标记（add-ai-generated-article-detection）：标签带末尾的静态中性标记。
+   与规则色标签体系分离——不注入 --color-match-*、不参与「入板」步号、不可点击；
+   仅 suspect 渲染，未判定与已确认非 AI 不占位。 */
+.ar-suspect-chip {
+  display: inline-flex;
+  align-items: baseline;
+  padding: 0.04rem 0.4rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  font-size: 0.7rem;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+/* 最强匹配列 */
+.ar-row-strongest {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.1rem;
+  text-align: right;
+}
+.ar-strongest-rule {
+  font-size: 0.66rem;
+  color: var(--color-text-muted);
+}
+.ar-strongest-value {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+/* 状态列 */
+.ar-row-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.ar-row-status .is-in {
+  color: var(--color-success, var(--color-match-direct-hit));
+}
+.ar-row-status .is-out {
+  color: var(--color-text-muted);
+}
+.ar-row-status .is-weak-flag {
+  color: var(--color-warning);
+  font-size: 0.66rem;
+}
+
+/* 窄屏（<768px）：deck 折行、比例条缩窄，行线性化，最强匹配隐藏，标签带次行横滚 */
+@media (max-width: 767.98px) {
+  .ar-deck-nums {
+    gap: 0.3rem 0.45rem;
+  }
+  .ar-deck-bar {
+    width: 4.5rem;
+  }
+  .ar-toolbar .ar-gear,
+  .ar-toolbar .ar-chip,
+  .ar-select select {
+    min-height: 2rem;
+  }
+  .ar-filter-form .ar-select {
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+  .ar-filter-form select {
+    min-width: 0;
+  }
+  .ar-row {
+    grid-template-columns: minmax(0, 1fr) 5rem;
+    gap: 0.4rem;
+  }
+  .ar-row-time {
+    grid-column: 1 / -1;
+    order: -1;
+    font-size: 0.68rem;
+  }
+  .ar-row-strongest {
+    display: none;
+  }
+  .ar-row-sub {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+  .ar-row-status {
+    align-self: start;
+  }
+}

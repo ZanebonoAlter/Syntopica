@@ -36,6 +36,7 @@
 此外还会启动以下异步队列 worker：
 
 - `tagging.StartAllWorkers()`：统一启动标签相关 worker（标签打标队列、embedding 向量化队列、合并后 re-embedding 队列）
+- `startRepairExecutorFn`（`tagmanagement/service/auxrepair`）：辅助标签描述修复执行器，绑应用生命周期 ctx（关页面不取消已确认任务）；5s 轮询领取 `pending` / 租约过期任务，按 embedding → saving → matching 推进，20s 心跳续租 60s 租约，重启后由租约过期回收续跑；关停时先 cancel 再 join
 
 对应启动逻辑也都在 `StartRuntime()` 里，不存在额外的隐藏入口。
 
@@ -204,16 +205,17 @@
 
 ## 优雅退出怎么做
 
-`SetupGracefulShutdown(runtime, srv)` 监听 `SIGINT` / `SIGTERM`，返回 `done` channel 供 `RunServer` 等待。收到信号后按**固定四步**执行（graceful-shutdown-hardening change 重构；实现见 `backend-go/internal/app/runtime.go`）：
+`SetupGracefulShutdown(runtime, srv)` 监听 `SIGINT` / `SIGTERM`，返回 `done` channel 供 `RunServer` 等待。收到信号后按**固定五步**执行（graceful-shutdown-hardening change 重构、board-health-triage-advice 插入 repair 步；实现见 `backend-go/internal/app/runtime.go`）：
 
 1. **① `srv.Shutdown`（5s 上限）**：先关 listener——**端口立即释放**（不再等进程退出），同时排空在途 HTTP 请求；超时强制关闭（有界优先）
-2. **② `Registry.StopAll(30s)`**（`runtime != nil` 时）：逐个停调度器，上限保持历史值；超时只记 warn
-3. **③ 工作队列停止（外包 10s 上限）**：`tagging.StopAllWorkers()`（tag queue / embedding / merge-reembedding 三队列）在独立 goroutine 里跑，外层 `select` + 10s 兜底；超时只告警不重试（卡死的 worker 随进程退出，队列持久化保证可恢复）。`workers.go` 本体零改动
-4. **④ 耗时汇总**：单行日志 `shutdown steps: http=…s registry=…s workers=…s total=…s`，一次关停即可看清各步构成
+2. **② 描述修复 worker 停止（外包 10s 上限）**：先 `appCancel()` 取消应用生命周期 ctx，再在独立 goroutine 里 `stopRepairExecutorFn()` join worker（DB 释放前不允许还有 worker 在写）；超时只告警、不谎称已 join，也不阻断后续步骤。demo 模式（`runtime == nil`）时 worker 从未启动，本步为 no-op
+3. **③ `Registry.StopAll(30s)`**（`runtime != nil` 时）：逐个停调度器，上限保持历史值；超时只记 warn
+4. **④ 工作队列停止（外包 10s 上限）**：`tagging.StopAllWorkers()`（tag queue / embedding / merge-reembedding 三队列）在独立 goroutine 里跑，外层 `select` + 10s 兜底；超时只告警不重试（卡死的 worker 随进程退出，队列持久化保证可恢复）。`workers.go` 本体零改动
+5. **⑤ 耗时汇总**：单行日志 `shutdown steps: http=…s repair=…s registry=…s workers=…s total=…s`，一次关停即可看清各步构成
 
 任一步 panic / 异常 / 超时都**不阻断后续步骤**（每步独立 recover，失败记 warn）；序列结束 `close(done)` → main 正常 return → defer 链（tracer flush、`logging.Close()`）真实执行。`DEMO_READ_ONLY=1`（`runtime == nil`）跳过 ② 但仍做 HTTP 摘端口与 ③；端口占用等真实启动错误仍走 `logging.Fatalf`（非 0 退出码）。
 
-关停预算：http 5s + registry 30s + workers 10s，但**端口在第一步就释放**（通常 1~2s），容器编排的 SIGTERM 宽限期与 `scripts/dev/start-dev.sh stop` 的观察窗都只关心端口与进程存活。
+关停预算：http 5s + repair 10s + registry 30s + workers 10s，但**端口在第一步就释放**（通常 1~2s），容器编排的 SIGTERM 宽限期与 `scripts/dev/start-dev.sh stop` 的观察窗都只关心端口与进程存活。
 
 ## 读代码建议
 

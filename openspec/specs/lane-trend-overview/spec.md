@@ -1,3 +1,5 @@
+<!-- domain: daily-report, semantic-board -->
+
 # lane-trend-overview Specification
 
 ## Purpose
@@ -37,25 +39,6 @@
 
 - **WHEN** 某档概要文本长度超过单屏可容纳范围
 - **THEN** 该档 SHALL 完整渲染全文（区块内自然滚动），SHALL NOT 出现省略号或硬截断
-
-### Requirement: 14 天档内容与降级
-
-「近 14 天」档 SHALL 展示该泳道滚动 14 天态势的长版叙述；长版缺失时 SHALL 回退展示短版态势句并明确提示长版将随下次日报结算生成；态势快照整体缺失时 SHALL 展示待结算占位且三档切换仍可用。
-
-#### Scenario: 长版就绪
-
-- **WHEN** 该泳道快照含长版叙述
-- **THEN** 14 天档 SHALL 展示长版全文与汇总截止日
-
-#### Scenario: 长版缺失回退
-
-- **WHEN** 该泳道快照仅有短版（存量快照或长版生成未覆盖）
-- **THEN** 14 天档 SHALL 展示短版态势句，并提示长版随下次日报结算生成
-
-#### Scenario: 快照缺失
-
-- **WHEN** 该泳道无态势快照
-- **THEN** 14 天档 SHALL 展示待结算占位，用户仍可切换月/年档
 
 ### Requirement: 月/年档内容与降级
 
@@ -103,3 +86,22 @@
 
 - **WHEN** 某档数据请求进行中
 - **THEN** 该档 SHALL 展示加载提示，SHALL NOT 以空白或旧档内容冒充
+
+### Requirement: 14 天档内容
+
+「近 14 天」档 SHALL 展示该泳道滚动 14 天态势的**单版演进叙事态势句**（快照 `rolling_summary`）全文，SHALL NOT 消费 `rolling_detail`（含存量历史长版）；态势快照整体缺失时 SHALL 展示待结算占位且三档切换仍可用。
+
+#### Scenario: 态势句就绪
+
+- **WHEN** 该泳道快照含态势句
+- **THEN** 14 天档 SHALL 展示态势句全文与汇总截止日
+
+#### Scenario: 存量长版不消费
+
+- **WHEN** 该泳道快照的 `rolling_detail` 含存量历史长版
+- **THEN** 14 天档 SHALL 仅渲染 `rolling_summary`，SHALL NOT 渲染长版，也不展示任何「长版待生成」类提示
+
+#### Scenario: 快照缺失
+
+- **WHEN** 该泳道无态势快照
+- **THEN** 14 天档 SHALL 展示待结算占位，用户仍可切换月/年档

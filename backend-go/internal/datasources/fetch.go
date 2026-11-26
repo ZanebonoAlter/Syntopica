@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"syntopica-backend/internal/platform/httpclient"
 )
 
 // FetchBudget bounds a single HTTP request (design decision 3). Values follow
@@ -19,14 +21,25 @@ type FetchBudget struct {
 	Timeout      time.Duration // total wall-clock budget per request (redirects included)
 	MaxBytes     int64         // streamed response body cap; exceeding aborts
 	MaxRedirects int           // manual redirect hops (same-host https only)
+
+	// Retry429Backoff is the ctx-aware wait before a single code-level retry
+	// when the upstream answers 429 (rate limit). 0 disables the retry. The
+	// retry is deliberately invisible to the research loop: rate-limit
+	// recovery must not spend an LLM turn (2026-10-14 ledger: the model's own
+	// gdelt retry after a 429 still hit the limiter and burned a round).
+	Retry429Backoff time.Duration
 }
 
 // DefaultFetchBudget is the production budget. Timeout is 120s: the JODI
 // annual CSV (~4.76MB) exceeded the original 45s ceiling on the Raspberry Pi
 // behind a proxy (2026-09-19 live smoke); small responses are unaffected
-// (the timeout is a ceiling, not added latency).
+// (the timeout is a ceiling, not added latency). Retry429Backoff 20s: GDELT
+// anonymous tier throttles 1 req/5s per official 429 copy, but observed
+// (2026-10-14) penalty buckets run longer and throttled calls hang 12-14s
+// before the 429 lands — first+backoff+second ≈ 50s stays inside 120s.
 func DefaultFetchBudget() FetchBudget {
-	return FetchBudget{Timeout: 120 * time.Second, MaxBytes: 32 << 20, MaxRedirects: 3}
+	return FetchBudget{Timeout: 120 * time.Second, MaxBytes: 32 << 20, MaxRedirects: 3,
+		Retry429Backoff: 20 * time.Second}
 }
 
 // FetchedDoc is a successfully fetched upstream document. It is what the
@@ -61,17 +74,19 @@ func NewFetcher(allowlist []string, budget FetchBudget) *Fetcher {
 	for _, h := range allowlist {
 		al[normalizeHost(h)] = struct{}{}
 	}
+	c := httpclient.New(httpclient.WithTimeout(budget.Timeout))
+	// 数据增强研究源（EIA/JODI/GDELT 等）不属抓取作用域，强制直连
+	// （GDELT 对代理出口 IP 限流 429，直连实测正常）。若未来出现需代理的
+	// 境外源，给该 client 加 WithCrawlScope 纳入作用域即可。
+	// Manual redirect control: never follow automatically; hops are
+	// validated against the allowlist + https before following.
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	return &Fetcher{
 		allowlist: al,
 		budget:    budget,
-		// Manual redirect control: never follow automatically; hops are
-		// validated against the allowlist + https before following.
-		client: &http.Client{
-			Timeout: budget.Timeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
+		client:    c,
 	}
 }
 
@@ -107,6 +122,7 @@ func (f *Fetcher) Get(ctx context.Context, rawURL string, headers map[string]str
 	defer cancel()
 
 	hops := 0
+	retried429 := false
 	current := rawURL
 	for {
 		if hops > f.budget.MaxRedirects {
@@ -121,7 +137,33 @@ func (f *Fetcher) Get(ctx context.Context, rawURL string, headers map[string]str
 		}
 		resp, err := f.client.Do(req)
 		if err != nil {
-			return nil, Unavailable("fetch", "网络请求失败")
+			// Surface the transport error (timeout / reset / proxy refusal):
+			// the research ledger records Kind+Message only, so the underlying
+			// cause must live in the message to be diagnosable post-mortem
+			// (2026-10-14: bare 「网络请求失败」 hid the GDELT rate-limit hang).
+			return nil, Unavailable("fetch", "网络请求失败: "+err.Error())
+		}
+		// Rate limit (429): one code-level retry after a ctx-aware backoff, so
+		// recovery never costs an LLM turn. A second 429 fails with an explicit
+		// give-up frame — the model must stop spending rounds on this source.
+		if resp.StatusCode == http.StatusTooManyRequests {
+			_ = resp.Body.Close()
+			if !retried429 && f.budget.Retry429Backoff > 0 {
+				retried429 = true
+				select {
+				case <-ctx.Done():
+					return nil, Unavailable("fetch", "限流退避等待被取消: "+ctx.Err().Error())
+				case <-time.After(f.budget.Retry429Backoff):
+				}
+				continue
+			}
+			e := UnavailableStatus("fetch", http.StatusTooManyRequests)
+			if retried429 {
+				e.Message = fmt.Sprintf("上游限流（429）：退避 %s 重试 1 次仍 429，限流窗口长于官方口径，本源本轮放弃、不要重试", f.budget.Retry429Backoff)
+			} else {
+				e.Message = "上游限流（429）：本源本轮放弃、不要重试"
+			}
+			return nil, e
 		}
 		// Manual redirect handling: validate target then loop.
 		if resp.StatusCode >= 300 && resp.StatusCode < 400 {

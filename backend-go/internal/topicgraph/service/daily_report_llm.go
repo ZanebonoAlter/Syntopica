@@ -1,9 +1,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"syntopica-backend/internal/platform/airouter"
@@ -13,7 +15,14 @@ import (
 	"syntopica-backend/internal/topicgraph/repository"
 )
 
-const promptVersion = "5.0"
+// promptVersion records the generation prompt contract on every report. Chain:
+// "3.0" → "4.0" (L2 prompt history isolation) → "5.0" (section display title
+// content-based, 2026-08-29 daily-report-section-title-decouple) → "6.0"
+// (intra-lane theme bucketing, add-intra-lane-theme-bucketing) → "7.0"
+// (story-heat highlights after bounded attribution). Published
+// versions are never reused: ai_call_logs / version audits must be able to tell
+// pre- and post-bucketing reports apart.
+const promptVersion = "7.0" // Story-heat candidates after bounded attribution.
 
 // ---------------------------------------------------------------------------
 // LLM Call A: GenerateHighlights
@@ -33,7 +42,92 @@ const highlightsSystemPrompt = `你是一名专业的新闻分析师。你收到
 2. highlights 是数组，每个元素包含 title（字符串）、reason（字符串）、tag_ids（整数数组）
 3. 只返回合法 JSON，不要 Markdown 代码块或解释文字`
 
+// highlightsOperation is the ai_call_logs operation name of the highlights call.
+const highlightsOperation = "daily_report.highlights"
+
+// highlightsCallCounts carries the tag/cluster counts into the highlights chat
+// hook so its ai_call_logs metadata stays identical to the pre-hook call. The
+// hook signature (ctx, system, user, schema, operation) has no slot for them.
+type highlightsCallCounts struct {
+	tagCount     int
+	clusterCount int
+}
+
+type highlightsCallCountsKey struct{}
+
+func withHighlightsCallCounts(ctx context.Context, tagCount, clusterCount int) context.Context {
+	return context.WithValue(ctx, highlightsCallCountsKey{}, highlightsCallCounts{
+		tagCount:     tagCount,
+		clusterCount: clusterCount,
+	})
+}
+
+func highlightsCallCountsFrom(ctx context.Context) highlightsCallCounts {
+	counts, _ := ctx.Value(highlightsCallCountsKey{}).(highlightsCallCounts)
+	return counts
+}
+
+// highlightsChatFn is the swappable LLM hook for the highlights call. Tests
+// replace it with a fake; the default implementation issues the real airouter
+// call with the pre-hook parameters verbatim (temperature 0.3, maxTokens 2000,
+// JSONMode + JSONSchema, CapabilityDigestPolish, same operation and metadata)
+// so ai_call_logs stays comparable across the change.
+var highlightsChatFn = func(ctx context.Context, system, user string, schema *airouter.JSONSchema, operation string) (string, error) {
+	temperature := 0.3
+	maxTokens := 2000
+	counts := highlightsCallCountsFrom(ctx)
+	result, err := airouter.NewRouter().Chat(ctx, airouter.ChatRequest{
+		Operation:  operation,
+		SessionID:  SessionIDFromContext(ctx),
+		Capability: airouter.CapabilityDigestPolish,
+		Messages: []airouter.Message{
+			{Role: "system", Content: system},
+			{Role: "user", Content: user},
+		},
+		Temperature: &temperature,
+		MaxTokens:   &maxTokens,
+		JSONMode:    true,
+		JSONSchema:  schema,
+		Metadata: map[string]any{
+			"operation":     "daily_report_highlights",
+			"tag_count":     counts.tagCount,
+			"cluster_count": counts.clusterCount,
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return result.Content, nil
+}
+
+// highlightsJSONSchema builds the request schema for the highlights call.
+func highlightsJSONSchema() *airouter.JSONSchema {
+	return &airouter.JSONSchema{
+		Type: "object",
+		Properties: map[string]airouter.SchemaProperty{
+			"highlights": {
+				Type: "array",
+				Items: &airouter.SchemaProperty{
+					Type: "object",
+					Properties: map[string]airouter.SchemaProperty{
+						"title":   {Type: "string", Description: "要闻标题，不超过20字"},
+						"reason":  {Type: "string", Description: "要闻理由，50-100字；须基于所列标签事实，禁止编造"},
+						"tag_ids": {Type: "array", Items: &airouter.SchemaProperty{Type: "integer"}},
+					},
+					Required: []string{"title", "reason", "tag_ids"},
+				},
+			},
+		},
+		Required: []string{"highlights"},
+	}
+}
+
 // GenerateHighlights produces 2-3 highlights for the report.
+//
+// A call failure OR a semantically invalid response (e.g. the model echoing
+// the JSON schema back) is retried once with the same parameters; only two
+// consecutive failures return an error. The caller degrades to empty
+// highlights instead of voiding the whole report.
 func GenerateHighlights(ctx context.Context, tags []repository.TagInput, clusters []repository.ClusterGroup) ([]repository.Highlight, error) {
 	ctx, span := tracing.Tracer(tracing.ServiceName).Start(ctx, "workflow.daily_report.highlights")
 	defer span.End()
@@ -43,56 +137,36 @@ func GenerateHighlights(ctx context.Context, tags []repository.TagInput, cluster
 	}
 
 	prompt := buildHighlightsPrompt(tags, clusters)
+	schema := highlightsJSONSchema()
+	callCtx := withHighlightsCallCounts(ctx, len(tags), len(clusters))
 
-	temperature := 0.3
-	maxTokens := 2000
-	result, err := airouter.NewRouter().Chat(ctx, airouter.ChatRequest{
-		Operation:  "daily_report.highlights",
-		SessionID:  SessionIDFromContext(ctx),
-		Capability: airouter.CapabilityDigestPolish,
-		Messages: []airouter.Message{
-			{Role: "system", Content: highlightsSystemPrompt},
-			{Role: "user", Content: prompt},
-		},
-		Temperature: &temperature,
-		MaxTokens:   &maxTokens,
-		JSONMode:    true,
-		JSONSchema: &airouter.JSONSchema{
-			Type: "object",
-			Properties: map[string]airouter.SchemaProperty{
-				"highlights": {
-					Type: "array",
-					Items: &airouter.SchemaProperty{
-						Type: "object",
-						Properties: map[string]airouter.SchemaProperty{
-							"title":   {Type: "string", Description: "要闻标题，不超过20字"},
-							"reason":  {Type: "string", Description: "要闻理由，50-100字；须基于所列标签事实，禁止编造"},
-							"tag_ids": {Type: "array", Items: &airouter.SchemaProperty{Type: "integer"}},
-						},
-						Required: []string{"title", "reason", "tag_ids"},
-					},
-				},
-			},
-			Required: []string{"highlights"},
-		},
-		Metadata: map[string]any{
-			"operation":     "daily_report_highlights",
-			"tag_count":     len(tags),
-			"cluster_count": len(clusters),
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("highlights AI call failed: %w", err)
+	var lastErr error
+	for attempt := 1; attempt <= 2; attempt++ {
+		content, err := highlightsChatFn(callCtx, highlightsSystemPrompt, prompt, schema, highlightsOperation)
+		if err != nil {
+			lastErr = fmt.Errorf("highlights AI call failed: %w", err)
+			logging.Warnf("daily-report: highlights AI call failed (attempt %d/2): %v", attempt, err)
+			continue
+		}
+
+		logging.Infof("daily-report: highlights LLM response length=%d", len(content))
+		highlights, parseErr := parseHighlightsResponse(content, tags)
+		if parseErr == nil {
+			return highlights, nil
+		}
+		lastErr = parseErr
+		logging.Warnf("daily-report: highlights response rejected (attempt %d/2): %v", attempt, parseErr)
 	}
-
-	logging.Infof("daily-report: highlights LLM response length=%d", len(result.Content))
-	return parseHighlightsResponse(result.Content, tags)
+	return nil, lastErr
 }
 func buildHighlightsPrompt(tags []repository.TagInput, clusters []repository.ClusterGroup) string {
 	var sb strings.Builder
 	sb.WriteString("## 事件标签\n\n")
 	for _, t := range tags {
 		fmt.Fprintf(&sb, "- [ID:%d] %s (文章数:%d)\n", t.ID, t.Label, t.ArticleCount)
+		if t.Description != "" {
+			fmt.Fprintf(&sb, "  事实描述: %s\n", t.Description)
+		}
 		if t.ArticleContext != "" {
 			fmt.Fprintf(&sb, "  代表文章: %s\n", t.ArticleContext)
 		}
@@ -106,14 +180,36 @@ func buildHighlightsPrompt(tags []repository.TagInput, clusters []repository.Clu
 	sb.WriteString("\n请生成 2-3 条当日要闻。\n")
 	return sb.String()
 }
+
+// parseHighlightsResponse parses the highlights LLM response.
+//
+// Legality is decided by the top-level "highlights" key: a response WITHOUT it
+// (e.g. the model echoing the JSON schema back — a valid JSON document whose
+// top-level keys are type/properties/required) is an INVALID response and
+// returns an error. It must never be silently read as "no highlights" — that
+// silent path is what turned into a missing "今日重点" block (see
+// fix-daily-report-highlights-null). A present key holding an empty array is a
+// LEGAL degradation (the fact-anchor rule allows the model to produce
+// nothing) and must not trigger a retry.
 func parseHighlightsResponse(content string, tags []repository.TagInput) ([]repository.Highlight, error) {
 	content = jsonutil.SanitizeLLMJSON(content)
 
-	var raw struct {
-		Highlights []repository.Highlight `json:"highlights"`
-	}
-	if err := json.Unmarshal([]byte(content), &raw); err != nil {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(content), &top); err != nil {
 		return nil, fmt.Errorf("parse highlights JSON: %w", err)
+	}
+	rawHighlights, ok := top["highlights"]
+	if !ok {
+		return nil, fmt.Errorf("parse highlights JSON: response has no top-level %q key (suspected schema echo, top-level keys: %v)",
+			"highlights", jsonTopLevelKeys(top))
+	}
+	if bytes.Equal(bytes.TrimSpace(rawHighlights), []byte("null")) {
+		return nil, fmt.Errorf("parse highlights JSON: %q must be an array, got null", "highlights")
+	}
+
+	var raw []repository.Highlight
+	if err := json.Unmarshal(rawHighlights, &raw); err != nil {
+		return nil, fmt.Errorf("parse highlights JSON: %q must be an array: %w", "highlights", err)
 	}
 
 	validTagIDs := make(map[uint]bool, len(tags))
@@ -121,8 +217,8 @@ func parseHighlightsResponse(content string, tags []repository.TagInput) ([]repo
 		validTagIDs[t.ID] = true
 	}
 
-	var result []repository.Highlight
-	for _, h := range raw.Highlights {
+	result := make([]repository.Highlight, 0, len(raw))
+	for _, h := range raw {
 		if strings.TrimSpace(h.Title) == "" {
 			continue
 		}
@@ -133,9 +229,28 @@ func parseHighlightsResponse(content string, tags []repository.TagInput) ([]repo
 			}
 		}
 		h.TagIDs = validIDs
+		// Tag mode never trusts identity or numeric snapshots supplied by a
+		// model (retire-story-adopt-event-metrics: cluster_id / article_count /
+		// cluster_mode / data_as_of / research_at are server-only snapshots).
+		h.ClusterID = nil
+		h.ArticleCount = nil
+		h.ClusterMode = ""
+		h.DataAsOf = ""
+		h.ResearchAt = nil
 		result = append(result, h)
 	}
 	return result, nil
+}
+
+// jsonTopLevelKeys returns the sorted top-level keys of a decoded JSON object
+// (used in the "missing highlights key" error message).
+func jsonTopLevelKeys(top map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(top))
+	for k := range top {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 const threadsSystemPrompt = `你是一名专业的新闻叙事分析师。你收到了一个事件聚类分组及其标签信息。

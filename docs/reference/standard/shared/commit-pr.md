@@ -32,6 +32,24 @@ go test ./...                  # 全量测试
 - `docs/reference/flow/*.md`
 - `docs/reference/database/*.md`
 
+## openspec 制品入库口径
+
+`openspec/changes/**` 下**账本入 git、证据本体不入 git**（`openspec/changes/.gitignore` 已落规则）：
+
+| 内容 | 入库 | 说明 |
+| --- | --- | --- |
+| `report.md` / `*-review.md` / `design.md` / `tasks.md` / `specs/**` 等 md | ✅ | 判定账本与合同，是评审与追溯依据 |
+| JSON 采样底稿（`ui-verification/**/api/`、`raw/`、`data/`） | ✅ | 审计可复现依据，体积可控 |
+| `ui-prototype/**/*.html|js|css`（原型源码） | ✅ | 冻结基线按 SHA256 对照，源码须可查 |
+| `ui-verification/**`、`ui-prototype/**` 下的 `png/jpg/jpeg/gif/webp` | ❌ | 磁盘保留（门禁按盘核对），不入库 |
+
+**为什么**：归档门禁 `scripts/harness/ui-verification-trace.sh` 的实物对账是**纯文件系统检查**（`report.md` 建账条目 + 点名截图存在于 `ui-verification/`），证据本体是否入库**不影响门禁判定**；而单 change 的截图可达数十 MB（多批次 × 双视口 × 明暗主题），二进制灌进 git 会污染仓库体积与 clone 成本。
+
+**两条纪律**：
+
+1. **路径写法**：ignore 规则必须用 `**/` 形式（`**/ui-verification/**/*.png`），不能写 `*/ui-verification/...`——change 归档后目录搬进 `changes/archive/<date>-<name>/` 层级变深，单层通配会失配，导致归档那次提交把全部证据一次性灌进仓库。
+2. **删图前先对账**：删任何截图前先确认它不被 `report.md` 点名（点名图删了门禁直接打红）。无引用图可删，删完复跑 `bash scripts/harness/ui-verification-trace.sh <change-dir>` 确认仍通过。
+
 ## ⚠️ 跨平台执行注意
 
 前端 `node_modules` 按宿主平台安装，执行方式随之不同：

@@ -16,7 +16,7 @@ import (
 // drops constraints). The migration must backfill analysis_scope='topic' for
 // NULL rows and drop NOT NULL on both enrichment id columns so board-scoped
 // rows (NULL topic) can be inserted. reference_roles 断言已对齐退役现实
-//（20260926_0001 DROP，详见断言 3/5）。
+// （20260926_0001 DROP，详见断言 3/5）。
 //
 // Docker required. Skipped under -short.
 func TestBoardLevelAnalysisScopeMigration(t *testing.T) {
@@ -33,9 +33,25 @@ func TestBoardLevelAnalysisScopeMigration(t *testing.T) {
 	t.Cleanup(func() {
 		_ = db.Exec(`DELETE FROM topic_enrichment_result WHERE session_id LIKE 'bld-mig-%' OR persistent_topic_id IN (9201, 9202)`).Error
 		_ = db.Exec(`DELETE FROM topic_enrichment_review WHERE deviation_summary LIKE 'bld-mig-%' OR semantic_board_id = 9301`).Error
+		// 恢复下方为模拟 legacy schema 而摘掉的 modern CHECK：重放 0001+0002
+		// 的 Up（replaySignalMigrations 会先摘钉住 candidate unique 的
+		// research_progress FK），保证共享容器对包内后续测试仍是 golden 形状。
+		replaySignalMigrations(t, db)
 	})
 	require.NoError(t, db.Exec(`DELETE FROM topic_enrichment_result WHERE session_id LIKE 'bld-mig-%' OR persistent_topic_id = 9201`).Error)
 	require.NoError(t, db.Exec(`DELETE FROM topic_enrichment_review WHERE deviation_summary LIKE 'bld-mig-%'`).Error)
+
+	// 整包跑场景：字母序靠前的测试（annotation_qas）经 SetupTestDB 已把
+	// 20260828_0001+ 的 kind/parent_shape CHECK 落库，legacy 行
+	// (analysis_scope='') 在那个 schema 里写不进去；本测试模拟的是
+	// 20260826_0001 时代的裸 schema，先摘掉（cleanup 里重放 0001+0002 的
+	// Up 恢复），过滤跑（无全量迁移）时是安全空操作。
+	for _, statement := range []string{
+		`ALTER TABLE topic_enrichment_result DROP CONSTRAINT IF EXISTS chk_topic_enrichment_result_kind`,
+		`ALTER TABLE topic_enrichment_result DROP CONSTRAINT IF EXISTS chk_topic_enrichment_result_parent_shape`,
+	} {
+		require.NoError(t, db.Exec(statement).Error, statement)
+	}
 
 	// Seed pre-migration edge: a row with analysis_scope forced to '' (raw
 	// SQL can write empty strings; AutoMigrate's DEFAULT only covers omitted

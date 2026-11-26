@@ -1,3 +1,5 @@
+<!-- domain: dev -->
+
 # Purpose
 
 定义 Syntopica 部署初始化脚本 `deploy/init.sh` 的行为规范，包括三阶段流程、AI 连接配置、Firecrawl 部署引导和种子数据写入。

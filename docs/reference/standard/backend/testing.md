@@ -9,7 +9,7 @@ doc-impact-applies: _test.go, backend-go/internal/testutil, tests/workflow, test
 
 ## 用例设计（测什么）
 
-> 测什么 / 测到什么程度 / 验收措辞的权威源是 [`standard/shared/test-design.md`](../shared/test-design.md)（故事锚点四问句，跨前后端）。本节只列后端分层判据速查：
+> 测什么 / 测到什么程度 / 验收措辞的权威源是 [`standard/shared/test-design.md`](../shared/test-design.md)（API 主线与真实 Bug 回归，跨前后端）。本节只列后端分层判据速查：
 
 | 故事性质 | 层 | 载体 |
 | --- | --- | --- |
@@ -140,6 +140,23 @@ section := repository.DailyReportSection{
 
 > 🛑 **切勿**为「优化」删掉 `ReimportTestDB` 末尾的 `openGorm` + `Close`——那是修这个坑的核心，删掉会复现 `cache lookup failed`。回归测试 `TestReimportPreservesVectorInserts` 守住这行。
 
+### ⚠️ 独占连接漏归还 = 单连接池测试整包永久挂死（生产侧连接池耗尽）
+
+**症状**：某个测试包跑到某条查询后**永久阻塞**——无报错、无输出，`go test` 一直不结束，直到 `-timeout` 才被 kill；单跑某个用例绿、整包跑挂；换到 testcontainer PG 的包不复现（池容量大，漏几条看不出来）。
+
+**根因（事故）**：生产代码用 `sqlDB.Conn(ctx)` 从连接池借出**独占连接**（`*sql.Conn`），失败分支漏 `conn.Close()` → 借出的池槽位永不归还。单连接池环境（`sqlDB.SetMaxOpenConns(1)`，见 `internal/admin/scheduler` 的 SQLite 测试库）下第一次失败即占满唯一槽位 → 后续任何查询永久阻塞。本仓实例：日报生成闸的数据库探测失败分支（`internal/topicgraph/service/generation_gate.go` 的 T4 分支）漏 `conn.Close()`——探测失败一次漏一条池槽位；生产侧则是反复探测失败最终耗尽连接池（全站 DB 访问阻塞）。
+
+**修复**：失败分支补 `_ = conn.Close()`（与同文件其他分支同款纪律）。⚠️ 归还顺序有讲究：闸的探测失败分支是**先 `killSession` 终止会话、后 `Close` 归还连接**——只 Close 不 kill 会把「会话仍存活、session 级 advisory lock 仍持有」的连接归还池，泄漏出永久 `already_running`；先 kill 则会话级锁随会话终结一并释放。
+
+**硬约束**：
+
+- 凡从连接池借出独占连接（`db.Conn(ctx)` / `sql.Conn`）的生产代码路径，SHALL 在**所有**分支（含错误、超时、回退降级）归还该连接——`defer` 只覆盖正常返回路径，显式的回退/降级分支 MUST 单独 Close。
+- 「回退到无 DB 模式」的分支（如闸的 fail-open）最容易漏：它不是错误路径，review 容易放过。
+
+**判定法**：测试**永久挂死**（而非失败）时，先查被测路径是否借出了独占连接、失败分支是否归还；`-timeout` 只把挂死变成失败、不修 bug——可以用它防无限阻塞，但不可用它替代修复。
+
+**回归守卫**：`backend-go/internal/topicgraph/service/generation_gate_test.go:TestDailyReportGateProbeFailureReturnsConnection`（探测失败后池仍可用）。对应的业务不变量见 [`flow/daily-report.md`](../../flow/daily-report.md) 约束 36。
+
 ### ⚠️ 改了发往真实 DB 的 SQL（GROUP BY / 聚合 / 复杂 JOIN / 手写 raw SQL），必须有 testcontainer PG 用例真跑该路径
 
 SQLite（内存单测）对 GROUP BY 语义、类型、约束都宽松；PostgreSQL（生产）严格。**两者语义不一致**——纯逻辑/SQLite 单测覆盖不了真实 SQL 的运行时错误。
@@ -149,9 +166,9 @@ SQLite（内存单测）对 GROUP BY 语义、类型、约束都宽松；Postgre
 **根因（事故）**：`quality-scoring-observability` change 在 `collectBoardTags` 的 SELECT 加了 `topic_tag_board_labels.downgraded`，却漏在 GROUP BY 同步加该列。SQLite 不报错（允许 SELECT 非聚合列不进 GROUP BY），PG 直接拒掉 → 日报生成每个 board 都炸、界面全红。当时 testcontainer 集成测试没真跑到这条 SQL，漏网到生产。
 
 **硬约束**：
-- 凡改动涉及 ① SELECT 新列 + GROUP BY，② 复杂 JOIN/聚合，③ 手写 raw SQL——**门禁必须包含一条真正调用该查询的 testcontainer PG 集成测试**（seed 多行数据触发 GROUP BY/聚合），SQLite 单测**不算**覆盖。
-- 判定法：改的 SQL 换成 PG 跑会不会和 SQLite 表现不同？会 → 必须补 PG 集成测试。
-- 回归守卫样本：`TestCollectBoardTags_PGHonorsDowngradedColumn`（`internal/topicgraph/service/collect_board_tags_test.go`）。
+- 凡改动涉及 ① SELECT 新列 + GROUP BY，② 复杂 JOIN/聚合，③ 手写 raw SQL——**验证必须在隔离的 testcontainer PostgreSQL 实际执行该查询**（seed 多行数据触发 GROUP BY/聚合），SQLite 不算覆盖。可以复用 API 主线或用临时探针验证，不要求另留永久业务用例。
+- 判定法：改的 SQL 换成 PG 跑会不会和 SQLite 表现不同？会 → 用 PG 实证；真实缺陷则保留最小回归。
+- 回归守卫样本：`TestCollectBoardTags_PGHonorsGroupBy`（`internal/topicgraph/service/collect_board_tags_test.go`；原名含 Downgraded 的用例已于 2026-11-12 随 retire-downgraded-mount 改名为 GroupBy）。
 
 ### ⚠️ JSONB 列空串陷阱（token_usage 事故）
 

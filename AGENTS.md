@@ -15,7 +15,7 @@ superpowers 流程型 skill 在本仓库一律按下表替代执行，**不做�
 | brainstorming | openspec-explore（或开发执行规范 §3 脑暴） |
 | writing-plans / executing-plans | openspec proposal/design + §0.6 编排六步 |
 | subagent-driven-development / dispatching-parallel-agents | §0.6 六步 + §0.6「供应商与模型选择」 |
-| test-driven-development | 开发执行规范 §2（用例先行：specs Scenario 即用例+复杂档白盒用例，以 §2 表述为准） |
+| test-driven-development | 开发执行规范 §2（用例先行：specs 定契约；永久业务测试只留 API 主线和真实 Bug 回归，白盒代码用完即弃） |
 | verification-before-completion | quality-gate 自动门禁 + §11 归档门禁 |
 | using-git-worktrees | 不用——主仓库直改（Docker DB 在宿主机） |
 | finishing-a-development-branch | §11/§12 归档即家，无 feature branch 流程 |
@@ -23,7 +23,7 @@ superpowers 流程型 skill 在本仓库一律按下表替代执行，**不做�
 - 保留互补的 superpowers skill：`systematic-debugging`、`requesting-code-review`、`receiving-code-review`（§0.6 review 纪律已引用后者）。
 - superpowers bootstrap 的「1% 命中也必须先调 skill」规则在本仓库按上表执行，**不构成额外 MUST**；开发入口永远是 openspec 编排。
 - caveman 系列仅用户显式 `/caveman` 时启用；description 里的 auto-trigger（"be brief"/"less tokens"）一律忽略，日常沟通保持中文大白话。
-- 跑 `openspec update` 时加 `--tools pi`，避免重新生成 `source-command-opsx-*` 等重复 skill，也防止 `.claude/skills`、`.claude/commands` 等其他 harness 副本再生（曾于 2026-08 清理，备份在 `.agents/skills-library/`；2026-08-20 又清理过一轮 18 份漂移副本）。
+- **OpenSpec 2.x 更新约定（2026-11-20 由 1.13.2 升 2.1.1）**：直接执行 `openspec update`——2.0 起 skills-only，已无 `--tools` 参数，`.pi/prompts/opsx-*` 命令文件不再生成，指令只落 `.agents/skills/openspec-*/SKILL.md` 单层（`.claude`/`.codex` 副本由 update 自动清理；历史清理记录见 `.agents/skills-library/`）。workflow 集由**全局** profile 决定：本仓库依赖逐步建档与归档验证，`new` / `continue` / `verify` 必须留在 `openspec config get workflows`（丢了会退化成只有 propose 一步生成，绕过 major UI 原型审批），用 `openspec config set workflows '[...]'` 加回。
 
 ## Project Snapshot
 
@@ -71,7 +71,7 @@ bash scripts/dev/start-dev.sh status       # 看端口 / PID / 健康 / 入口�
 ## Reference Docs (authoritative source)
 
 - **Code Standards**: `docs/reference/standard/` — 代码规范/项目约束/lint/测试配置的**唯一权威源**（前后端分文件夹）
-- **Business Flow**: `docs/reference/flow/` — 五位一体活文档（需求说明 / 链路设计 / 业务约束与不变量 / 代码入口 / 变更溯源），替代原 user-guide；「业务约束」节是 constraint-injection extension 的注入数据源
+- **Business Flow**: `docs/reference/flow/` — 五位一体活文档（需求说明 / 链路设计 / 业务约束与不变量 / 代码入口 / 变更溯源），替代原 user-guide；「业务约束与不变量」节的**顶层加粗红线句**是 constraint-injection 声明域注入的数据源（细节层由模型按路由清单自行 `read`）
 - **Architecture**: `docs/reference/architecture/` — 架构定位与骨架；`architecture/map.md` 是业务域→流程→代码入口的索引地图
 - **API**: `docs/reference/api/`
 - **Database**: `docs/reference/database/`
@@ -107,6 +107,7 @@ bash scripts/dev/start-dev.sh status       # 看端口 / PID / 健康 / 入口�
 
 ## AI Behavior Rules
 
+- 避免不必要的次要标签和描述，让布局本身来传达信息。
 - Do not add linters, formatters, or tooling unless asked.
 - Do not assume Python backend; the product backend is Go.
 - Ignore unrelated dirty-worktree changes. Verify smallest relevant command after edits.
@@ -119,8 +120,13 @@ bash scripts/dev/start-dev.sh status       # 看端口 / PID / 健康 / 入口�
 - Frontend edits → `pnpm lint` / `pnpm exec nuxi typecheck` / `pnpm test:unit <受影响文件名...>` / `pnpm build`。
 - Backend edits → `golangci-lint run ./...` / targeted `go test` first, then `go test ./...` / `go build ./...`。
 - Docs-only edits: consistency check unless behavior changed.
-- **pi harness 扩展（自动，无需手动跑）**：constraint-injection 注入约束（管"知道"）、quality-gate 挂 `turn_end` 增量跑 lint/vet/build/影响包测试（管"做到"）、quota-gate 派发前查额度、spec-gate / ui-design-gate 硬拦截归档与 UI 审批等共 10 个扩展，源码 `.pi/extensions/`（已入库）。日常只需配合四点：① 门禁 **[回归]** steer 必须修不得忽略（**[中间态]** 可继续、回合末复检，归档前全绿）；② quota-gate block 后按 reason 换有额度 provider **全称**重试；③ 逃生口（`--force` / `SPEC_GATE_BYPASS=1` / `UI_DESIGN_GATE_BYPASS=1`）仅显式留痕使用；④ **dev 服务起停必须走 `scripts/dev/start-dev.sh`（写 pidfile 白名单），禁止手提 `nohup setsid`——dev-process-guard 会在会话结束时自动清理无 pidfile 的 dev 进程组与浏览器自动化残留（agent-browser/chromium）**（机制见 [`harness/pi-extensions.md`](docs/reference/harness/pi-extensions.md) §孤儿 dev 进程治理）。机制全貌（扩展全景表 / 注入通道 / 门禁分层 / 记账口径）见 [`harness/pi-extensions.md`](docs/reference/harness/pi-extensions.md)；事件考古查 skill `harness-facts`，改进复盘查 skill `harness-retro`。
+- **pi harness 扩展（自动，无需手动跑）**：constraint-injection 注入约束（管"知道"）、quality-gate 挂 `turn_end` 增量跑 lint/vet/build/影响包测试（管"做到"）、quota-gate 派发前查额度、spec-gate / ui-design-gate 硬拦截归档与 UI 审批等扩展，源码 `.pi/extensions/`（已入库）。**注入是「红线层 + 路由清单 + 自主 read」**：注入块只给声明域红线句与本阶段「路径 + 节名」清单，需要细节按清单自行 `read`（不再有正文自动送达）。日常需配合四点：① 门禁 **[回归]** steer 必须修不得忽略（**[中间态]** 可继续、回合末复检，归档前全绿）；② quota-gate block 后按 reason 换有额度 provider **全称**重试；③ 逃生口（`--force` / `SPEC_GATE_BYPASS=1` / `UI_DESIGN_GATE_BYPASS=1`）仅显式留痕使用；④ **dev 服务起停必须走 `scripts/dev/start-dev.sh`（写 pidfile 白名单），禁止手提 `nohup setsid`——dev-process-guard 会在会话结束时自动清理无 pidfile 的 dev 进程组与浏览器自动化残留（agent-browser/chromium）**（机制见 [`harness/pi-extensions.md`](docs/reference/harness/pi-extensions.md) §孤儿 dev 进程治理）。**跨会话残留的 agent-browser 无头栈由用户级 systemd timer 每 10 分钟自动回收**（`bash scripts/harness/browser-leak-guard.sh --install` 幂等安装；排查 `journalctl --user -u syntopica-browser-leak-guard`，手动看**不要**带 `--apply`，机制见同文档 §无主浏览器栈定时回收）。机制全貌（扩展全景表 / 注入通道 / 门禁分层 / 记账口径）见 [`harness/pi-extensions.md`](docs/reference/harness/pi-extensions.md)；事件考古查 skill `harness-facts`，改进复盘查 skill `harness-retro`。
+- **子线程模型偏好（2026-10-30 用户指定，2026-11-26 增补）**：后续新派发子线程默认使用 MiniMax M3.1 Flash、思考档 max；当前本机精确标识为 `minimax-cn/MiniMax-M3.1-Flash:max`。**判断密集型任务（批量归类、制品审阅、change-review、方案对比）优先 `zai-coding-cn/glm-5.4`**（2026-11-26 用户指定：glm 已更新到 5.4；1M 上下文 / 131.1K 输出 / 支持工具调用，`pi --list-models` 可验）。用户当场另有指定时从其指令；不可用或额度阻断时先说明，不静默换模型。
+- **子线程档位（见上）与升级门槛**：子线程遇阻默认自行解决（有注入约束 + bash），仅三类情况才升级回主线程/用户：① 需要用户拍板的方案分歧；② 不可逆副作用（数据迁移/删数据/改配置）；③ 红线冲突需留痕绕过；中间态进度汇报不需要（fire-and-forget，2026-11-03 借鉴 DSH Router/Worker 直通机制：Worker 中途回报只烧 token 无收益）。
+- **主会话当 Router 用（2026-11-03 纪律）**：探索/摸底类工作（读代码理清结构、跨文件追链路、大范围 grep）默认派 `explore`/`plan` 子线程执行，关键发现用 `pin_finding` 落盘（激活档进 explore-findings.md 自动注入实现阶段），主会话只消费结论摘要——避免主会话上下文被原始文件内容撑爆（Router 不进后厨）。主会话直接 read/grep 仅限：小文件定点核对（约 200 行内）、派发前快速定位、验收子线程产出。
 - **子线程派发 model 硬规则**：Agent 的 `model` 参数必须用 `provider/modelId` 全称（如 `zai-coding-cn/glm-5.3`），**禁止 fuzzy 名**（会按字母序落到错误供应商）；想用默认供应商省略 `model` 即可。fuzzy 名黑名单与派发纪律见开发执行规范 §0.6「供应商与模型选择」。
+- **子线程档位（2026-11-03 收敛为四档，pi-web 界面 Subagents 页统一管理；2026-11-03 增 `ui-design` 档 → 五档）**：实现/验证/通用任务用 `general-purpose`（覆盖档：codemode/skills/插件全开，兼实现档职能——原 implementer 档同日并入退役，能力完全拉平）；只读探索用 `explore`/`plan`（覆盖档：skills/插件开、无写工具、不开 codemode）；审查用 `change-review`（只读通用档：openspec change 制品审查 / UI e2e 验证按 brief 分流，**不绑模型**——模型派发时指定，默认按下方派发偏好）；UI 原型编辑用 `ui-design`（项目自定义档：UI 合同未就绪（major 原型待批）期间只改当前 change 的 `ui-prototype/**` 与 `ui-design.md` 的 Prototype 节——**经 `edit`/`write` 工具的写入仍逐个过 ui-design-gate**，越出 change 目录（`front/` 等）照常阻断（shell 类通道不在本门禁覆盖范围——既有边界）；**不绑模型**——原型审美任务建议用强模型，模型派发时指定）。explore/plan/general-purpose 以 `.pi/agents/` 同名文件覆盖 pi-web 内置档（内置默认全关，删覆盖文件会静默退回盲区）；change-review 与 ui-design 为项目自定义档。全部档位定义即 `.pi/agents/*.md`，可在 pi-web 界面可视化管理。**AGENTS.md 不注入子线程（pi-web 硬编码 `noContextFiles`），派发任务文本 MUST 带必读文件清单 + 相关域红线摘要**（覆盖档 addendum 已写「开工先自读 AGENTS.md」兑底）。取红线用 `bash scripts/harness/constraint-digest.sh --brief --paths <目标路径>`（或 `--brief --domains <域>`），**`--brief` 输出原样**粘进任务文本（单个 `## 约束（红线，源 …）` 段，其下每域 `### <域>（源 …）` 子标题）；方法见 `docs/reference/开发执行规范.md` §0.6 步骤 3。机制与漂移观测见 [`harness/pi-extensions.md`](docs/reference/harness/pi-extensions.md)「子线程通道矩阵」。
+- **阶段驱动 + 自主导入**（2026-11-18 stage-driven-constraint-injection）：约束注入形态改为「**红线层 + 路由清单 + 模型自主 read**」。change 进度写在 `openspec/changes/<name>/stage.md` 头部 `<!-- stage: explore|propose|design|implement|verify|archive -->`（非 schema 制品；缺失/非法 = legacy，**不阻断任何流程**，但也没有阶段路由清单）；扩展按 stage 装配清单（索引 + 声明域文档 + 按阶段的 UI 契约/代码与测试/验收归档规范），**只给路径 + 节名 + 取数方式，零正文**。**编辑路径命中（`doc-impact-applies`）与对话关键词命中都不再注入正文**，命中项只进清单（关键词另仍受域限定）。业务域声明可写在 `proposal.md` 或 `stage.md` 头部 `<!-- constraint-domains: ... -->`（**两处并集**，stage.md 只增不减——实现期发现新域补这里）。**模型侧约定：清单里的文档需要时自行 `read`**（只有 `read` 工具读到的约束文档计入 `constraint.read` 与归档对账，`cat` 不计），只要红线摘要跑 `bash scripts/harness/constraint-digest.sh --brief --domains <域>`。因此**派发 brief 仍必做**——它覆盖自动注入管不到的场景（纯问答/规划/评审、路径未定、跨域补充）；机制见 [`harness/pi-extensions.md`](docs/reference/harness/pi-extensions.md)「约束注入」。
 - Keep code changes minimal and scoped. Match existing code style.
 - 完成任务后更新维护 `./docs/reference/` 知识库；openspec change 执行走 `开发执行规范.md` §0.6 标准编排流程（**apply 启动跑 `doc-impact.sh suggest`+`context`，归档前跑 `doc-impact.sh verify`+`check-standards.sh`**），归档前满足 §11 门禁，归档后按 §12 补 flow 变更溯源链接（archive 即永久家，v1.x 里程碑可选）。
 - **开工前/完工后必须汇报"部署后影响 + 需要的操作"**：每个 change 完工汇报必须包含一节明确告诉用户——(a) 部署/合并后用户可见行为会发生什么变化；(b) 需要用户手动执行的操作（如重新生成数据、清理、配置）；(c) 旧数据如何降级。避免用户打开界面才发现行为变了产生误会。涉及数据迁移、状态机变更、UI 分区变更时尤其强制。
@@ -128,3 +134,4 @@ bash scripts/dev/start-dev.sh status       # 看端口 / PID / 健康 / 入口�
 ## context-mode — 上下文工具
 
 大块输出（日志/grep/JSON >20 行）用 `ctx_batch_execute` / `ctx_execute` 沙箱化，分析文件用 `ctx_execute_file`，网络请求用 `ctx_fetch_and_index`，多问题合并一次 `ctx_search`；并发：网络类 4-8，CPU/共享状态（test/build/lint）保持 1；大产物写文件别内联。**codemode**（pi 自带）与之分工：ctx 工具管「大输出不过脑」，codemode 管「一次指挥多个工具」——需要一次调用里并行/链式编排多个工具（`Promise.allSettled`）、调用未声明的 MCP 工具（`searchTools`/`describeTool`）、或跨调用记小状态（`store`/`load`）时用。**与项目规范冲突时项目规范优先**（测试只跑影响包、前端命令按宿主平台执行、中文沟通等不变）。详细用法见 context-mode 包自带 skill。（Headroom 已于 2026-10 弃用删除：pi-web 迁移回 builtin MCP 时配置已失，压缩能力由 context-mode 承担。）**npm 更新 pi-web 后必须 `systemctl --user restart pi-web`**：`Restart=always` 救不了「进程活着但包目录/临时目录被更新删掉」——老进程拉起的 MCP server 会继承幽灵 cwd，ctx 工具报 `uv_cwd`/`MCP server exited` 全挂（2026-10-11 事故，复盘见 `docs/experience/2026-10-11-piweb-update-mcp-ghost-cwd.md`）。
+多步骤工具编排和并行执行的话可以用codemode；处理大输出、可搜索结果或想保持会话连续性时就用context-mode，这样能减少上下文消耗

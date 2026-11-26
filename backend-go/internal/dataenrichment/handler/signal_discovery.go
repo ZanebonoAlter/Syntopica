@@ -175,8 +175,37 @@ func (h *EnrichmentHandler) listSignalCandidates(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// visibility（redesign-enrichment-research-workbench D2）：visible/ignored/all。
+	// 省略时按 all —— 旧客户端不传该参数保持原兼容语义（不筛忽略标记）。
+	visibility := c.Query("visibility")
+	if visibility == "" {
+		visibility = repository.SignalVisibilityAll
+	}
+	if !repository.ValidSignalVisibility(visibility) {
+		respondError(c, http.StatusBadRequest, "visibility must be visible|ignored|all")
+		return
+	}
 
-	items, err := h.repo.ListSignalCandidatesByPeriod(c.Request.Context(), boardID, granularity, period, beforeID, limit)
+	// view（D2）：pending=无成功报告（剔除 live 研究候选）、readable=存在成功报告（重研中
+	// 仍返回）、all=不筛；省略 all 兼容旧客户端。筛选在分页前生效。
+	view := c.Query("view")
+	if view == "" {
+		view = repository.SignalCandidateViewAll
+	}
+	if !repository.ValidSignalCandidateView(view) {
+		respondError(c, http.StatusBadRequest, "view must be all|pending|readable")
+		return
+	}
+	var excludeCandidateID uint
+	if view == repository.SignalCandidateViewPending {
+		// live 研究候选从 pending 视图剔除（spec：pending=无报告且无 live 任务）；
+		// 板块槽位同板最多一个 running job，O(1) 查询。
+		if st, ok := h.analysis.Status(AnalysisScopeBoard, boardID); ok && st.Running &&
+			st.JobKind == AnalysisJobKindBoardSignalReport && st.CandidateID > 0 {
+			excludeCandidateID = st.CandidateID
+		}
+	}
+	items, err := h.repo.ListSignalCandidatesByPeriod(c.Request.Context(), boardID, granularity, period, beforeID, limit, visibility, view, excludeCandidateID)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, err.Error())
 		return
@@ -209,6 +238,7 @@ func (h *EnrichmentHandler) listSignalCandidates(c *gin.Context) {
 			"why_it_matters":         item.WhyItMatters,
 			"research_question":      item.ResearchQuestion,
 			"evidence_refs":          tryParseJSON(item.EvidenceRefs),
+			"research_brief":         tryParseJSON(item.ResearchBrief),
 			"score":                  item.Score,
 			"rationale":              item.Rationale,
 			"discovery_created_at":   item.DiscoveryCreatedAt,

@@ -1,0 +1,13 @@
+{
+  "R34_verification": {
+    "cold_first_load": {"delayed_A_get": "/lane-dynamics?days=14 (1500ms controlled delay)", "t0_ms": 835, "t0_state": {"svg": false, "hits": [], "tier": []}, "t1_ms": 3441, "t1_state": {"svg": {"w": 800.81, "h": 88}, "hits": [{"k": "brush-hit-start", "w": 24, "left": 1091.8}, {"k": "brush-hit-end", "w": 24, "left": 1108.41}]}},
+    "1440_normal": {"host": "MAIN.console-stage", "saved": 371, "max": 371, "return_05s": 0, "return_20s": 371, "return_40s": 371, "url_restored": "/tags/1974?lane=1844&days=30&start=2026-09-28&end=2026-10-27"},
+    "1440_slow_4s_no_intent": {"saved": 291, "timeline": "0 until loading=false, then 291 immediately (metrics/slow-timeline.jsonl: samples 1-17 st=0 loading=true; sample 18 st=291 loading=false)", "shots": ["png/s9r2-1440-slow-pending.png", "png/s9r2-1440-slow-restored.png"]},
+    "1440_slow_8s_cancel_wheel": {"saved": 291, "pending_scroll_after_wheel": 150, "after_settle": 150, "loading_at_wheel": true, "shot": "png/s9r2-1440-slow-cancel-wheel.png"},
+    "1440_slow_8s_cancel_keydown": {"saved": 291, "pending_scroll_after_key": 40, "after_settle": 40, "loading_at_key": true},
+    "1440_slow_8s_cancel_touch": {"saved": 291, "pending_scroll_after_touch": 105, "after_settle": 105, "loading_at_touch": true, "note": "CDP touch emulation (模拟触摸，非真机)", "shot": "png/s9r2-1440-slow-cancel-touch.png"},
+    "1280_window": {"host": "window", "saved": 471, "after_settle": 471, "max_doc": 471, "pending": 0},
+    "390_window": {"host": "window", "saved": 687, "after_settle": 687, "max_doc": 767, "pending": 0, "shot": "png/s9r2-390-slow-restored.png"},
+    "research_roundtrip_1440": {"saved": 468, "after_08s": 468, "after_28s": 468, "url": "/tags/1974?days=14&start=2026-10-14&end=2026-10-27&lane=1204"}
+  }
+}

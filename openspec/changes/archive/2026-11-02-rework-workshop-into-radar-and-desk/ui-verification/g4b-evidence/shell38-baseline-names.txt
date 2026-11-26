@@ -1,0 +1,38 @@
+passed | BoardConsoleShell — 入口/管理/真实路由 R30：URL 显式范围/lane 与非法 days 优先，不被返回缓存覆盖
+passed | BoardConsoleShell — 入口/管理/真实路由 R30：异步 router 下返回上下文合并为一次完整 query，start/end/lane/days 不互相取消
+passed | BoardConsoleShell — 入口/管理/真实路由 R31：桌面真实滚动 stage 保存 stage.scrollTop（不混用 windowY）
+passed | BoardConsoleShell — 入口/管理/真实路由 R31：非滚动 stage 恢复用 window.scrollTo（单一宿主）
+passed | BoardConsoleShell — 入口/管理/真实路由 R31：非滚动 stage（手机/1280）保存实际 windowY，而不是 stage.scrollTop=0
+passed | BoardConsoleShell — 入口/管理/真实路由 R34：pending 等详情期间 wheel 取消并摘监听，详情回来后不得强拉
+passed | BoardConsoleShell — 入口/管理/真实路由 R34：阅读 pending 不耗布局帧；详情就绪且内容增高后恢复深滚动
+passed | BoardConsoleShell — 入口/管理/真实路由 reader 关闭回到打开前的焦点，不清空矩阵/日期/范围
+passed | BoardConsoleShell — 入口/管理/真实路由 中等宽度上下文入口打开同一工作面 context 页（不是空抽屉）
+passed | BoardConsoleShell — 入口/管理/真实路由 从阅读台返回：URL 显式 lane 优先，缓存恢复范围/日期/滚动，焦点回选中泳道
+passed | BoardConsoleShell — 入口/管理/真实路由 撤旧窗口 select 与更多菜单；右轨无全局六项，无重复新建版块
+passed | BoardConsoleShell — 入口/管理/真实路由 新建泳道：打开编排态；保存后关闭并重取泳道（5.4）
+passed | BoardConsoleShell — 入口/管理/真实路由 板块管理菜单：设置/构成进入单级宽工作面；话题管理打开既有面板
+passed | BoardConsoleShell — 入口/管理/真实路由 研究工作台走真实路由，并保存返回上下文（泳道/日期/档/范围/滚动）
+passed | BoardConsoleShell — 入口/管理/真实路由 窄屏：不渲染矩阵/右轨，泳道摘要仍可换泳道并进入同一上下文工作面
+passed | BoardConsoleShell — 入口/管理/真实路由 追踪管理只以 boardId 打开（rail 管理入口）
+passed | BoardConsoleShell — 唯一选中日与就地下读 点有分区格：共享 selectedDate、编年就地显示全量真实 thread，不打开抽屉
+passed | BoardConsoleShell — 唯一选中日与就地下读 矩阵/演进/编年共用选中日：演进节点 click 改日，编年跟随
+passed | BoardConsoleShell — 唯一选中日与就地下读 编年文章主点击接既有站内原文 reader（不加导语中间层）
+passed | BoardConsoleShell — 档 vs 自由观察范围 A 名单行随响应更新：切 30 档后新名单立即进入矩阵（computed 不冻结）
+passed | BoardConsoleShell — 档 vs 自由观察范围 R29：B 池失败独立提示/重试；只重发 365，A/选中/范围不变，成功恢复历史
+passed | BoardConsoleShell — 档 vs 自由观察范围 R35：手动 deferred 导航未提交时，缓存续体已跑也不吃回旧 2 日范围
+passed | BoardConsoleShell — 档 vs 自由观察范围 仅独立档按钮切 sourceDays；自由范围恰 7 日不换档、不重发其他档
+passed | BoardConsoleShell — 版块切换/归档/失败态 健康刷新失败保留上次快照（stale）而不是伪空 0
+passed | BoardConsoleShell — 版块切换/归档/失败态 切版块：push 新路由、重取数据并清选中日
+passed | BoardConsoleShell — 版块切换/归档/失败态 归档视图可切换：矩阵卸载、归档挂载，切回不重取泳道（R-9）
+passed | BoardConsoleShell — 版块切换/归档/失败态 版块栏加载失败：重试重新拉取
+passed | BoardConsoleShell — 版块切换/归档/失败态 矩阵加载失败：内联错误但右轨照常（2.5）
+passed | BoardConsoleShell — 骨架与最新日报独立锚 0 active 泳道但已有日报：最新入口仍可见，且不被泳道最大日替代
+passed | BoardConsoleShell — 骨架与最新日报独立锚 ?lane= 指向休眠泳道：自动展开并选中（1.3/MD-7）
+passed | BoardConsoleShell — 骨架与最新日报独立锚 R27：挂载/卸载不写全局 html 根字号（角色字号由组件局部承担）
+passed | BoardConsoleShell — 骨架与最新日报独立锚 R28：0 active 泳道也随候选新日报更新头部；不靠 active 最大日
+passed | BoardConsoleShell — 骨架与最新日报独立锚 R28：显式刷新元信息失败保留上次成功值并标陈旧，重试按钮在场
+passed | BoardConsoleShell — 骨架与最新日报独立锚 R28：生成完成先刷新独立元信息再刷新 A；新报告日进入头部与源 axis
+passed | BoardConsoleShell — 骨架与最新日报独立锚 R28：生成对话框关闭也刷新元信息与 A（失败不丢旧值）
+passed | BoardConsoleShell — 骨架与最新日报独立锚 日报元信息两个来源都失败：按钮禁用且明确「不代表没有历史日报」
+passed | BoardConsoleShell — 骨架与最新日报独立锚 渲染顶栏/三区/版块栏；最新日报来自版块 report 元信息
+passed | BoardConsoleShell — 骨架与最新日报独立锚 点泳道名切换选中并写 query（1.3）

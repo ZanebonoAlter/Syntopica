@@ -633,5 +633,74 @@ func SaveSettings(c *gin.Context) {
 		}
 	}
 
+	// 疑似 AI 判定参数（add-ai-generated-article-detection design D11）：阈值与样本长度
+	// 在线可调，改后立即对后续判定生效（判定服务每次判定现读 ai_settings）。
+	if err := applyAIDetectionSettings(req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// applyAIDetectionSettings 写入请求里携带的疑似 AI 判定参数（缺省键不动）。
+// 三个键都可选：ai_detection_threshold（0-1）、ai_detection_sample_head /
+// ai_detection_sample_tail（runes）。值接受 JSON 数字或数字字符串。
+func applyAIDetectionSettings(req map[string]interface{}) error {
+	keys := []string{"ai_detection_threshold", "ai_detection_sample_head", "ai_detection_sample_tail"}
+	present := false
+	for _, key := range keys {
+		if _, ok := req[key]; ok {
+			present = true
+			break
+		}
+	}
+	if !present {
+		return nil
+	}
+
+	cfg, err := aisettings.LoadAIDetectionConfig()
+	if err != nil {
+		return fmt.Errorf("load ai detection config: %w", err)
+	}
+	if val, ok := req["ai_detection_threshold"]; ok {
+		threshold, ok := settingsNumber(val)
+		if !ok {
+			return fmt.Errorf("ai_detection_threshold must be a number")
+		}
+		cfg.Threshold = threshold
+	}
+	if val, ok := req["ai_detection_sample_head"]; ok {
+		size, ok := settingsNumber(val)
+		if !ok {
+			return fmt.Errorf("ai_detection_sample_head must be a number")
+		}
+		cfg.SampleHead = int(size)
+	}
+	if val, ok := req["ai_detection_sample_tail"]; ok {
+		size, ok := settingsNumber(val)
+		if !ok {
+			return fmt.Errorf("ai_detection_sample_tail must be a number")
+		}
+		cfg.SampleTail = int(size)
+	}
+	return aisettings.SaveAIDetectionConfig(cfg)
+}
+
+// settingsNumber 把请求里的数值归一成 float64（接受 JSON 数字、数字字符串）。
+func settingsNumber(val interface{}) (float64, bool) {
+	switch typed := val.(type) {
+	case float64:
+		return typed, true
+	case int:
+		return float64(typed), true
+	case json.Number:
+		parsed, err := typed.Float64()
+		return parsed, err == nil
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }

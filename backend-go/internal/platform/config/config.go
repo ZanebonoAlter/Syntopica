@@ -19,8 +19,22 @@ type Config struct {
 	Bocha         BochaConfig
 	Comtrade      ComtradeConfig
 	Fred          FredConfig
-	Searxng       SearxngConfig
 	CrossBoardRel CrossBoardRelationConfig
+	EntitySubject EntitySubjectConfig
+}
+
+// EntitySubjectConfig is the three-mode switch of the global entity-subject
+// identity layer (normalize-event-subject-entities D10):
+//   - off     (default): first-round prompt/schema byte-identical to pre-change,
+//     zero second-round calls, zero entity-layer writes, no entity_subject key.
+//   - shadow: first round additionally produces the stable short identity
+//     description; writes limited to the entity layer, normal AI audit and the
+//     topic_tags.metadata.entity_subject lazy key.
+//   - active: NOT implemented this iteration — the service EXPLICITLY errors
+//     (never silently behaves as shadow). Production enablement is decided by
+//     the bounded evaluation and a follow-up change.
+type EntitySubjectConfig struct {
+	Mode string `mapstructure:"mode"` // off | shadow | active (active → explicit error)
 }
 
 // CrossBoardRelationConfig holds the global budget and thresholds for
@@ -122,13 +136,6 @@ type FredConfig struct {
 	APIKey string `mapstructure:"api_key"` // empty → source disabled
 }
 
-// SearxngConfig configures the local SearXNG instance used by the daily-report
-// margin-note QA web augmentation (design D7). Empty endpoint → disabled
-// (QA silently degrades); no API key needed.
-type SearxngConfig struct {
-	Endpoint string `mapstructure:"endpoint"` // empty → disabled
-}
-
 var AppConfig *Config
 
 func LoadConfig(configPath string) error {
@@ -143,8 +150,10 @@ func LoadConfig(configPath string) error {
 	viper.SetDefault("server.mode", "debug")
 	viper.SetDefault("database.driver", "postgres")
 	viper.SetDefault("database.dsn", "host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai")
-	viper.SetDefault("database.postgres.max_idle_conns", 5)
-	viper.SetDefault("database.postgres.max_open_conns", 25)
+	// 与 configs/config.yaml 保持一致（fix-radar-overview-false-zero）：雷达总览等聚合端点
+	// 会并发取多个版块的数据，连接池过小会让请求排队等连接（表现为「慢」而非「查询慢」）。
+	viper.SetDefault("database.postgres.max_idle_conns", 25)
+	viper.SetDefault("database.postgres.max_open_conns", 40)
 	viper.SetDefault("database.postgres.conn_max_lifetime_minutes", 60)
 	viper.SetDefault("database.postgres.conn_max_idle_time_minutes", 10)
 	viper.SetDefault("cors.origins", []string{"http://localhost:3000", "http://localhost:3000"})
@@ -169,7 +178,6 @@ func LoadConfig(configPath string) error {
 	viper.SetDefault("bocha.endpoint", "https://api.bochaai.com/v1/web-search")
 	viper.SetDefault("comtrade.api_key", "")
 	viper.SetDefault("fred.api_key", "")
-	viper.SetDefault("searxng.endpoint", "") // empty → disabled (QA degrades silently)
 
 	// Cross-board relation discovery budgets (add-evidence-backed-cross-board-relations).
 	viper.SetDefault("cross_board_rel.auto_max_sources_per_brief", 3)
@@ -183,6 +191,13 @@ func LoadConfig(configPath string) error {
 	viper.SetDefault("cross_board_rel.confirmed_ttl_hours", 720)
 	viper.SetDefault("cross_board_rel.brief_max_relations", 3)
 	viper.SetDefault("cross_board_rel.brief_max_relation_runes", 1200)
+
+	// 实体主体身份层三模式（normalize-event-subject-entities）：默认 off。
+	// 2026-11-10 决策：影子实验结束，实体层不接入事件线判定；避免实体注册表
+	// 只增不减成为黑洞。代码保留、数据保留，可通过配置开启（shadow）。
+	// off = 完全关闭（第一轮提示逐字不变、零写入）；active 本期显式拒绝
+	// （服务层返回错误，不静默按 shadow 执行）。
+	viper.SetDefault("entity_subject.mode", "off")
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
@@ -258,11 +273,6 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := strings.TrimSpace(os.Getenv("BOCHA_ENDPOINT")); v != "" {
 		cfg.Bocha.Endpoint = v
-	}
-
-	// SearXNG local search (margin-note QA web augmentation). Empty → disabled.
-	if v := strings.TrimSpace(os.Getenv("SEARXNG_URL")); v != "" {
-		cfg.Searxng.Endpoint = v
 	}
 
 	// UN Comtrade data source (research data sources domain). Empty key →

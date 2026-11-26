@@ -28,7 +28,7 @@ export function useTagMergePreviewApi() {
         category_id: params?.categoryId ?? undefined,
         feed_id: params?.feedId ?? undefined,
       })
-      return apiClient.get<MergeGroupResponse>(`${endpoint}${qs}`)
+      return apiClient.get<MergeGroupResponse>(`${endpoint}${qs ? `?${qs}` : ''}`)
     },
 
     async mergeTagsWithCustomName(request: MergeWithCustomNameRequest) {

@@ -45,6 +45,19 @@ func main() {
 			},
 		)
 		defer logging.Close()
+
+		// Gin 的访问/恢复日志默认直写 os.Stdout，而 dev 栈把 stdout 重定向到
+		// 无轮转的 backend-go/nohup.out。指向同一个 lumberjack 实例，让访问日志
+		// 也落在 logs/app.log 里（fix-log-stdout-rotation D1/D3）。
+		if w := logging.FileWriter(); w != nil {
+			gin.DefaultWriter = w
+			gin.DefaultErrorWriter = w
+			fmt.Printf("[logging] 运行日志 → %s（轮转 %dMB×%d 份×%d 天）；nohup.out 仅启动兜底\n",
+				config.AppConfig.Log.File.Path,
+				config.AppConfig.Log.File.MaxSizeMB,
+				config.AppConfig.Log.File.MaxBackups,
+				config.AppConfig.Log.File.MaxAgeDays)
+		}
 	}
 
 	if err := database.InitDB(config.AppConfig); err != nil {
@@ -61,6 +74,16 @@ func main() {
 	// BEFORE SetupRoutes: handler.RegisterRoutes dereferences the handler
 	// singleton and panics if Init hasn't run. StartRuntime is too late.
 	dataenrichment.Init(database.DB)
+
+	// Wire the auxiliary-label description-repair chain (board-health-triage-
+	// advice tasks 2.6): the repair service AND its background executor, over
+	// the ready database (AutoMigrate + migrations already ran). BEFORE
+	// SetupRoutes — the repair routes and the worker must use the SAME
+	// service instance. A failure here is fatal: it must not degrade into a
+	// nil service or silently missing routes.
+	if err := taggingdomain.InitDescriptionRepairChain(database.DB); err != nil {
+		logging.Fatalf("Failed to initialize the description-repair chain: %v", err)
+	}
 
 	// Seed the research data sources catalog (idempotent upsert; non-fatal —
 	// a failure logs a warning and the endpoints degrade to an empty catalog).

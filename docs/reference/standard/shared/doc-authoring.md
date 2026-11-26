@@ -4,7 +4,7 @@
 doc-impact-applies: docs/reference/ | section=注册点速查
 -->
 > **权威源**：本文件是「新增/修订 `docs/reference/` 文档」的唯一标准源——目录职责、头部注释语法、flow 域模板、注册点 checklist 及各门禁拦截点。流程编排（何时做什么）见《开发执行规范》§0.6，两文互引不重复。
-> 本文件自身按以下标准注册（自举）：头部 `doc-impact-applies` 标签 + `standard/README.md` 表 + `constraints-index.md` 登记——编辑 `docs/reference/` 下任意文档时本文件「注册点速查」节被 JIT 注入。
+> 本文件自身按以下标准注册（自举）：头部 `doc-impact-applies` 标签 + `standard/README.md` 表 + `constraints-index.md` 登记——编辑命中本辖区（`docs/reference/`）时本文件被列进阶段路由清单（正文不自动注入，模型按清单自主 read）。
 
 ## 目录职责表
 
@@ -28,8 +28,9 @@ doc-impact-applies: docs/reference/ | section=注册点速查
 
 | 注释 | 放哪 | 语法 | 仓库实例 | 写错的后果 |
 | --- | --- | --- | --- | --- |
-| `doc-impact-applies` | flow/standard 文档**头部 15 行内** | `doc-impact-applies: 路径前缀, ... \| section=节名`（裸行或 `<!-- -->` 包裹皆可；section 可选） | `flow/daily-report.md`：`doc-impact-applies: backend-go/internal/topicgraph/, ... \| section=业务约束与不变量`；`standard/backend/ai-logging.md`：块注释裸行 + `section=Requirements` | 超出 15 行=扫不到；路径不匹配编辑路径（前缀包含判定）=JIT 不命中；无任何报错。漏写 `section=` 则注入整文档（更大更贵）。仅档位激活时生效（有意设计） |
-| `constraint-domains` | change 的 **proposal.md 头部** | `<!-- constraint-domains: 域名, ... -->`（域名=flow 文档 basename） | `<!-- constraint-domains: daily-report, topic-graph -->` | 域名≠flow basename=域声明注入不命中（widget 显示「无域声明」）；纯工具链 change 可不写。每回合重解析，改 proposal 即时生效 |
+| `doc-impact-applies` | flow/standard 文档**头部 15 行内** | `doc-impact-applies: 路径前缀, ... \| section=节名`（裸行或 `<!-- -->` 包裹皆可；section 可选） | `flow/daily-report.md`：`doc-impact-applies: backend-go/internal/topicgraph/, ... \| section=业务约束与不变量`；`standard/backend/ai-logging.md`：块注释裸行 + `section=Requirements` | 超出 15 行=扫不到；路径不匹配编辑路径（前缀包含判定）=JIT 不命中；无任何报错。漏写 `section=` 则清单少节名（取数指引不精确）。**编辑路径命中只把文档列进阶段路由清单**（零正文；正文注入通道已随 stage 化退役） |
+| `constraint-domains` | change 的 **proposal.md 头部 ∪ stage.md 头部**（两处并集，只增不减） | `<!-- constraint-domains: 域名, ... -->`（域名=flow 文档 basename） | `<!-- constraint-domains: daily-report, topic-graph -->` | 域名≠flow basename=域声明红线层不注入（widget 显示「无域声明」）；纯工具链 change 可不写。每回合重解析，改 proposal/stage.md 即时生效 |
+| `<!-- domain: ... -->` | `openspec/specs/*/spec.md` **头部 8 行内**（首个 `#` 标题前） | `<!-- domain: 域名[, 域名] -->`，域名封闭 15 选：10 个业务域（= flow basename）+ 5 个工具域（harness / ui / dev / api / db），多域上限 3 个 | `openspec/specs/daily-report-system/spec.md`：`<!-- domain: daily-report, semantic-board -->`（契约源：spec-domain-index） | 缺 marker → 该 capability 不进任何域反查，其历史 delta 落第 6 段「孤儿 delta」；词表外/空值/超 3 域 → `check-standards.sh` J 段 WARN 并指明非法值（不阻断）；`domain-history.sh` 对词表外查询名拒绝并打印词表 |
 | `<!-- doc-impact: ... -->` | change 的 **tasks.md 文档节第一行** | `<!-- doc-impact: 域列表 -->`，域固定 8 选：flow / api / database / architecture / standard / configuration / deployment / none(附理由) | `<!-- doc-impact: standard -->` | 域不在 8 选项=verify 失败；「声明了未更新文档」→ verify FAIL 被 spec-gate ①拦；启发式疑似遗漏误报可加 `<!-- doc-impact-excuse: domain=理由 -->` 豁免（只豁免疑似遗漏，不豁免真没改） |
 | `<!-- ui-front-path-excuse: 理由 -->` | change 的 **ui-design.md** | `<!-- ui-front-path-excuse: 前端路径为他人 change 脏文件示例，与本 change 无关 -->`（存在即豁免，理由不解析；fix-doc-impact-misattribution 引入） | `archive/2026-09-08-coordinate-concurrent-changes/ui-design.md`：豁免 tasks 历史豁免声明中的 `front/app/api/dailyReports.ts` 他人脏文件路径 | ui-design-gate 的 ui-impact-mismatch block 照常（该注释放行 none 档纯工具链 change 的前端路径误报；不写注释无任何报错） |
 | human-feedback 条目格式 | change 的 **human-feedback.md**（可选制品；收到用户对产物的反馈时记入） | 标题行 `### FB-<N> <日期>【<类型>\|<归因>】<标题>` + 状态行 `- **状态**：<状态>`；类型二值 产品\|流程，归因五类封闭 frontend\|backend\|test-gap\|fact-check\|process（多因按根因优先归 fact-check），状态五值封闭 待处理\|处理中\|已消化\|已转挂\|已放弃（契约源：add-change-lifecycle-retro design D7；词表 `feedback.sh menu`） | `openspec/changes/ai-provider-model-overhaul/human-feedback.md`：10 条含归因标注与状态，verify 全处置 | 词表外归因/缺状态行 → `harness-retro --lifecycle` 第五段计「格式异常」单列、`feedback.sh verify` 状态不明视同未处置提醒（归档对账不阻断）；不进 events.db（文件随 change 归档永久保存） |
@@ -37,12 +38,30 @@ doc-impact-applies: docs/reference/ | section=注册点速查
 
 **flow 节名红线**：flow 文档的注入按「业务约束与不变量」节名**硬编码抓取**——节名写成「业务红线」「约束」等别名，域声明注入静默取不到节（A 段五段式校验也会 FAIL）。
 
+## 族级 capability 与来源注释
+
+capability **按功能族划，不按 change 划**。每来一个 change 就新建一个 capability，会让同一套规矩碎成十几个文件（实测：标签体系曾碎成 23 个 spec / 2771 行，改一次要开 21 个文件）。
+
+| 场景 | 做法 |
+| --- | --- |
+| 新 change 改一个已存在的功能 | **MODIFY 现有族级 spec**，不新建 capability |
+| 功能确实自成一族（与现有族无改动连带关系） | 新建 capability，命名用功能名而非 change 名 |
+| 族内碎片已多（>1500 行 或 改一次要读 >3 个 spec） | 开一个合并 change，用 `scripts/harness/merge-spec-family.sh` 生成初稿 |
+| 合并时搬迁 Requirement | 每条标题下加 `<!-- from: <旧capability> (<归档日期> <归档change>) -->`；来源只认 `## ADDED Requirements` 的 change，查不到就只写 capability 名，**不编造** |
+| 合并时发现施工记录（包结构/命名/一次性迁移/纯测试要求） | 排到族 spec 末尾并加 `<!-- kind: impl -->`，**不删**——删契约要单独提 change |
+
+**族名与旧 capability 重名时就地扩容**（不搞改名新建）：旧 capability 保留，只把兄弟成员的 Requirement 以 `## ADDED Requirements` 追加进去；代价是它原有条目不重排，可接受。
+
+**族级 domain marker 按「改这族必须读哪些 flow 红线」取舍，不按「成员碰过哪些域」**：J 段上限 3 域装不下成员并集，选主业务域 + 会改变契约含义的次域（如 `tagging` 选 `semantic-board, ui`，因队列芯片是用户可见组件）。已知代价：被舍弃的次域查询不到该族。
+
+**归档必须声明 `retire_capabilities: true`**：capability 的 Requirement 被 REMOVED 清空后，openspec 默认「写入重建稿 → 校验」，空 spec 校验失败会整次中止；声明后归档直接删除 spec 文件并修剪空目录，**不会留空壳**（先例：`archive/2026-11-20-retire-story-adopt-event-metrics/.openspec.yaml`）。
+
 **三个注释各是干嘛的、为什么这么设计**：
 
 | 注释 | 干嘛的 | 为什么这么设计 |
 | --- | --- | --- |
-| `doc-impact-applies` | 声明文档的**代码辖区**：编辑命中这些路径前缀时，本文档（section 指定的节）被 JIT 注入 | 辖区声明放文档头部而非中心配置——文档自描述，新增文档零中心注册；头部 15 行限制 + mtime 缓存让扫描开销固定；「仅档位激活时生效」保「未激活=仅索引」不变量（未激活会话不硬塞，模型按需自读） |
-| `constraint-domains` | change **声明涉哪些业务域**，档位激活后注入对应 flow 约束节（声明为主，关键词/编辑路径命中兑底） | 9 个 flow 约束节全量 43K 塞不下，域声明让注入范围显式可审计（widget 可见「无域声明」）；每回合重解析＝proposal 改了即时生效且不进粘性集合（防旧域残留）；域名＝flow basename 免维护映射表 |
+| `doc-impact-applies` | 声明文档的**代码辖区**：编辑命中这些路径前缀时，本文档进本阶段路由清单（路径 + section 节名） | 辖区声明放文档头部而非中心配置——文档自描述，新增文档零中心注册；头部 15 行限制 + mtime 缓存让扫描开销固定；**编辑路径命中（文件系统事实、零歧义）只把文档列进本阶段路由清单**，引导模型自主 read——正文注入通道已退役（stage-driven-constraint-injection） |
+| `constraint-domains` | change **声明涉哪些业务域**，阶段激活后注入对应 flow 约束节的**红线层**（关键词/编辑路径命中只进路由清单，不送正文） | 9 个 flow 约束节全量 43K 塞不下，域声明让注入范围显式可审计（widget 可见「无域声明」）；两处并集=proposal（存量）+ stage.md（实现期活口径，只增不减）；每回合重解析＝改了即时生效且不进粘性集合（防旧域残留）；域名＝flow basename 免维护映射表 |
 | `<!-- doc-impact: -->` | 声明本 change **动了哪些文档域/文件**，归档前 verify 对账 | 文档更新靠自觉必漏（本标准存在的理由）——机器可读声明把「别忘了更新文档」变成机械校验；excuse 只豁免「疑似遗漏」（多 change 并行脏树误报），不豁免「声明了未更新」（真没改文档，必须真改） |
 
 ## flow 域文档模板
@@ -72,14 +91,14 @@ doc-impact-applies: docs/reference/ | section=注册点速查
 
 ## 约束节红线句格式（declaration 注入层）
 
-「业务约束与不变量」节是 constraint-injection 的注入单元，且**声明域注入（proposal `constraint-domains` 命中）只取红线层**——节内顶层列表项的首个加粗块。细节层经关键词 / JIT 路径命中的全节注入、或模型自行 `read` 到达（`@constraint-declaration-redline`）。
+「业务约束与不变量」节是 constraint-injection 的注入单元，且**声明域注入（proposal `constraint-domains` 命中）只取红线层**——节内顶层列表项的首个加粗块。细节层由模型按**阶段路由清单**自行 `read` 到达（关键词/JIT 两条正文通道已随 stage 化退役，`@constraint-declaration-redline`）。
 
 - 每条约束 MUST 以顶层列表项（`N. ` 或 `- `，行首无缩进）呈现，**首词组加粗 `**...**` 为自含红线句**：脱离本文档上下文单独读该句，即知道「什么 MUST / MUST NOT」——含主语与边界（对象、触发时机、例外），不再是「TriggerNow 互斥」这类需上下文才能解码的主题短语。
 - 红线句是既有约束内容的提炼重组，MUST NOT 新造语义、MUST NOT 增删或弱化不变量；细节跟在红线句后（`：` 分隔或紧随），细节不进红线层。
 - 无加粗块的列表项不进红线层（提取器跳过该条，不取首行文本凑数）；引用块（`>`）与自由段落不属红线层；嵌套列表项属细节层。
-- 红线层提取失败（0 条）或拼接低于 `minSectionBytes`（缺省 512B）时，声明域注入回退全节（fail-safe）——不遵循本格式 = 该域恒定全量注入，丢失瘦身收益。
+- 红线层提取失败（0 条）、拼接低于 `minSectionBytes`（缺省 512B）或约束节缺失时，声明域注入回退**取数指引行**（路径+节名+digest 命令，零正文）——不遵循本格式 = 该域红线不进注入，模型只能自己 read 全文，红线「必达」降级为「靠自觉」。
 
-提取器实现：`.pi/extensions/constraint-injection.ts` 的 `extractRedlines()`（顶层列表项行取首个 `**...**` 块，保留原文顺序与编号）；格式规范与提取器语义同步演进，改一处必改另一处。
+提取器实现：`.pi/extensions/lib/constraint-redlines.ts` 的 `extractRedlines()`（顶层列表项行取首个 `**...**` 块，保留原文顺序与编号）——constraint-injection 扩展与 `scripts/harness/constraint-digest.sh` **双引同一实现**，红线提取只有这一份，脚本侧禁止另写正则；格式规范与提取器语义同步演进，改一处必改另一处。
 
 ## 最佳实践案例（照这些抄）
 
@@ -94,7 +113,7 @@ doc-impact-applies: docs/reference/ | section=注册点速查
 ## checklist：新增 flow 域
 
 1. [ ] 建 `flow/<域名>.md`，五段式节名一字不差 → 漏节：**check-standards A 段**
-2. [ ] 「业务约束与不变量」节每条约束首词加粗自含红线句（上方格式节）→ 不遵循：声明域注入恒回退全节（无门禁拦，注入字节不降）
+2. [ ] 「业务约束与不变量」节每条约束首词加粗自含红线句（上方格式节）→ 不遵循：声明域回退取数指引行（红线不进注入；无门禁拦）
 2. [ ] 头部 15 行内写 `doc-impact-applies`（辖区路径 + `| section=业务约束与不变量`）→ 漏写：JIT 静默失效，**无门禁拦**（最容易漏）
 3. [ ] `constraints-index.md` 业务规范节登记域名 →flow 文档 → 漏登：constraint-injection 域声明不识别，**无门禁拦**
 4. [ ] proposal.md 写 `<!-- constraint-domains: 域名 -->` → 漏写：域注入不触发（widget 有提示）
@@ -120,7 +139,8 @@ doc-impact-applies: docs/reference/ | section=注册点速查
 | check-standards E | archive change 被 flow「变更溯源」表引用（2026-06-29 后） | 归档后 |
 | check-standards F | active change 的 doc-impact 声明对账（doc-impact.sh verify） | 归档前 |
 | check-standards G | 导航层（docs/README、docs/reference/*.md 一级、flow/README、architecture/map.md）相对 .md 链接死链 | 归档前 |
-| spec-gate ①-④ | ① doc-impact verify 退出码 0 ② check-standards 退出码 0 ③ tasks 尾三节+声明标记 ④ scenario-trace（验证节 `\| Scenario \| 测试文件 \|` 映射表，「人工」开头合法） | `openspec archive` 时 tool_call 拦截 |
+| check-standards J | main spec 的 `<!-- domain: -->` 存在性 + 值合法性（15 词表 / 非空 / ≤3 域）——**只 WARN 不阻断**（观察期） | 归档前 |
+| spec-gate 文档与任务结构 | doc-impact、check-standards、tasks 尾三节和声明标记；不再对账 Scenario 映射。其余检查见开发执行规范 §11 | `openspec archive` 时 tool_call 拦截 |
 
 ## 维护提醒
 

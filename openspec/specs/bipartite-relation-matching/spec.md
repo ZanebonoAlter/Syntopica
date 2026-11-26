@@ -1,3 +1,5 @@
+<!-- domain: topic-graph -->
+
 ## Purpose
 
 管理 DailyReportSection 之间跨天关系的三阶段二分图最优匹配。通过匈牙利算法（Phase 1）求解相邻天的 1:1 全局最优分配，再通过 Phase 2 split/merge 检测和 Phase 3 skip-day 补查，覆盖所有有意义的 section 间延续关系。相比旧增量贪心匹配，从根本上解决了累积误差和 merge 泛滥问题。

@@ -1,6 +1,7 @@
 package database
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -79,6 +80,39 @@ func columnIsNullable(db *gorm.DB, table, column string) bool {
 		return true
 	}
 	return nullable == "YES"
+}
+
+// columnExists reports whether a column exists on a table in the public schema.
+// Callers use it to skip DDL on columns that were never created (or were
+// dropped) — without the guard "column ... does not exist" aborts startup.
+func columnExists(db *gorm.DB, table, column string) bool {
+	var exists bool
+	if err := db.Raw(
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name=? AND column_name=?)`,
+		table, column,
+	).Row().Scan(&exists); err != nil {
+		return false
+	}
+	return exists
+}
+
+// columnMaxLength reads the character length limit of a column
+// (information_schema.columns.character_maximum_length) — the same lookup
+// shape as columnIsNullable. Returns (limit, true) when the column exists AND
+// has a length limit; returns (0, false) when the column is missing or has no
+// limit at all (text and friends — nothing to widen there).
+func columnMaxLength(db *gorm.DB, table, column string) (int, bool) {
+	var maxLen sql.NullInt64
+	if err := db.Raw(
+		`SELECT character_maximum_length FROM information_schema.columns WHERE table_schema='public' AND table_name=? AND column_name=?`,
+		table, column,
+	).Row().Scan(&maxLen); err != nil {
+		return 0, false
+	}
+	if !maxLen.Valid {
+		return 0, false
+	}
+	return int(maxLen.Int64), true
 }
 
 // ensureNotNullDefault backfills NULL rows with a literal default value, then
@@ -259,16 +293,22 @@ func postgresMigrations() []Migration {
 		// ── Column type adjustments ─────────────────────────────────
 		{
 			Version:     "20260403_0003",
-			Description: "Staged rollout: set topic_tag_embeddings.embedding column type to vector(4096); runtime dimension configured via embedding_config JSON (embedding_dimension).",
+			Description: "确保向量列存在且维度无关（目标类型无维度限定）。",
 			Up: func(db *gorm.DB) error {
-				if err := db.Exec("ALTER TABLE topic_tag_embeddings ADD COLUMN IF NOT EXISTS embedding vector(4096)").Error; err != nil {
+				// 目标类型写「无维度限定的 vector」而非 vector(N)：维度由运行时 embedding
+				// 模型的实际输出决定（逐行存于 Dimension 字段），不属于 schema 契约。
+				// 写成 vector(N) 会让本迁移在「库中维度 ≠ 硬编码维度」时直接失败——
+				// 灾备恢复场景下（历史备份档没有迁移历史 → 迁移链在有数据的库上从零重放）
+				// 这会把恢复变成一颗地雷。去掉 typmod 是放宽而非收紧约束，任意维度的
+				// 存量数据都能安全 ALTER。
+				if err := db.Exec("ALTER TABLE topic_tag_embeddings ADD COLUMN IF NOT EXISTS embedding vector").Error; err != nil {
 					return fmt.Errorf("add topic_tag_embeddings.embedding column: %w", err)
 				}
-				// ALTER COLUMN TYPE rewrites the whole table under an
-				// AccessExclusiveLock — guard with lock_timeout so a large table
-				// fails fast instead of blocking writers indefinitely.
+				// ALTER COLUMN TYPE 在有存量数据时会拿 AccessExclusiveLock ——
+				// 套 lock_timeout 守卫，大表快速失败而不是无限期阻塞写入。
+				// 列已是无限定 vector 时该语句是幂等 no-op（不重写表、不改列类型）。
 				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
-					if err := tx.Exec("ALTER TABLE topic_tag_embeddings ALTER COLUMN embedding TYPE vector(4096)").Error; err != nil {
+					if err := tx.Exec("ALTER TABLE topic_tag_embeddings ALTER COLUMN embedding TYPE vector").Error; err != nil {
 						return fmt.Errorf("set topic_tag_embeddings.embedding dimensions: %w", err)
 					}
 					return nil
@@ -395,6 +435,11 @@ func postgresMigrations() []Migration {
 			Version:     "20260417_0002",
 			Description: "Add GIN index for article full-text search using tsvector.",
 			Up: func(db *gorm.DB) error {
+				// 回填 search_vector：只更新「算出来与存量不同」的行。
+				// 无条件 UPDATE 会把 59152 行全部重写一遍（含 ~1GB 的 GIN 索引重建），
+				// 在 SD 卡上要 2 小时以上——灾备恢复（档内无迁移历史 → 迁移链从零重放）
+				// 会卡在这里。存量行本来就由同一个表达式算过（迁移或触发器），
+				// 加 IS DISTINCT FROM 守卫后终态完全相同，但重复执行是零写入。
 				stmts := []string{
 					`ALTER TABLE articles ADD COLUMN IF NOT EXISTS search_vector tsvector`,
 					`CREATE INDEX IF NOT EXISTS idx_articles_search_vector ON articles USING GIN (search_vector)`,
@@ -411,6 +456,9 @@ func postgresMigrations() []Migration {
 						BEFORE INSERT OR UPDATE OF title, description ON articles
 						FOR EACH ROW EXECUTE FUNCTION articles_search_vector_update()`,
 					`UPDATE articles SET search_vector =
+						setweight(to_tsvector('simple', COALESCE(title, '')), 'A') ||
+						setweight(to_tsvector('simple', COALESCE(description, '')), 'B')
+					WHERE search_vector IS DISTINCT FROM
 						setweight(to_tsvector('simple', COALESCE(title, '')), 'A') ||
 						setweight(to_tsvector('simple', COALESCE(description, '')), 'B')`,
 				}
@@ -1507,7 +1555,7 @@ func postgresMigrations() []Migration {
 					{"semantic_labels", "aliases", "'[]'::jsonb", false},
 					{"semantic_labels", "context_layers", `'["week","month","year","all"]'::jsonb`, false},
 					{"topic_tag_board_labels", "score", "0", true},
-					{"topic_tag_board_labels", "downgraded", "false", true},
+					// downgraded 列已于 2026-11-12 随 retire-downgraded-mount 退役删除
 					{"topic_tag_board_labels", "direction_mismatch", "false", true},
 				}
 				for _, c := range cols {
@@ -2438,7 +2486,39 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, marginNotesWebSourcesMigration())
 	migrations = append(migrations, marginNotesWebSearchStatusMigration())
 	migrations = append(migrations, vendorModelMigration())
-	return append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration())
+	migrations = append(migrations, keyEventMarkersMigration())
+	migrations = append(migrations, pgTrgmMigration(), searchVectorDropMigration())
+	migrations = append(migrations, entitySubjectMigration())
+	migrations = append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration(), signalDispositionMigration(), questionResearchBriefMigration(), searchSemanticHalfvecIndexMigration(), intraLaneBucketColumnsMigration(), auxiliaryDescriptionRepairMigration(), embeddingModelColumnWidthMigration(), embeddingModelNotNullMigration(), storyHeatTablesMigration())
+	migrations = append(migrations, laneManualCorrectionPendingMigration(), laneManualCorrectionOverridesTableMigration(), laneManualCorrectionAssignmentTraceMigration(), laneManualCorrectionAssignmentOverridesTableMigration())
+	migrations = append(migrations, dailyReportBackfillRunsMigration())
+	return append(migrations, storySignalContentKeyMigration(), unifyVectorColumnDimensionMigration(), ensureTopicTagHalfvecIndexMigration(), aiDetectionSchemaMigration(), tagJobUniqueMigration(), detectionJobUniqueMigration(), topicLaneConstraintMigration(), ensureSemanticLabelMergeHalfvecIndexMigration())
+}
+
+// intraLaneBucketColumnsMigration implements 20261024_0001
+// (add-intra-lane-theme-bucketing D6): add the two bucket columns to
+// daily_report_sections. AutoMigrate also creates them from the model, but the
+// explicit migration pins the DB defaults (historical rows keep
+// bucket_index=0 / bucket_title NULL — no backfill) and documents the
+// "same cluster_index may repeat" contract. Idempotent (IF NOT EXISTS) and
+// skips when the table is absent (domain models not registered).
+func intraLaneBucketColumnsMigration() Migration {
+	return Migration{
+		Version:     "20261024_0001",
+		Description: "intra-lane-theme-bucketing: add daily_report_sections.bucket_title (nullable) / bucket_index (NOT NULL default 0); sibling bucket sections share cluster_index, no unique constraint added",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "daily_report_sections") {
+				return nil
+			}
+			if err := db.Exec(`ALTER TABLE daily_report_sections ADD COLUMN IF NOT EXISTS bucket_title VARCHAR(200)`).Error; err != nil {
+				return fmt.Errorf("add daily_report_sections.bucket_title: %w", err)
+			}
+			if err := db.Exec(`ALTER TABLE daily_report_sections ADD COLUMN IF NOT EXISTS bucket_index INTEGER NOT NULL DEFAULT 0`).Error; err != nil {
+				return fmt.Errorf("add daily_report_sections.bucket_index: %w", err)
+			}
+			return nil
+		},
+	}
 }
 
 // boardHealthSnapshotMigration implements 20261006_0001
@@ -2462,19 +2542,25 @@ func boardHealthSnapshotMigration() Migration {
 			if !tableExists {
 				return nil
 			}
+			// 约束已存在时不得靠「报错后再查」来兼底：PG 里任何一条语句报错都会中止
+			// 当前事务（后续语句只会拿到 25P02），迁移闭包在事务内跑，事后补救无效。
+			// 正确做法是**先查后加**（幂等且不产生事务中止）。
+			// 并发首跑（AutoMigrate + 迁移竞争同一进程）仍可能撞名——那种情况让迁移
+			// 失败重试即可（下一次启动先查到约束存在 → 直接跳过）。
+			var constraintExists bool
+			if err := db.Raw(`SELECT EXISTS (
+				SELECT 1 FROM information_schema.table_constraints
+				WHERE constraint_name = 'fk_board_health_snapshots_board'
+				  AND table_name = 'board_health_snapshots')`).Scan(&constraintExists).Error; err != nil {
+				return fmt.Errorf("check fk_board_health_snapshots_board: %w", err)
+			}
+			if constraintExists {
+				return nil
+			}
 			if err := db.Exec(`ALTER TABLE board_health_snapshots
 				ADD CONSTRAINT fk_board_health_snapshots_board
 				FOREIGN KEY (semantic_board_id) REFERENCES semantic_labels(id)
 				ON DELETE CASCADE`).Error; err != nil {
-				// Idempotent guard: a concurrent first-run (AutoMigrate + migration
-				// racing a second process) may have added the constraint already.
-				var constraintExists bool
-				if cErr := db.Raw(`SELECT EXISTS (
-					SELECT 1 FROM information_schema.table_constraints
-					WHERE constraint_name = 'fk_board_health_snapshots_board'
-					  AND table_name = 'board_health_snapshots')`).Scan(&constraintExists).Error; cErr == nil && constraintExists {
-					return nil
-				}
 				return fmt.Errorf("add fk_board_health_snapshots_board: %w", err)
 			}
 			return nil
@@ -2642,11 +2728,20 @@ func boardSignalMigration() Migration {
 						`ALTER TABLE board_signal_discovery
 							ADD CONSTRAINT uq_board_signal_discovery_id_owner
 							UNIQUE (id, semantic_board_id, granularity, period)`,
-						`ALTER TABLE board_signal_candidate
-							DROP CONSTRAINT IF EXISTS uq_board_signal_candidate_id_owner`,
-						`ALTER TABLE board_signal_candidate
-							ADD CONSTRAINT uq_board_signal_candidate_id_owner
-							UNIQUE (id, semantic_board_id, granularity, period)`,
+						// 复合唯一约束**不能**先 DROP 再 ADD：它被
+						// fk_board_signal_research_progress_candidate（另一个迁移建的
+						// 复合外键）引用，PG 会拒绝 DROP（2BP01 dependent objects）。
+						// 改为 DO 块守卫：不存在才添加，已存在则原样保留（约束内容已冻结）。
+						`DO $$
+						BEGIN
+							IF NOT EXISTS (SELECT 1 FROM pg_constraint
+								WHERE conname = 'uq_board_signal_candidate_id_owner'
+								  AND conrelid = 'public.board_signal_candidate'::regclass) THEN
+								ALTER TABLE board_signal_candidate
+									ADD CONSTRAINT uq_board_signal_candidate_id_owner
+									UNIQUE (id, semantic_board_id, granularity, period);
+							END IF;
+						END $$`,
 						// A candidate can never disagree with its batch's owner/period.
 						`ALTER TABLE board_signal_candidate
 							ADD CONSTRAINT fk_board_signal_candidate_discovery
@@ -3217,25 +3312,63 @@ func crossBoardRelationMigration() Migration {
 				return nil
 			}
 			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				// 约束内容已冻结，重放时**不得**先 DROP 再 ADD：
+				// ① PG 里 ADD CONSTRAINT 撞名会报错「already exists」，而任何一条语句
+				//    报错都会中止当前事务——「吞掉 already exists 继续往下走」在事务内
+				//    根本不成立（下一条只会拿到 25P02 current transaction is aborted）；
+				// ② DROP 复合唯一约束还会被引用它的外键挡住（2BP01）。
+				// 改为 DO 块守卫：约束不存在才添加，已存在则原样保留。
 				statements := []string{
-					`ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_status CHECK (status IN ('unresolved','proposed','confirmed','dismissed','expired'))`,
-					`ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_type CHECK (relation_type IN ('causal','common_driver','divergence','correlated','contextual','unclear'))`,
-					`ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_verdict CHECK (verification_verdict IN ('supported','contested','insufficient','rejected'))`,
-					`ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_grade CHECK (quality_grade IN ('high','medium','low'))`,
-					`ALTER TABLE cross_board_relation_runs ADD CONSTRAINT ck_cross_board_relation_runs_status CHECK (status IN ('queued','running','succeeded','partial','failed'))`,
-					`ALTER TABLE cross_board_relation_runs ADD CONSTRAINT ck_cross_board_relation_runs_trigger CHECK (trigger_kind IN ('manual','auto'))`,
+					`DO $$
+					BEGIN
+						IF NOT EXISTS (SELECT 1 FROM pg_constraint
+							WHERE conname = 'ck_cross_board_relations_status'
+							  AND conrelid = 'public.cross_board_relations'::regclass) THEN
+							ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_status
+								CHECK (status IN ('unresolved','proposed','confirmed','dismissed','expired'));
+						END IF;
+						IF NOT EXISTS (SELECT 1 FROM pg_constraint
+							WHERE conname = 'ck_cross_board_relations_type'
+							  AND conrelid = 'public.cross_board_relations'::regclass) THEN
+							ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_type
+								CHECK (relation_type IN ('causal','common_driver','divergence','correlated','contextual','unclear'));
+						END IF;
+						IF NOT EXISTS (SELECT 1 FROM pg_constraint
+							WHERE conname = 'ck_cross_board_relations_verdict'
+							  AND conrelid = 'public.cross_board_relations'::regclass) THEN
+							ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_verdict
+								CHECK (verification_verdict IN ('supported','contested','insufficient','rejected'));
+						END IF;
+						IF NOT EXISTS (SELECT 1 FROM pg_constraint
+							WHERE conname = 'ck_cross_board_relations_grade'
+							  AND conrelid = 'public.cross_board_relations'::regclass) THEN
+							ALTER TABLE cross_board_relations ADD CONSTRAINT ck_cross_board_relations_grade
+								CHECK (quality_grade IN ('high','medium','low'));
+						END IF;
+					END $$`,
 					// Idempotent open-row uniqueness: one pending suggestion per hash.
 					`CREATE UNIQUE INDEX IF NOT EXISTS uq_cross_board_relations_open ON cross_board_relations (suggestion_hash) WHERE status IN ('unresolved','proposed')`,
 					`CREATE INDEX IF NOT EXISTS idx_cross_board_relations_confirmed_active ON cross_board_relations (source_board_id, target_board_id, quality_grade DESC, confirmed_at DESC) WHERE status = 'confirmed'`,
 				}
+				if tableExists(tx, "cross_board_relation_runs") {
+					statements = append(statements, `DO $$
+					BEGIN
+						IF NOT EXISTS (SELECT 1 FROM pg_constraint
+							WHERE conname = 'ck_cross_board_relation_runs_status'
+							  AND conrelid = 'public.cross_board_relation_runs'::regclass) THEN
+							ALTER TABLE cross_board_relation_runs ADD CONSTRAINT ck_cross_board_relation_runs_status
+								CHECK (status IN ('queued','running','succeeded','partial','failed'));
+						END IF;
+						IF NOT EXISTS (SELECT 1 FROM pg_constraint
+							WHERE conname = 'ck_cross_board_relation_runs_trigger'
+							  AND conrelid = 'public.cross_board_relation_runs'::regclass) THEN
+							ALTER TABLE cross_board_relation_runs ADD CONSTRAINT ck_cross_board_relation_runs_trigger
+								CHECK (trigger_kind IN ('manual','auto'));
+						END IF;
+					END $$`)
+				}
 				for _, stmt := range statements {
-					// CREATE INDEX IF NOT EXISTS is idempotent; ADD CONSTRAINT is not,
-					// so drop-then-add keeps re-runs safe (constraint content is frozen).
 					if err := tx.Exec(stmt).Error; err != nil {
-						if strings.Contains(err.Error(), "already exists") {
-							// tolerate re-run on a constraint that already exists
-							continue
-						}
 						return fmt.Errorf("cross-board relation migration: %w", err)
 					}
 				}
@@ -3544,17 +3677,17 @@ func watchSuggestionCleanupMigration() Migration {
 //	                    长期分析另行保存）；FK ON DELETE CASCADE 兑现「删除批注
 //	                    连带问答」；
 //	term_notes          术语库：term_norm 归一化唯一键（trim+全角→半角+大小写
-//	                    折叠），hit_count 累计不重复建条；embedding vector(2560)
-//	                    可空列为 P2 相似词归并预留（维度=生产库实测
-//	                    semantic_labels/daily_report_sections 等列同维，2026-09-22
-//	                    核定），P1 不写入。
+//	                    折叠），hit_count 累计不重复建条；embedding 为**无维度限定**
+//	                    的 vector（维度是运行时属性，见
+//	                    unify-vector-column-dimension），可空列为 P2 相似词归并
+//	                    预留，P1 不写入。
 //
 // 无存量数据迁移，纯新增；回滚=前端还原+表保留（孤儿数据无害）。幂等：
 // CREATE TABLE/INDEX IF NOT EXISTS + FK 按约束名探测。
 func marginNotesTablesMigration() Migration {
 	return Migration{
 		Version:     "20260922_0003",
-		Description: "daily-report-margin-notes: create report_annotations / annotation_qas / term_notes (margin note anchors, QA turns with jsonb array contract, term library with normalized unique key and nullable vector(2560) embedding reserved for P2).",
+		Description: "daily-report-margin-notes: create report_annotations / annotation_qas / term_notes (margin note anchors, QA turns with jsonb array contract, term library with normalized unique key and nullable dimensionless vector embedding reserved for P2 — the dimension is a runtime property, not a schema contract).",
 		Up: func(db *gorm.DB) error {
 			if err := db.Exec(`
 				CREATE TABLE IF NOT EXISTS report_annotations (
@@ -3626,7 +3759,7 @@ func marginNotesTablesMigration() Migration {
 					first_seen_date     DATE         NULL,
 					last_seen_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
 					created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
-					embedding           vector(2560) DEFAULT NULL
+					embedding           vector DEFAULT NULL
 				)`).Error; err != nil {
 				return fmt.Errorf("create term_notes: %w", err)
 			}
@@ -3925,6 +4058,92 @@ func inferVendorDialect(name string) (dialect, structured string) {
 	}
 }
 
+// keyEventMarkersMigration implements 20261012_0001
+// (add-topic-key-event-markers design D1): the topic_key_event_markers /
+// key_event_recommendation_runs tables are created by AutoMigrate (with the
+// board+source_key unique index); this migration owns what AutoMigrate cannot
+// express — the state CHECK, the recommendation-run state CHECK, and the FK
+// deletion semantics that keep user choices alive:
+//   - semantic_board_id → semantic_boards(id) ON DELETE CASCADE（板块删除沿用删除语义）
+//   - persistent_topic_id → board_persistent_topics(id) ON DELETE SET NULL
+//     （topic 硬删保留注记，孤立注记不混入别的泳道）
+//   - source_report_id / source_thread_id / source_section_id → SET NULL
+//     （重建/删除只断开引用，不删人工选择；快照正文保留）
+//
+// Idempotent (drop-then-add CHECK + IF NOT EXISTS probes for FKs); skips
+// when the tables are absent (topicgraph-less deployments).
+func keyEventMarkersMigration() Migration {
+	return Migration{
+		Version:     "20261012_0001",
+		Description: "add-topic-key-event-markers: topic_key_event_markers state CHECK + SET NULL/CASCADE FKs; key_event_recommendation_runs state CHECK.",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "topic_key_event_markers") {
+				return nil
+			}
+			if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				statements := []string{
+					`ALTER TABLE topic_key_event_markers DROP CONSTRAINT IF EXISTS ck_topic_key_event_markers_state`,
+					`ALTER TABLE topic_key_event_markers ADD CONSTRAINT ck_topic_key_event_markers_state CHECK (state IN ('suggested','confirmed','dismissed'))`,
+				}
+				for _, stmt := range statements {
+					if err := tx.Exec(stmt).Error; err != nil {
+						return fmt.Errorf("key event markers CHECK: %w", err)
+					}
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
+			if tableExists(db, "key_event_recommendation_runs") {
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					if err := tx.Exec(`ALTER TABLE key_event_recommendation_runs DROP CONSTRAINT IF EXISTS ck_key_event_recommendation_runs_state`).Error; err != nil {
+						return fmt.Errorf("drop run state CHECK: %w", err)
+					}
+					if err := tx.Exec(`ALTER TABLE key_event_recommendation_runs ADD CONSTRAINT ck_key_event_recommendation_runs_state CHECK (state IN ('running','done','failed'))`).Error; err != nil {
+						return fmt.Errorf("add run state CHECK: %w", err)
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+			fks := []struct{ name, table, column, ref, del string }{
+				// Boards are SemanticLabel rows (label_type='board') — the board FK
+				// references semantic_labels(id), same as every other board-owned table.
+				{"fk_topic_key_event_markers_board", "topic_key_event_markers", "semantic_board_id", "semantic_labels(id)", "CASCADE"},
+				{"fk_topic_key_event_markers_topic", "topic_key_event_markers", "persistent_topic_id", "board_persistent_topics(id)", "SET NULL"},
+				{"fk_topic_key_event_markers_report", "topic_key_event_markers", "source_report_id", "board_daily_reports(id)", "SET NULL"},
+				{"fk_topic_key_event_markers_section", "topic_key_event_markers", "source_section_id", "daily_report_sections(id)", "SET NULL"},
+				{"fk_topic_key_event_markers_thread", "topic_key_event_markers", "source_thread_id", "daily_report_threads(id)", "SET NULL"},
+			}
+			for _, fk := range fks {
+				// Guard: skip when the referenced table is absent on this deploy
+				// (e.g. semantic_boards may be absent on minimal deployments).
+				refTable := strings.TrimSuffix(fk.ref, "(id)")
+				if !tableExists(db, refTable) {
+					continue
+				}
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					if err := tx.Exec(fmt.Sprintf(`DO $$ BEGIN
+						IF NOT EXISTS (
+							SELECT 1 FROM information_schema.table_constraints
+							WHERE constraint_name = '%s' AND table_name = '%s'
+						) THEN
+							ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s ON DELETE %s;
+						END IF;
+					END $$`, fk.name, fk.table, fk.table, fk.name, fk.column, fk.ref, fk.del)).Error; err != nil {
+						return fmt.Errorf("add %s: %w", fk.name, err)
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+}
+
 // marginNotesWebSourcesMigration implements 20260924_0001
 // (daily-report-margin-notes 联网扩充，design D7)：
 //
@@ -3967,6 +4186,1175 @@ func marginNotesWebSearchStatusMigration() Migration {
 				return fmt.Errorf("add annotation_qas.web_search_status: %w", err)
 			}
 			return nil
+		},
+	}
+}
+
+// pgTrgmMigration implements 20261013_0001 (add-article-search design D1):
+// enable the pg_trgm contrib extension and build GIN trigram indexes on
+// articles.title / articles.description. These back the keyword search path
+// (LIKE '%q%' acceleration + similarity()), which replaces the retired
+// tsvector path (its 'simple' tokenizer fails on Chinese — 97% recall loss,
+// see the change proposal). Indexes cover title+description only; content is
+// deliberately left unindexed (write-amplification trade-off, design Non-Goal).
+//
+// Idempotent: IF NOT EXISTS throughout. Reversible in practice: dropping the
+// extension/indexes has no data dependency (Down stays nil per convention).
+func pgTrgmMigration() Migration {
+	return Migration{
+		Version:     "20261013_0001",
+		Description: "add-article-search design D1: enable pg_trgm and add GIN trgm indexes on articles.title/articles.description (LIKE acceleration replacing the tsvector path).",
+		Up: func(db *gorm.DB) error {
+			stmts := []string{
+				`CREATE EXTENSION IF NOT EXISTS pg_trgm`,
+				`CREATE INDEX IF NOT EXISTS idx_articles_title_trgm ON articles USING GIN (title gin_trgm_ops)`,
+				`CREATE INDEX IF NOT EXISTS idx_articles_description_trgm ON articles USING GIN (description gin_trgm_ops)`,
+			}
+			for _, s := range stmts {
+				if err := db.Exec(s).Error; err != nil {
+					return fmt.Errorf("pg_trgm migration: %w", err)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// searchVectorDropMigration implements 20261013_0002 (add-article-search
+// design D7): retire the tsvector full-text apparatus on articles — the
+// Chinese-tokenization-dead search_vector column, its update trigger, the
+// trigger function and the legacy GIN index. The last consumer of the column
+// switches to the pg_trgm path in the same change (20261013_0001 installs the
+// replacement indexes first).
+//
+// The column data is regenerable (recomputable from title/description via the
+// very trigger being dropped), so the drop loses nothing that cannot be
+// rebuilt — design D7 rollback note: with migration A kept, a rolled-back code
+// path simply cannot use full-text search until the column is recreated.
+//
+// Destructive (DROP COLUMN): self-skips unless MIGRATIONS_ALLOW_DESTRUCTIVE=1
+// (production default = skip, by design — see db-migration-safety). Fully
+// idempotent via IF EXISTS; trigger drops before the function so no dependency
+// is left dangling.
+func searchVectorDropMigration() Migration {
+	return Migration{
+		Version:     "20261013_0002",
+		Description: "add-article-search design D7: DROP articles.search_vector column + articles_search_vector_trigger + articles_search_vector_update() + idx_articles_search_vector (tsvector path retired for pg_trgm; column data recomputable from title/description). Destructive — guarded by MIGRATIONS_ALLOW_DESTRUCTIVE. ⚠️ 不可逆 DROP（破坏性，受 `MIGRATIONS_ALLOW_DESTRUCTIVE` 守卫；列数据可再生，生产执行前需备份）",
+		Up: func(db *gorm.DB) error {
+			// Destructive (DROP COLUMN): skip unless MIGRATIONS_ALLOW_DESTRUCTIVE=1.
+			// Production never sets the env — the self-skip there is expected (the
+			// column simply outlives the code that stopped reading it); dev/test
+			// open the gate to complete the retirement.
+			if !IsDestructiveAllowed() {
+				logging.Infof("skipping destructive migration 20261013_0002 (set MIGRATIONS_ALLOW_DESTRUCTIVE=1 to drop articles.search_vector)")
+				return nil
+			}
+			stmts := []string{
+				`DROP TRIGGER IF EXISTS articles_search_vector_trigger ON articles`,
+				`DROP FUNCTION IF EXISTS articles_search_vector_update()`,
+				`DROP INDEX IF EXISTS idx_articles_search_vector`,
+				`ALTER TABLE articles DROP COLUMN IF EXISTS search_vector`,
+			}
+			for _, s := range stmts {
+				if err := db.Exec(s).Error; err != nil {
+					return fmt.Errorf("search_vector drop migration: %w", err)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// questionResearchBriefMigration implements 20261019_0001
+// (add-question-driven-news-research D1): board_signal_candidate gains a
+// nullable research_brief jsonb column ({unknown, verification, source_ids}).
+// Old rows stay NULL — never backfilled, never guessed; absence = legacy
+// frozen-research protocol (seven sources only). AutoMigrate adds the column
+// on fresh DBs; this migration only guards the ADD COLUMN IF NOT EXISTS path
+// for existing deployments. Forward-only, idempotent.
+func questionResearchBriefMigration() Migration {
+	return Migration{
+		Version:     "20261019_0001",
+		Description: "add-question-driven-news-research D1: board_signal_candidate.research_brief nullable jsonb (unknown/verification/source_ids; NULL=legacy protocol, no backfill)",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "board_signal_candidate") {
+				return nil
+			}
+			return withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				if err := tx.Exec(`ALTER TABLE board_signal_candidate
+					ADD COLUMN IF NOT EXISTS research_brief jsonb NULL`).Error; err != nil {
+					return fmt.Errorf("board signal candidate research_brief: %w", err)
+				}
+				return nil
+			})
+		},
+	}
+}
+
+// signalDispositionMigration implements 20261015_0001
+// (redesign-enrichment-research-workbench design D1): the ignore marker table
+// board_signal_disposition is created by AutoMigrate (model registered in the
+// dataenrichment repository); AutoMigrate runs with
+// DisableForeignKeyConstraintWhenMigrating, so the candidate FK lives here —
+// same policy as fk_board_signal_research_progress_candidate (20260922_0002).
+// The marker is meaningless without its candidate: ON DELETE CASCADE. No new
+// columns on candidate/report tables; no backfill (absence of a row = not
+// ignored). Idempotent (DROP CONSTRAINT IF EXISTS first; no-op when the
+// table is absent).
+func signalDispositionMigration() Migration {
+	return Migration{
+		Version:     "20261015_0001",
+		Description: "redesign-enrichment-research-workbench design D1: FK board_signal_disposition.candidate_id -> board_signal_candidate(id) ON DELETE CASCADE (AutoMigrate owns the table; migration owns the FK; row present = ignored, no row = normal)",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "board_signal_disposition") {
+				return nil
+			}
+			if !tableExists(db, "board_signal_candidate") {
+				return nil
+			}
+			return withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				for _, stmt := range []string{
+					`ALTER TABLE board_signal_disposition
+						DROP CONSTRAINT IF EXISTS fk_board_signal_disposition_candidate`,
+					`ALTER TABLE board_signal_disposition
+						ADD CONSTRAINT fk_board_signal_disposition_candidate
+						FOREIGN KEY (candidate_id)
+						REFERENCES board_signal_candidate (id)
+						ON DELETE CASCADE`,
+				} {
+					if err := tx.Exec(stmt).Error; err != nil {
+						return fmt.Errorf("board signal disposition constraint: %w", err)
+					}
+				}
+				return nil
+			})
+		},
+	}
+}
+
+// TopicTagIdentityHalfvecIndexName 是语义搜索标签召回使用的 halfvec HNSW
+// 部分索引名（optimize-search-semantic-index design D1）。float32 HNSW 有
+// 2000 维硬上限（当前 embedding 列 2560 维建不了），halfvec 支持到 4000 维；
+// 只索引 identity 行（语义路径只查 identity），索引更小更快。
+const TopicTagIdentityHalfvecIndexName = "idx_topic_tag_embeddings_identity_halfvec_hnsw"
+
+// TopicTagIdentityHalfvecIndexDDL 是 halfvec identity 部分 HNSW 索引的单一
+// DDL 事实源（design D1/D4）：启动迁移 20261023_0001 与 tagmanagement 的
+// ensureVectorDimension 共用，避免两处 DDL 漂移。dim 必须是列的实际维度
+// （halfvec 1..4000）；索引表达式把 float32 向量转半精度存储，查询侧用同一
+// 表达式取候选。
+func TopicTagIdentityHalfvecIndexDDL(dim int) string {
+	// 参数是 int（非用户输入），无注入面；gosec 仍按格式化 SQL 报警。
+	return fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON topic_tag_embeddings USING hnsw ((embedding::halfvec(%d)) halfvec_cosine_ops) WHERE embedding_type = 'identity'`, TopicTagIdentityHalfvecIndexName, dim) //nolint:gosec // G201: dim 为已校验的整数，无注入面
+}
+
+// vectorColumnDimension 从 format_type 输出解析 pgvector 列维度：
+// "vector(2560)" → 2560；"vector"（未限定维度）/空串/非法 → 0（调用方据此
+// 跳过建索引）。
+func vectorColumnDimension(typeStr string) int {
+	s := strings.TrimSpace(typeStr)
+	const prefix = "vector("
+	if !strings.HasPrefix(s, prefix) || !strings.HasSuffix(s, ")") {
+		return 0
+	}
+	dim, err := strconv.Atoi(strings.TrimSuffix(s[len(prefix):], ")"))
+	if err != nil || dim <= 0 {
+		return 0
+	}
+	return dim
+}
+
+// VectorColumnType 读取列的实际类型声明（format_type 带 typmod，例如
+// "vector" / "vector(2560)"）。列不存在或查询失败时返回错误。
+//
+// 运行时纠正器（tagmanagement core / auxlabel、topicgraph repository）用它区分
+// 「列已是无维度限定的 vector」（目标形态，不再 ALTER）与「列仍带维度限定」
+// （迁移过渡期）。
+func VectorColumnType(db *gorm.DB, table, column string) (string, error) {
+	var typeStr string
+	if err := db.Raw(`
+SELECT format_type(a.atttypid, a.atttypmod)
+FROM pg_attribute a
+JOIN pg_class c ON c.oid = a.attrelid
+WHERE c.relname = ? AND a.attname = ?`, table, column).Row().Scan(&typeStr); err != nil {
+		return "", err
+	}
+	return typeStr, nil
+}
+
+// sampledVectorDimension 从存量数据采样列的实际维度——裸 vector 列的维度来源
+// （列类型不再声明维度后，维度只能从数据里读）。
+//
+// 表名与列名来自包内常量表（vectorDimensionlessColumns），无注入面。
+//
+// 返回 (dim, mixed, err)：
+//   - 表空 / 无非空向量 → (0, false, nil)；
+//   - 只有一种维度 → (该维度, false, nil)；
+//   - **多种维度并存** → (众数维度, true, nil)：裸列允许混合维度（放宽约束的
+//     代价），此时**不能**据此建 halfvec 索引——索引表达式内嵌维度，会把另一
+//     维度的写入直接拒掉（实测 "expected N dimensions, not M"）。调用方据此
+//     跳过建索引并降级为精确扫描。
+func sampledVectorDimension(db *gorm.DB, table, column string) (dim int, mixed bool, err error) {
+	type dimRow struct {
+		Dim   int
+		Count int64
+	}
+	var rows []dimRow
+	stmt := fmt.Sprintf( //nolint:gosec // G201: 表名/列名来自包内常量表，无注入面
+		"SELECT vector_dims(%s) AS dim, count(*) FROM %s WHERE %s IS NOT NULL GROUP BY 1 ORDER BY 2 DESC",
+		column, table, column)
+	if err := db.Raw(stmt).Scan(&rows).Error; err != nil {
+		return 0, false, err
+	}
+	if len(rows) == 0 {
+		return 0, false, nil
+	}
+	if len(rows) > 1 {
+		return rows[0].Dim, true, nil
+	}
+	return rows[0].Dim, false, nil
+}
+
+// topicTagEmbeddingColumnDimension 解析 topic_tag_embeddings.embedding 的维度：
+//
+//   - 列有限定（vector(N)）→ N（沿用 vectorColumnDimension 解析）；
+//   - 列无限定（vector）→ 从存量数据采样（SELECT vector_dims(...) GROUP BY）——
+//     列类型不再承载维度后，数据是唯一的维度事实源；
+//   - 表空（采样不到任何非空向量）→ 0，调用方跳过建索引，等运行时首次写入时
+//     由 ensureVectorDimension 按运行时维度建。
+//
+// mixed = true 表示存量数据里并存多种维度（裸列的放宽语义带来的可能）——调用方
+// 不应据此建带维度的索引。
+//
+// 迁移 20261023_0001 与 20261117_0002 共用本函数（单一真相源）。
+func topicTagEmbeddingColumnDimension(db *gorm.DB) (dim int, typeStr string, mixed bool, err error) {
+	typeStr, err = VectorColumnType(db, "topic_tag_embeddings", "embedding")
+	if err != nil {
+		return 0, "", false, err
+	}
+	if dim = vectorColumnDimension(typeStr); dim > 0 {
+		return dim, typeStr, false, nil
+	}
+	if typeStr != "vector" {
+		// 非 vector 类型（不该出现）：不做数据采样，避免把非向量列当向量读。
+		return 0, typeStr, false, nil
+	}
+	sampled, mixed, err := sampledVectorDimension(db, "topic_tag_embeddings", "embedding")
+	if err != nil {
+		return 0, typeStr, false, err
+	}
+	return sampled, typeStr, mixed, nil
+}
+
+// halfvecExpressionDimension 从索引定义文本解析 "::halfvec(N)" 内嵌的维度。
+// 表达式不可解析时返回 0。
+func halfvecExpressionDimension(indexDef string) int {
+	const marker = "::halfvec("
+	i := strings.Index(indexDef, marker)
+	if i < 0 {
+		return 0
+	}
+	rest := indexDef[i+len(marker):]
+	j := strings.Index(rest, ")")
+	if j < 0 {
+		return 0
+	}
+	dim, err := strconv.Atoi(rest[:j])
+	if err != nil || dim <= 0 {
+		return 0
+	}
+	return dim
+}
+
+// topicTagIdentityHalfvecIndexState 返回既有 halfvec identity 索引表达式内嵌的
+// 维度与其有效性（indisvalid）。索引不存在时返回 (0, true)。
+func topicTagIdentityHalfvecIndexState(db *gorm.DB) (dim int, valid bool) {
+	var def string
+	var isValid bool
+	if err := db.Raw(`
+SELECT pg_get_indexdef(i.indexrelid), i.indisvalid
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indexrelid
+WHERE c.relname = ? AND i.indrelid = to_regclass('public.topic_tag_embeddings')`,
+		TopicTagIdentityHalfvecIndexName).Row().Scan(&def, &isValid); err != nil {
+		return 0, true
+	}
+	return halfvecExpressionDimension(def), isValid
+}
+
+// TopicTagIdentityHalfvecIndexState 返回既有 halfvec identity 索引表达式内嵌的
+// 维度与其有效性（indisvalid）。索引不存在时返回 (0, true)。
+//
+// 运行时纠正器用它判断「索引表达式内嵌维度是否与当前运行时维度一致」——不一致
+// 必须重建（CREATE INDEX IF NOT EXISTS 不会纠正既有表达式）。
+func TopicTagIdentityHalfvecIndexState(db *gorm.DB) (dim int, valid bool) {
+	return topicTagIdentityHalfvecIndexState(db)
+}
+
+// VectorIndexExists 报告 public schema 下是否存在同名索引。
+func VectorIndexExists(db *gorm.DB, indexName string) (bool, error) {
+	var exists bool
+	if err := db.Raw(`SELECT to_regclass(?) IS NOT NULL`, "public."+indexName).Row().Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+// TopicTagIdentityHalfvecIndexDimension 返回既有 halfvec identity 索引表达式内嵌
+// 的维度；索引不存在或表达式不可解析时返回 0。运行时纠正器用它判断「索引表达式
+// 内嵌维度是否与当前运行时维度一致」（不一致必须重建——CREATE INDEX IF NOT
+// EXISTS 不会纠正既有表达式）。
+func TopicTagIdentityHalfvecIndexDimension(db *gorm.DB) int {
+	dim, _ := topicTagIdentityHalfvecIndexState(db)
+	return dim
+}
+
+// EnsureTopicTagIdentityHalfvecIndex 确保 halfvec identity 部分 HNSW 索引存在，
+// 且其表达式内嵌维度与 dim 一致：
+//
+//   - 索引不存在 → 建；
+//   - 索引存在但表达式内嵌维度 ≠ dim（**含表达式不可解析**——那就不是本索引，
+//     留着会静默挡住 CREATE INDEX IF NOT EXISTS）→ 先 DROP 再建；
+//   - 索引 INVALID（历史构建失败残留）→ 先 DROP 再建。
+//
+// 调用方负责 maintenance_work_mem / max_parallel_maintenance_workers 的设置
+// （迁移在事务内用 SET LOCAL，运行期在固定连接上用会话级 SET）。
+func EnsureTopicTagIdentityHalfvecIndex(db *gorm.DB, dim int) error {
+	exists, err := VectorIndexExists(db, TopicTagIdentityHalfvecIndexName)
+	if err != nil {
+		return fmt.Errorf("probe halfvec identity index: %w", err)
+	}
+	if exists {
+		existingDim, valid := topicTagIdentityHalfvecIndexState(db)
+		if !valid || existingDim != dim {
+			if err := db.Exec("DROP INDEX IF EXISTS " + TopicTagIdentityHalfvecIndexName).Error; err != nil { //nolint:gosec // G201: 索引名是包内常量
+				return fmt.Errorf("drop halfvec identity index: %w", err)
+			}
+		}
+	}
+	if err := db.Exec(TopicTagIdentityHalfvecIndexDDL(dim)).Error; err != nil {
+		return fmt.Errorf("create halfvec identity HNSW index (dim %d): %w", dim, err)
+	}
+	return nil
+}
+
+// ensureTopicTagIdentityHalfvecIndexForColumn 按列的实际维度确保 halfvec identity
+// 索引存在——迁移 20261023_0001 与 20261117_0002 共用的单一实现（维度解析 +
+// 上限判断 + 重建逻辑都只写一遍）。
+//
+// 维度来源：列有限定 → 解析列类型；列无限定 → 从存量数据采样（表空则跳过，
+// 等运行时首次写入时由 ensureVectorDimension 建）。
+func ensureTopicTagIdentityHalfvecIndexForColumn(db *gorm.DB, migrationTag string) error {
+	dim, typeStr, mixed, err := topicTagEmbeddingColumnDimension(db)
+	if err != nil {
+		return fmt.Errorf("read topic_tag_embeddings.embedding type: %w", err)
+	}
+	if mixed {
+		// 裸列里并存多种维度：不能建带维度的索引——索引表达式会把另一维度的
+		// 写入直接拒掉（实测 "expected N dimensions, not M"）。宁可精确扫描。
+		//
+		// 注意这里是**能力受限**不是单纯变慢：精确扫描同样要跨行比较向量，
+		// 混维的存量行会让比较报 different vector dimensions，检索在清理掉
+		// 少数派维度之前是不可用的。日志要如实说明，避免运维误以为只是慢。
+		logging.Warnf("Migration %s: skip halfvec HNSW index (embedding type %q holds vectors of multiple dimensions; cross-dimension comparisons will error until the minority-dimension rows are cleaned), semantic search degraded", migrationTag, typeStr)
+		return nil
+	}
+	if dim <= 0 || dim > 4000 {
+		logging.Infof("Migration %s: skip halfvec HNSW index (embedding type %q, dim %d; halfvec supports 1..4000), semantic search falls back to exact scan", migrationTag, typeStr, dim)
+		return nil
+	}
+
+	// 构建期维护内存：128MB 默认下 14k×2560 行会落盘（实测 64MB=73s，
+	// 256MB=29s）。SET LOCAL 随事务结束复位，不污染连接池。
+	if err := db.Exec(`SET LOCAL maintenance_work_mem = '256MB'`).Error; err != nil {
+		return fmt.Errorf("set maintenance_work_mem for halfvec index build: %w", err)
+	}
+	// 禁用并行维护：Docker 默认 /dev/shm 只有 64MB，HNSW 并行构建会报
+	// "could not resize shared memory segment ... No space left on device"
+	// （真库首次迁移实测，SQLSTATE 53100）。单进程构建只吃
+	// maintenance_work_mem，不依赖 /dev/shm。
+	if err := db.Exec(`SET LOCAL max_parallel_maintenance_workers = 0`).Error; err != nil {
+		return fmt.Errorf("disable parallel maintenance for halfvec index build: %w", err)
+	}
+	return EnsureTopicTagIdentityHalfvecIndex(db, dim)
+}
+
+// searchSemanticHalfvecIndexMigration implements 20261023_0001
+// (optimize-search-semantic-index design D1/D5): build the halfvec identity
+// partial HNSW index that lets semantic tag recall take ANN candidates instead
+// of a full-table cosine scan (真库实测：14,658 行全表扫描 3.74s，索引 top-50
+// 查询 15ms)。维度是运行时属性（当前 2560），不是编译期常量：列带维度限定
+// 时从列 format_type 解析，列为无限定 vector 时从存量数据采样（表空则跳过，
+// 等运行时首次写入时由 ensureVectorDimension 建）。halfvec 上限 4000：超限跳过
+// 并记日志（语义路回退旧精确扫描，行为不中断）。
+//
+// 构建在事务内（默认 in-tx 路径）：SET LOCAL maintenance_work_mem 生效，
+// 失败整体回滚、版本不记录、下次启动重试。同名索引存在但 INVALID（历史
+// 构建中断）或表达式内嵌维度与当前维度不符时先 DROP 再建，否则 IF NOT EXISTS
+// 会把坏索引/旧维度索引当成已完成。
+func searchSemanticHalfvecIndexMigration() Migration {
+	return Migration{
+		Version:     "20261023_0001",
+		Description: "optimize-search-semantic-index D1/D5: halfvec identity partial HNSW index on topic_tag_embeddings (dimension from the column type, or sampled from stored data when the column is dimensionless; skipped above halfvec's 4000-dim limit)",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "topic_tag_embeddings") {
+				return nil
+			}
+			return ensureTopicTagIdentityHalfvecIndexForColumn(db, "20261023_0001")
+		},
+	}
+}
+
+// embeddingModelNameTables 列出存 embedding 模型名的表——模型名取自模型注册表
+// ai_models.name。这五张表同病同源（注册表能放下 ⇒ 落库处必须放得下，
+// fix-embedding-model-column-width D1/D2），一次全修不分批。
+var embeddingModelNameTables = []string{
+	"topic_tag_embeddings",
+	"candidate_embeddings",
+	"preference_vectors",
+	"route_embeddings",
+	"discovery_interest_entries",
+}
+
+// embeddingModelNameColumnWidth 是 embedding 模型名列的目标宽度，与
+// ai_models.name（VARCHAR(100)）等宽——取注册表的实际列宽而非另取一个
+// 「够用」的数字，好让不变式可机械断言（D1）。
+const embeddingModelNameColumnWidth = 100
+
+// embeddingModelColumnWidthMigration implements 20261103_0001
+// (fix-embedding-model-column-width D1/D4): 把五张 embedding 表的 model 列
+// 从 VARCHAR(50) 加宽到 VARCHAR(100)，与模型注册表 ai_models.name 对齐。
+// 症状：本地 llama.cpp embedding 模型注册时「名字」是 GGUF 文件绝对路径
+// （61 字符），超限 11 字符 → SQLSTATE 22001 → 落库被拒 → embedding 队列
+// 批量失败（缓存命中时返回的 cached.Model 同值，同样炸）。
+//
+// 加宽是同类型 typmod 变更：不截断数据、不重写表体、存量向量零改动；
+// 含 model 的唯一索引（idx_candidate_embedding_uniq）随列宽重建。
+//
+// 幂等口径：列宽已达目标（或更宽）时**完全不动**——不 ALTER、不取锁、
+// 不重建索引。PG 实测：对已经是 varchar(100) 的列再执行
+// ALTER COLUMN model TYPE VARCHAR(100)，表体不重写（relfilenode 不变），
+// 但该列上的索引会被重建（索引 oid 变化），还白拿一次 ACCESS EXCLUSIVE
+// 锁——生产 Phase 1 的 AutoMigrate 已经先加宽过，这一步是纯浪费。
+// 跳过条件：表不存在（域模型未注册的部署）/ 列不存在 / 列无长度上限
+// （text 等）/ 列宽 ≥ 目标宽度。
+func embeddingModelColumnWidthMigration() Migration {
+	return Migration{
+		Version:     "20261103_0001",
+		Description: "fix-embedding-model-column-width: widen embedding model name columns to VARCHAR(100) to match ai_models.name (skips missing table/column, unlimited-width columns, and columns already at/beyond the target width — no ALTER, no lock, no index rebuild in that case)",
+		Up: func(db *gorm.DB) error {
+			// 先做便宜的 catalog 判定，只有真需要加宽的窄列才进 DDL 分支。
+			for _, table := range embeddingModelNameTables {
+				if !tableExists(db, table) {
+					continue // 域模型未注册的部署：跳过该表
+				}
+				width, ok := columnMaxLength(db, table, "model")
+				if !ok {
+					continue // 列不存在或无长度上限（text）：无从加宽
+				}
+				if width >= embeddingModelNameColumnWidth {
+					continue // 已是目标宽度或更宽：真 no-op
+				}
+				// ALTER COLUMN TYPE 拿 AccessExclusiveLock——用 lock_timeout 守卫，
+				// 抢不到锁就快速失败而不是无限阻塞写入（code-style 迁移规范）。
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					stmt := fmt.Sprintf("ALTER TABLE %s ALTER COLUMN model TYPE VARCHAR(%d)", table, embeddingModelNameColumnWidth)
+					if err := tx.Exec(stmt).Error; err != nil {
+						return fmt.Errorf("widen %s.model to VARCHAR(%d): %w", table, embeddingModelNameColumnWidth, err)
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// embeddingModelNotNullMigration implements 20261103_0002
+// (fix-embedding-model-column-width 回归修复): 恢复 topic_tag_embeddings.model
+// 的 NOT NULL 约束——本 change 的上一版实现把它弄丢了。
+//
+// 事故链（已实证）：20260723_0001 用 ensureNotNullDefault 把
+// topic_tag_embeddings.model 固化为 NOT NULL（{"topic_tag_embeddings",
+// "model", "", true}）。本 change 把 gorm tag 从 size:50 改成 size:100 后，
+// Phase 1 的 GORM AutoMigrate 判定列宽不符 → 发出 ALTER COLUMN；
+// gorm.io/driver/postgres v1.5.11 的 AlterColumn 在 field.NotNull == false
+// （本仓库约定「not null 不写进 model tag」）时执行
+// ALTER COLUMN ... DROP NOT NULL → 把 20260723_0001 固化的约束静默丢弃。
+// 结果：生产库该列变成可空，而仓库自己的 constraints_test 断言它是 notNull
+// （该断言跑在全新 testcontainer 上，测不到生产这条路径）。
+//
+// 为什么必须是**第二个**迁移版本而不是改 0001 的 body：0001 已经在生产
+// 记录过，改 body 不会在生产重跑。
+// 为什么不给 gorm tag 加 not null：本仓库约定「not null 不写进 model tag、
+// 由显式迁移固化」（见 20260723_0001 的 Description），加 tag 会让
+// AutoMigrate 与显式迁移重新竞争。
+// 其余四张表（candidate_embeddings / preference_vectors / route_embeddings
+// / discovery_interest_entries）的 model 列本来就是可空，不动它们的空值性。
+//
+// 幂等：ensureNotNullDefault 只在列当前可空时回填 + SET NOT NULL；生产库
+// 当前 NULL 行数为 0，回填是空操作。
+func embeddingModelNotNullMigration() Migration {
+	return Migration{
+		Version:     "20261103_0002",
+		Description: "fix-embedding-model-column-width: restore NOT NULL on topic_tag_embeddings.model (silently dropped by AutoMigrate's ALTER COLUMN when the gorm tag width changed 50->100; NOT NULL stays owned by explicit migrations, never by model tags)",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "topic_tag_embeddings") {
+				return nil // 域模型未注册的部署：跳过
+			}
+			if !columnExists(db, "topic_tag_embeddings", "model") {
+				return nil // 列不存在：无从恢复
+			}
+			// SET NOT NULL 拿 AccessExclusiveLock 并全表扫描校验——用
+			// lock_timeout 守卫（code-style 迁移规范）。
+			return withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+				return ensureNotNullDefault(tx, "topic_tag_embeddings", "model", "''")
+			})
+		},
+	}
+}
+
+// storyHeatTablesMigration implements 20261105_0001
+// (add-event-story-heat design §6.1)：事件线与热度证据两张新表 +
+// daily_report_threads 三列。
+//
+// 建表/加列/索引全部幂等（IF NOT EXISTS），无表重写。标准路径上两张新表
+// 已由 Phase 1 AutoMigrate 从注册模型建出（无 CHECK、无 FK、无部分索引），
+// 因此 CHECK 除了写在 CREATE TABLE 内（裸重放路径自含），还用 DO 块守卫
+// 重复确保；FK 统一由本迁移所有（AutoMigrate 跑在
+// DisableForeignKeyConstraintWhenMigrating 下不建 FK，同 20260910_0001 /
+// 20261012_0001 的「迁移所有 FK」政策），被引用表缺席时跳过。
+//
+// embedding / subject_embedding 刻意写**无维度限定的 vector**：维度由运行时
+// embedding 模型决定，不属于 schema 契约（同 20260403_0003 口径；写
+// vector(N) 会与 unify-vector-column-dimension 的去限定迁移冲突）。
+//
+// board FK 指向 semantic_labels(id)：boards are SemanticLabel rows
+// (label_type='board')，design §6.1 的 semantic_boards 是业务名。
+func storyHeatTablesMigration() Migration {
+	return Migration{
+		Version:     "20261105_0001",
+		Description: "add-event-story-heat: create board_stories (story identity) + story_signals (heat evidence, composite PK) + daily_report_threads story_id/scope/is_development/story_manual/display_tier (scope/is_development/story_manual/display_tier NOT NULL pinned via ensureNotNullDefault for the AutoMigrate-first path); recall/subject/time indexes; CHECKs & FKs re-ensured idempotently (embedding columns dimension-less vector)",
+		Up: func(db *gorm.DB) error {
+			// ── board_stories（事件线）──────────────────────────────
+			// CHECK 写在 CREATE TABLE 内；FK 另用 DO 块确保（见上）。
+			if err := db.Exec(`CREATE TABLE IF NOT EXISTS board_stories (
+				id                bigserial PRIMARY KEY,
+				board_id          bigint NOT NULL,
+				lane_id           bigint,
+				title             text NOT NULL,
+				subject           text,
+				subject_key       text,
+				action            text,
+				object            text,
+				occurred_at       timestamptz,
+				status            text NOT NULL DEFAULT 'active'
+				                  CHECK (status IN ('active','settled','merged')),
+				first_seen_date   date NOT NULL,
+				last_seen_date    date NOT NULL,
+				thread_count      integer NOT NULL DEFAULT 0,
+				article_count     integer NOT NULL DEFAULT 0,
+				participant_count integer NOT NULL DEFAULT 0,
+				embedding         vector,
+				subject_embedding vector,
+				merged_into       bigint,
+				origin            text NOT NULL DEFAULT 'rule'
+				                  CHECK (origin IN ('rule','model','manual')),
+				created_at        timestamptz NOT NULL DEFAULT now(),
+				updated_at        timestamptz NOT NULL DEFAULT now()
+			)`).Error; err != nil {
+				return fmt.Errorf("create board_stories: %w", err)
+			}
+
+			// ── story_signals（热度证据）────────────────────────────
+			// 复合主键 (story_id, article_id)：同一篇文章对同一条事件线只计
+			// 一次证据；身份（事件归属）与热度分离，去重只作用于身份层。
+			if err := db.Exec(`CREATE TABLE IF NOT EXISTS story_signals (
+				story_id           bigint NOT NULL,
+				article_id         bigint NOT NULL,
+				feed_id            bigint NOT NULL,
+				participant_key    text NOT NULL,
+				kind               text NOT NULL DEFAULT 'editorial'
+				                   CHECK (kind IN ('editorial','signal')),
+				observed_at        timestamptz NOT NULL,
+				observed_at_source text NOT NULL DEFAULT 'pub_date'
+				                   CHECK (observed_at_source IN ('pub_date','fallback')),
+				PRIMARY KEY (story_id, article_id)
+			)`).Error; err != nil {
+				return fmt.Errorf("create story_signals: %w", err)
+			}
+
+			// ── daily_report_threads 五列（存量事件挂事件线 + 展示层）──
+			// display_tier：跨期去重的展示层载体（tasks 6.1-6.3）——只改
+			// 展示，身份/signals/热度永不读它；存量行落默认 body（未降级）。
+			// 存量行不回填：story_id 保持 NULL（未归属事件降级为「当日独立
+			// 事件」，不阻塞现有功能）；scope/is_development/story_manual 按默认值生效。
+			// story_manual：人工「独立事件」标记（event-story spec 人工拆分后不
+			// 回滚）——回填与自动判定遇到 true 必须跳过该事件。
+			if tableExists(db, "daily_report_threads") {
+				if err := db.Exec(`ALTER TABLE daily_report_threads
+					ADD COLUMN IF NOT EXISTS story_id bigint,
+					ADD COLUMN IF NOT EXISTS scope text NOT NULL DEFAULT 'single',
+					ADD COLUMN IF NOT EXISTS is_development boolean NOT NULL DEFAULT false,
+					ADD COLUMN IF NOT EXISTS story_manual boolean NOT NULL DEFAULT false,
+					ADD COLUMN IF NOT EXISTS display_tier text NOT NULL DEFAULT 'body'`).Error; err != nil {
+					return fmt.Errorf("add daily_report_threads story columns: %w", err)
+				}
+				// 正常启动路径上 RunAutoMigrate 已按模型建出这几列（可空带默认），
+				// ADD COLUMN IF NOT EXISTS 是 no-op——NOT NULL 必须在这里固化
+				// （幂等：已 NOT NULL 时 ensureNotNullDefault 直接跳过；回填值与
+				// 列默认一致，存量行不改变语义）。
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					for _, col := range []struct{ name, def string }{
+						{"scope", "'single'"},
+						{"is_development", "false"},
+						{"story_manual", "false"},
+						{"display_tier", "'body'"},
+					} {
+						if err := ensureNotNullDefault(tx, "daily_report_threads", col.name, col.def); err != nil {
+							return fmt.Errorf("pin daily_report_threads.%s NOT NULL: %w", col.name, err)
+						}
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+
+			// ── 索引 ─────────────────────────────────────────────
+			// recall 部分索引：只覆盖可召回的存活事件线（归属判定的 14 天窗口
+			// 扫描面）；subject 索引支撑主体归一化第一层（subject_key 精确匹配）。
+			indexes := []string{
+				`CREATE INDEX IF NOT EXISTS board_stories_recall_idx
+					ON board_stories (board_id, last_seen_date DESC)
+					WHERE merged_into IS NULL AND status = 'active'`,
+				`CREATE INDEX IF NOT EXISTS board_stories_subject_idx ON board_stories (board_id, subject_key)`,
+				`CREATE INDEX IF NOT EXISTS story_signals_time_idx ON story_signals (observed_at DESC)`,
+				`CREATE INDEX IF NOT EXISTS story_signals_story_idx ON story_signals (story_id, participant_key, observed_at DESC)`,
+			}
+			for _, stmt := range indexes {
+				if err := db.Exec(stmt).Error; err != nil {
+					return fmt.Errorf("story heat index: %w", err)
+				}
+			}
+			// daily_report_threads 由 topicgraph 模型 AutoMigrate 注册创建；不
+			// import topicgraph 的测试二进制（如 tagmanagement/service/core 的
+			// golden schema）里该表不存在，索引需同款 tableExists 守卫（与上方
+			// 旧 daily_report_threads 索引迁移惯例一致）。
+			if tableExists(db, "daily_report_threads") {
+				if err := db.Exec(`CREATE INDEX IF NOT EXISTS daily_report_threads_story_idx ON daily_report_threads (story_id)`).Error; err != nil {
+					return fmt.Errorf("story heat index: %w", err)
+				}
+			}
+
+			// ── CHECK 确保块（AutoMigrate 先建裸表时补约束）────────────
+			// DO 块先查后加（幂等且不产生事务中止）；列不存在时跳过——
+			// 表缺席/列缺席的部署无从校验。
+			checks := []struct{ name, table, column, expr string }{
+				{"chk_board_stories_status", "board_stories", "status", "CHECK (status IN ('active','settled','merged'))"},
+				{"chk_board_stories_origin", "board_stories", "origin", "CHECK (origin IN ('rule','model','manual'))"},
+				{"chk_story_signals_kind", "story_signals", "kind", "CHECK (kind IN ('editorial','signal'))"},
+				{"chk_story_signals_observed_at_source", "story_signals", "observed_at_source", "CHECK (observed_at_source IN ('pub_date','fallback'))"},
+				{"chk_daily_report_threads_scope", "daily_report_threads", "scope", "CHECK (scope IN ('single','composite'))"},
+				{"chk_daily_report_threads_display_tier", "daily_report_threads", "display_tier", "CHECK (display_tier IN ('body','flash','hidden'))"},
+			}
+			for _, c := range checks {
+				if !tableExists(db, c.table) || !columnExists(db, c.table, c.column) {
+					continue
+				}
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					if err := tx.Exec(fmt.Sprintf(`DO $$ BEGIN
+						IF NOT EXISTS (
+							SELECT 1 FROM information_schema.table_constraints
+							WHERE constraint_name = '%s' AND table_name = '%s'
+						) THEN
+							ALTER TABLE %s ADD CONSTRAINT %s %s;
+						END IF;
+					END $$`, c.name, c.table, c.table, c.name, c.expr)).Error; err != nil { //nolint:gosec // G201: 约束名/表达式是包内常量表
+						return fmt.Errorf("ensure %s: %w", c.name, err)
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+
+			// ── FK 确保块（迁移所有 FK；被引用表缺席时跳过）──────────
+			// story_id 用 SET NULL 而非 CASCADE：事件线被删除/合并时事件保
+			// 留、退回未归属状态（spec：SHALL NOT 外键级联删除）。
+			fks := []struct{ name, table, column, ref, del string }{
+				{"fk_board_stories_board", "board_stories", "board_id", "semantic_labels(id)", "CASCADE"},
+				{"fk_board_stories_lane", "board_stories", "lane_id", "board_persistent_topics(id)", "SET NULL"},
+				{"fk_board_stories_merged_into", "board_stories", "merged_into", "board_stories(id)", "NO ACTION"},
+				{"fk_story_signals_story", "story_signals", "story_id", "board_stories(id)", "CASCADE"},
+				{"fk_story_signals_article", "story_signals", "article_id", "articles(id)", "CASCADE"},
+				{"fk_daily_report_threads_story", "daily_report_threads", "story_id", "board_stories(id)", "SET NULL"},
+			}
+			for _, fk := range fks {
+				if !tableExists(db, fk.table) {
+					continue
+				}
+				refTable := strings.TrimSuffix(fk.ref, "(id)")
+				if !tableExists(db, refTable) {
+					continue // 最小部署（域模型未注册）：跳过该 FK
+				}
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					if err := tx.Exec(fmt.Sprintf(`DO $$ BEGIN
+						IF NOT EXISTS (
+							SELECT 1 FROM information_schema.table_constraints
+							WHERE constraint_name = '%s' AND table_name = '%s'
+						) THEN
+							ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s ON DELETE %s;
+						END IF;
+					END $$`, fk.name, fk.table, fk.table, fk.name, fk.column, fk.ref, fk.del)).Error; err != nil { //nolint:gosec // G201: 约束名/列名是包内常量表
+						return fmt.Errorf("add %s: %w", fk.name, err)
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// storySignalContentKeyMigration implements 20261110_0001
+// (fix-duplicate-article-heat design D2/D5)：story_signals 落「内容身份」列。
+//
+// 同一篇内容被两个 feed 各抓一份会存两行 articles（articles 唯一键是
+// (feed_id, link)，跨 feed 不去重），而 story_signals 的 participant_key 按
+// feed 计参与者 → 一篇内容被算成 2 个参与者、热度虚高。content_key 存规范化
+// 后的链接（内容身份键），供下一步统一去重键使用：content_key 非空即按内容
+// 去重，空串（内容身份不可判定）时回退 participant_key。
+//
+// 列可空（存量行不改语义：空/NULL 都表示「内容身份待回填」，消费者退化为
+// participant_key）；**本迁移不做数据回填**——回填走
+// cmd/backfill-stories --backfill-content-keys（分批、可重入）；迁移里做
+// 全量回填会在树莓派上变成长事务、且失败不可重试（design D5）。
+//
+// 幂等：ADD COLUMN IF NOT EXISTS + CREATE INDEX IF NOT EXISTS，可重入。
+func storySignalContentKeyMigration() Migration {
+	return Migration{
+		Version:     "20261110_0001",
+		Description: "fix-duplicate-article-heat: add story_signals.content_key (nullable text, normalized article link = content identity) + (story_id, content_key) index; no data backfill (cmd/backfill-stories --backfill-content-keys owns it)",
+		Up: func(db *gorm.DB) error {
+			// 表缺席时跳过（最小部署：域模型未注册，story_signals 不存在）。
+			if !tableExists(db, "story_signals") {
+				return nil
+			}
+			if err := db.Exec(`ALTER TABLE story_signals ADD COLUMN IF NOT EXISTS content_key text`).Error; err != nil {
+				return fmt.Errorf("add story_signals.content_key: %w", err)
+			}
+			if err := db.Exec(`CREATE INDEX IF NOT EXISTS story_signals_story_content_idx
+				ON story_signals (story_id, content_key)`).Error; err != nil {
+				return fmt.Errorf("create story_signals_story_content_idx: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+// vectorDimensionlessColumns 列出要统一为「无维度限定 vector」的向量列。
+//
+// 维度是**运行时属性**（由 embedding 模型的实际输出决定，逐行存于 Dimension
+// 字段），不是 schema 契约。带维度限定的列会逼出两类结构性问题：换模型就要
+// ALTER 全表重写；model 声明与实际 schema 长期对不上（14 处 model 声明里 13 处
+// 是无限定 `type:vector`，本 change 已把唯一的例外（margin_notes 的带维度限定
+// 声明）也归一为无限定形态）。
+//
+// float32Indexes 是该列上可能存在的 float32 HNSW 索引：裸 vector 列**建不了**
+// float32 索引（pgvector 报 "column does not have dimensions"），且存活下来的
+// float32 索引会把列钉死在旧维度上——新维度向量写入直接被拒（"different vector
+// dimensions"）。所以统一成裸 vector 之前先删掉它们（当前语义召回走 halfvec
+// 表达式索引，float32 索引没有任何查询在用）。
+var vectorDimensionlessColumns = []struct {
+	table          string
+	column         string
+	float32Indexes []string
+}{
+	{
+		table:          "topic_tag_embeddings",
+		column:         "embedding",
+		float32Indexes: []string{"idx_topic_tag_embeddings_embedding"},
+	},
+	{
+		table:          "daily_report_sections",
+		column:         "embedding",
+		float32Indexes: []string{"idx_daily_report_sections_embedding"},
+	},
+	{
+		table:  "semantic_labels",
+		column: "embedding",
+	},
+	{
+		table:  "semantic_labels",
+		column: "merge_embedding",
+	},
+	{
+		table:  "term_notes",
+		column: "embedding",
+	},
+	{
+		table:          "board_persistent_topics",
+		column:         "embedding",
+		float32Indexes: []string{"idx_board_persistent_topics_embedding"},
+	},
+}
+
+// unifyVectorColumnDimensionMigration implements 20261117_0001
+// (unify-vector-column-dimension design D1/D2)：把存量向量列从「带维度限定」
+// 统一为「无维度限定的 vector」。
+//
+// 语义等价于放宽约束（去掉 typmod），不丢数据：Postgres 对同 base type 的
+// typmod 变化走 binary coercion，不重写表体（真库实测：relfilenode 不变、
+// 存量 vector_dims 不变——见 docs/reference/database/RESTORE.md §8 附录）。
+// 与「加 typmod」（vector → vector(N)）方向相反：那条路需要 cast，pgvector 无
+// 跨维度 cast，会在有数据的库上直接失败——正是 2026-11-04 灾备恢复失败的根因。
+//
+// 幂等：列已是无限定 vector 时直接跳过（不取锁、不 ALTER）。表/列不存在时跳过
+// （域模型未注册的最小部署）。每张表用 withLockTimeout 守卫——ALTER COLUMN TYPE
+// 拿 AccessExclusiveLock，抢不到锁就快速失败而不是无限阻塞写入。
+//
+// 顺带清理失败残留：tmp_hnsw_test 是建在 2560 维列上的 float32 HNSW 索引，
+// 超过 pgvector float32 HNSW 的 2000 维硬上限 → 创建失败留下 invalid 残骸。
+// 只删 invalid 的同名索引（万一是有效索引则保留，不误删用户索引）。
+func unifyVectorColumnDimensionMigration() Migration {
+	return Migration{
+		Version:     "20261117_0001",
+		Description: "unify-vector-column-dimension: unify stored vector columns (topic_tag_embeddings.embedding / daily_report_sections.embedding / semantic_labels.embedding+merge_embedding / term_notes.embedding / board_persistent_topics.embedding) to dimensionless vector (dimension is a runtime property, not a schema contract; idempotent, lock-timeout guarded) and drop the INVALID tmp_hnsw_test index leftover",
+		Up: func(db *gorm.DB) error {
+			for _, col := range vectorDimensionlessColumns {
+				if !tableExists(db, col.table) {
+					continue // 域模型未注册的部署：跳过该表
+				}
+				if !columnExists(db, col.table, col.column) {
+					continue // 列不存在（老库尚未加列）：无从统一
+				}
+				typeStr, err := VectorColumnType(db, col.table, col.column)
+				if err != nil {
+					return fmt.Errorf("read %s.%s type: %w", col.table, col.column, err)
+				}
+				if typeStr == "vector" {
+					continue // 幂等：已是无维度限定，跳过（不取锁、不 ALTER）
+				}
+				logging.Infof("Migration 20261117_0001: unifying %s.%s from %s to dimensionless vector", col.table, col.column, typeStr)
+				if err := withLockTimeout(db, "5s", func(tx *gorm.DB) error {
+					for _, indexName := range col.float32Indexes {
+						// 裸 vector 列建不了 float32 HNSW 索引，且存活的 float32
+						// 索引会把列钉在旧维度上——先删再 ALTER。
+						if err := tx.Exec("DROP INDEX IF EXISTS " + indexName).Error; err != nil { //nolint:gosec // G201: 索引名是包内常量
+							return fmt.Errorf("drop %s: %w", indexName, err)
+						}
+					}
+					stmt := fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s TYPE vector", col.table, col.column) //nolint:gosec // G201: 表名/列名来自包内常量表
+					if err := tx.Exec(stmt).Error; err != nil {
+						return fmt.Errorf("unify %s.%s to dimensionless vector: %w", col.table, col.column, err)
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+			return dropInvalidVectorIndexLeftovers(db, "20261117_0001")
+		},
+	}
+}
+
+// dropInvalidVectorIndexLeftovers 删除创建失败残留的 invalid 向量索引。
+// 只删 invalid 的——有效索引一律保留（不误删用户索引）。IF EXISTS 保证幂等：
+// 目标索引不存在时重复执行不报错。限定 public schema（与 VectorIndexExists 同
+// 口径），避免跨 schema 同名索引被误判/误删。
+func dropInvalidVectorIndexLeftovers(db *gorm.DB, migrationTag string) error {
+	const leftover = "tmp_hnsw_test"
+	var invalid bool
+	if err := db.Raw(`
+SELECT EXISTS (
+	SELECT 1 FROM pg_index i
+	JOIN pg_class c ON c.oid = i.indexrelid
+	JOIN pg_namespace n ON n.oid = c.relnamespace
+	WHERE c.relname = ? AND n.nspname = 'public' AND NOT i.indisvalid
+)`, leftover).Row().Scan(&invalid); err != nil {
+		return fmt.Errorf("probe %s validity: %w", leftover, err)
+	}
+	if !invalid {
+		return nil
+	}
+	logging.Warnf("Migration %s: dropping INVALID vector index leftover %s", migrationTag, leftover)
+	if err := db.Exec("DROP INDEX IF EXISTS public." + leftover).Error; err != nil { //nolint:gosec // G201: 索引名是包内常量
+		return fmt.Errorf("drop %s: %w", leftover, err)
+	}
+	return nil
+}
+
+// ensureTopicTagHalfvecIndexMigration implements 20261117_0002
+// (unify-vector-column-dimension 缺口 A)：列已是裸 vector 时补建 halfvec 索引。
+//
+// 为什么需要独立版本：20261023_0001 已在生产记录过版本，不会再跑；而它当初的
+// 维度来源只有「列 format_type」——列被统一成无限定 vector 后解析不到维度，
+// 索引就永远建不出来。20261117_0001（列统一）跑完之后，维度只能从数据采样：
+// SELECT vector_dims(embedding) ... LIMIT 1。
+//
+// 表空（没有任何非空向量）时采样不到维度 → 跳过并记日志，等运行时首次写入时
+// 由 ensureVectorDimension 按运行时维度建（不猜维度）。
+//
+// 与 20261023_0001 共用 ensureTopicTagIdentityHalfvecIndexForColumn（同一份
+// 维度解析 + 上限判断 + 重建逻辑），不复制粘贴。
+func ensureTopicTagHalfvecIndexMigration() Migration {
+	return Migration{
+		Version:     "20261117_0002",
+		Description: "unify-vector-column-dimension: build/rebuild the halfvec identity partial HNSW index for a dimensionless topic_tag_embeddings.embedding column (dimension sampled from stored data; skipped on an empty table — the runtime ensureVectorDimension builds it on the first write)",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "topic_tag_embeddings") {
+				return nil
+			}
+			return ensureTopicTagIdentityHalfvecIndexForColumn(db, "20261117_0002")
+		},
+	}
+}
+
+// SemanticLabelMergeHalfvecIndexName 是辅助标签 L2 去重召回使用的 halfvec HNSW
+// 部分索引名（fix-aux-label-dedup-ann design D1）。只覆盖 active 且带 merge 向量的
+// auxiliary 行；float32 HNSW 有 2000 维硬上限（当前 2560 维建不了），halfvec 支持
+// 到 4000 维。
+const SemanticLabelMergeHalfvecIndexName = "idx_semantic_labels_merge_halfvec_hnsw"
+
+// SemanticLabelMergeHalfvecIndexPredicate 是该部分索引的 WHERE 谓词，也是 L2 召回
+// 查询的 WHERE 谓词——两者 MUST 逐字一致（spec：召回查询的 WHERE 谓词 SHALL 与
+// 部分索引谓词一致，否则规划器不走部分索引），所以只写这一份。
+const SemanticLabelMergeHalfvecIndexPredicate = "label_type = 'auxiliary' AND status = 'active' AND merge_embedding IS NOT NULL"
+
+// SemanticLabelMergeHalfvecIndexDDL 是 halfvec 部分索引的单一 DDL 事实源：迁移
+// 20261124_0002 与启动期守卫 EnsureSemanticLabelMergeHalfvecIndex 共用。dim 必须是
+// 运行时维度（halfvec 1..4000）；表达式内嵌维度，查询侧用同一表达式召回。
+func SemanticLabelMergeHalfvecIndexDDL(dim int) string {
+	// 参数是 int（非用户输入），无注入面；gosec 仍按格式化 SQL 报警。
+	return fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON semantic_labels USING hnsw ((merge_embedding::halfvec(%d)) halfvec_cosine_ops) WHERE %s`, SemanticLabelMergeHalfvecIndexName, dim, SemanticLabelMergeHalfvecIndexPredicate) //nolint:gosec // G201: dim 为已校验的整数，谓词是包内常量
+}
+
+// semanticLabelMergeColumnDimension 解析 semantic_labels.merge_embedding 的维度：
+// 列有限定（vector(N)）→ N；列无限定（裸 vector）→ 在部分索引谓词覆盖的行里
+// 采样（迁移跑在维度探测之前，拿不到运行时维度——对齐
+// ensureTopicTagIdentityHalfvecIndexForColumn 的「列无限定 → 存量采样」口径）。
+// 只采样谓词行：索引表达式只对谓词行求值，其它行（composite 等）的维度无关。
+//
+// 返回 (dim, mixed, err)：表空 / 谓词行无非空向量 → (0, false, nil)，调用方跳过；
+// 多种维度并存 → (众数维度, true, nil)，调用方不建带维度的索引。
+func semanticLabelMergeColumnDimension(db *gorm.DB) (dim int, mixed bool, err error) {
+	typeStr, err := VectorColumnType(db, "semantic_labels", "merge_embedding")
+	if err != nil {
+		return 0, false, err
+	}
+	if dim = vectorColumnDimension(typeStr); dim > 0 {
+		return dim, false, nil
+	}
+	if typeStr != "vector" {
+		return 0, false, nil
+	}
+	type dimRow struct {
+		Dim   int
+		Count int64
+	}
+	var rows []dimRow
+	// 表名/列名/谓词均为包内常量，无注入面。
+	stmt := fmt.Sprintf( //nolint:gosec // G201: 表名/列名/谓词来自包内常量
+		"SELECT vector_dims(merge_embedding) AS dim, count(*) FROM semantic_labels WHERE %s GROUP BY 1 ORDER BY 2 DESC",
+		SemanticLabelMergeHalfvecIndexPredicate)
+	if err := db.Raw(stmt).Scan(&rows).Error; err != nil {
+		return 0, false, err
+	}
+	if len(rows) == 0 {
+		return 0, false, nil
+	}
+	if len(rows) > 1 {
+		return rows[0].Dim, true, nil
+	}
+	return rows[0].Dim, false, nil
+}
+
+// semanticLabelMergeHalfvecIndexState 返回既有索引表达式内嵌的维度与有效性
+// （indisvalid）。索引不存在时返回 (0, true)。
+func semanticLabelMergeHalfvecIndexState(db *gorm.DB) (dim int, valid bool) {
+	var def string
+	var isValid bool
+	if err := db.Raw(`
+SELECT pg_get_indexdef(i.indexrelid), i.indisvalid
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indexrelid
+WHERE c.relname = ? AND i.indrelid = to_regclass('public.semantic_labels')`,
+		SemanticLabelMergeHalfvecIndexName).Row().Scan(&def, &isValid); err != nil {
+		return 0, true
+	}
+	return halfvecExpressionDimension(def), isValid
+}
+
+// SemanticLabelMergeHalfvecIndexState 返回既有索引表达式内嵌的维度与有效性
+// （indisvalid）。索引不存在时返回 (0, true)。
+func SemanticLabelMergeHalfvecIndexState(db *gorm.DB) (dim int, valid bool) {
+	return semanticLabelMergeHalfvecIndexState(db)
+}
+
+// SemanticLabelMergeHalfvecIndexDimension 返回既有索引表达式内嵌的维度；索引不存在
+// 或表达式不可解析时返回 0。
+func SemanticLabelMergeHalfvecIndexDimension(db *gorm.DB) int {
+	dim, _ := semanticLabelMergeHalfvecIndexState(db)
+	return dim
+}
+
+// ensureSemanticLabelMergeHalfvecIndexDDL 确保 halfvec 部分索引存在且表达式内嵌
+// 维度与 dim 一致（不存在 → 建；维度不符或 INVALID → 先 DROP 再建）。调用方负责
+// maintenance_work_mem / max_parallel_maintenance_workers（迁移在事务内 SET LOCAL，
+// 运行期在固定连接上会话级 SET）。
+func ensureSemanticLabelMergeHalfvecIndexDDL(db *gorm.DB, dim int) error {
+	exists, err := VectorIndexExists(db, SemanticLabelMergeHalfvecIndexName)
+	if err != nil {
+		return fmt.Errorf("probe semantic_labels merge halfvec index: %w", err)
+	}
+	if exists {
+		existingDim, valid := semanticLabelMergeHalfvecIndexState(db)
+		if !valid || existingDim != dim {
+			if err := db.Exec("DROP INDEX IF EXISTS " + SemanticLabelMergeHalfvecIndexName).Error; err != nil { //nolint:gosec // G201: 索引名是包内常量
+				return fmt.Errorf("drop semantic_labels merge halfvec index: %w", err)
+			}
+		}
+	}
+	if err := db.Exec(SemanticLabelMergeHalfvecIndexDDL(dim)).Error; err != nil {
+		return fmt.Errorf("create semantic_labels merge halfvec HNSW index (dim %d): %w", dim, err)
+	}
+	return nil
+}
+
+// SemanticLabelMergeDimensionCleanupSQL is the remediation for the embedding-model
+// switch window (review R-2): semantic_labels.merge_embedding is a dimensionless
+// vector, so rows written by the previous model keep their old dimension. The
+// recall query casts merge_embedding::halfvec(<dim>) itself, so those rows make
+// the whole L2 recall FAIL (and with it the whole attach batch) — not degrade to
+// a sequential scan. %d is the runtime dimension.
+const SemanticLabelMergeDimensionCleanupSQL = "UPDATE semantic_labels SET merge_embedding = NULL WHERE label_type='auxiliary' AND status='active' AND merge_embedding IS NOT NULL AND vector_dims(merge_embedding) <> %d;"
+
+// EnsureSemanticLabelMergeHalfvecIndex 是启动期维度守卫（design D2）：按运行时维度
+// 校验索引表达式内嵌维度——不存在 / 不符 / invalid 则重建。维度是运行时属性，换
+// embedding 模型后旧表达式索引会静默失效（查询退化回顺序扫描且不报错），所以
+// CREATE INDEX IF NOT EXISTS 命中旧维度索引时也要重建。
+//
+// 重建前先比对**存量向量维度**与运行时维度（review R-2）：换模型后新旧维度行可并存，
+// 此时召回会在旧维度行上报错（整批 attach 失败），不是“退化成顺序扫描”。因此维度
+// 不一致 / 多种维度并存时记 ERROR 并给出可执行清理 SQL + backfill 端点；随后**照旧
+// 尝试建索引**（存量清理后即可成功），建索引失败仍只返回 error 由调用方 WARN，不阻断启动。
+//
+// 构建期 GUC 设在固定连接上（会话级 SET + RESET 兜底）：运行期不在事务里，SET LOCAL
+// 无效；迁移路径（20261124_0002）走事务内的 SET LOCAL。dim 不在 halfvec 支持范围
+// （1..4000）时跳过并记日志（L2 召回回退精确扫描，结果仍正确）。调用方对 error
+// 只 WARN 不阻断启动。
+func EnsureSemanticLabelMergeHalfvecIndex(db *gorm.DB, dim int) error {
+	if dim <= 0 || dim > 4000 {
+		if dim > 0 {
+			// halfvec 不可用 → 召回走精确扫描；精确扫描同样要求存量维度与运行时
+			// 一致（旧维度行会让 <=> 直接报错），所以这条路径也要报。
+			warnSemanticLabelMergeDimensionMismatch(db, dim)
+		}
+		logging.Infof("Dimension %d outside pgvector halfvec HNSW range (1..4000); skipping semantic_labels merge halfvec index (aux-label L2 dedup recall falls back to exact scan)", dim)
+		return nil
+	}
+	existingDim, valid := semanticLabelMergeHalfvecIndexState(db)
+	if existingDim == dim && valid {
+		return nil // 已是正确表达式且有效：不动
+	}
+	if existingDim != 0 || !valid {
+		logging.Infof("Rebuilding semantic_labels merge halfvec HNSW index: embedded dimension %d (valid=%t) != runtime dimension %d", existingDim, valid, dim)
+	}
+	warnSemanticLabelMergeDimensionMismatch(db, dim)
+	// Pin one connection for the session-level build GUCs (Connection does not
+	// open a transaction, so plain CREATE INDEX is fine). Disable parallel
+	// maintenance: Docker's default 64MB /dev/shm makes HNSW parallel builds
+	// fail with SQLSTATE 53100 (seen in the production migration).
+	return db.Connection(func(tx *gorm.DB) error {
+		// Register RESET before the first SET: if the first SET itself fails,
+		// the pinned connection still returns to the pool clean.
+		defer func() {
+			_ = tx.Exec("RESET maintenance_work_mem").Error
+			_ = tx.Exec("RESET max_parallel_maintenance_workers").Error
+		}()
+		if err := tx.Exec("SET maintenance_work_mem = '256MB'").Error; err != nil {
+			return err
+		}
+		if err := tx.Exec("SET max_parallel_maintenance_workers = 0").Error; err != nil {
+			return err
+		}
+		return ensureSemanticLabelMergeHalfvecIndexDDL(tx, dim)
+	})
+}
+
+// warnSemanticLabelMergeDimensionMismatch 比对 semantic_labels.merge_embedding 的存量
+// 维度与运行时维度，不一致 / 多种维度并存时记 ERROR 并给出可执行处置（review R-2）。
+//
+// 存量维度为 0（表空 / 谓词行无非空向量）时无需处置：没有旧向量行会报错。
+func warnSemanticLabelMergeDimensionMismatch(db *gorm.DB, dim int) {
+	storedDim, mixed, err := semanticLabelMergeColumnDimension(db)
+	if err != nil {
+		logging.Warnf("Failed to read the stored dimension of semantic_labels.merge_embedding: %v "+
+			"(cannot check for stale-dimension rows before rebuilding the ANN index)", err)
+		return
+	}
+	if mixed {
+		logging.Errorf("semantic_labels.merge_embedding holds vectors of MULTIPLE dimensions "+
+			"(most common dimension %d, runtime dimension %d): the L2 recall cast merge_embedding::halfvec(%d) "+
+			"fails on the other dimensions, so auxiliary-label attach fails as a whole (it does NOT degrade to a sequential scan). "+
+			"Clear the stale rows first: %s then rebuild the vectors via POST /api/auxiliary-labels/backfill-embeddings",
+			storedDim, dim, dim, fmt.Sprintf(SemanticLabelMergeDimensionCleanupSQL, dim))
+		return
+	}
+	if storedDim > 0 && storedDim != dim {
+		logging.Errorf("semantic_labels.merge_embedding holds vectors of dimension %d but the runtime embedding dimension is %d: "+
+			"the L2 recall cast merge_embedding::halfvec(%d) fails on those rows, so auxiliary-label attach fails as a whole "+
+			"(it does NOT degrade to a sequential scan). Clear the stale rows first: %s "+
+			"then rebuild the vectors via POST /api/auxiliary-labels/backfill-embeddings",
+			storedDim, dim, dim, fmt.Sprintf(SemanticLabelMergeDimensionCleanupSQL, dim))
+	}
+}
+
+// ensureSemanticLabelMergeHalfvecIndexMigration implements 20261124_0002
+// (fix-aux-label-dedup-ann design D7)：建 semantic_labels.merge_embedding 的 halfvec
+// 部分 HNSW 索引，让辅助标签 L2 去重召回走 ANN 而不是进程内全量余弦。
+//
+// 维度来源：迁移跑在启动期维度探测之前，拿不到运行时维度——列无限定时从部分
+// 索引谓词覆盖的存量行采样（表空则跳过，等启动期守卫
+// EnsureSemanticLabelMergeHalfvecIndex 按运行时维度建）；IF NOT EXISTS 命中旧维度索引
+// 时同样由启动期守卫重建。不用 CONCURRENTLY（migration 在事务内执行，不允许）。
+//
+// 构建在事务内（默认 in-tx 路径）：SET LOCAL maintenance_work_mem 生效，失败整体
+// 回滚、版本不记录、下次启动重试。
+func ensureSemanticLabelMergeHalfvecIndexMigration() Migration {
+	return Migration{
+		Version:     "20261124_0002",
+		Description: "fix-aux-label-dedup-ann: halfvec partial HNSW index on semantic_labels.merge_embedding for auxiliary-label L2 dedup recall (dimension sampled from stored data when the column is dimensionless; skipped on an empty table or above halfvec's 4000-dim limit)",
+		Up: func(db *gorm.DB) error {
+			if !tableExists(db, "semantic_labels") {
+				return nil
+			}
+			dim, mixed, err := semanticLabelMergeColumnDimension(db)
+			if err != nil {
+				return fmt.Errorf("read semantic_labels.merge_embedding dimension: %w", err)
+			}
+			if mixed {
+				logging.Warnf("Migration 20261124_0002: skip semantic_labels merge halfvec HNSW index (active auxiliary merge_embedding holds vectors of multiple dimensions; cross-dimension comparisons will error until the minority-dimension rows are cleaned), aux-label L2 dedup degraded")
+				return nil
+			}
+			if dim <= 0 || dim > 4000 {
+				logging.Infof("Migration 20261124_0002: skip semantic_labels merge halfvec HNSW index (dim %d; halfvec supports 1..4000, empty table has nothing to sample), aux-label L2 dedup recall falls back to exact scan", dim)
+				return nil
+			}
+			// 构建期维护内存与并行度：与 ensureTopicTagIdentityHalfvecIndexForColumn 同款
+			// （256MB 避免落盘；并行构建依赖 Docker 默认 64MB 的 /dev/shm，会报 53100）。
+			if err := db.Exec(`SET LOCAL maintenance_work_mem = '256MB'`).Error; err != nil {
+				return fmt.Errorf("set maintenance_work_mem for merge halfvec index build: %w", err)
+			}
+			if err := db.Exec(`SET LOCAL max_parallel_maintenance_workers = 0`).Error; err != nil {
+				return fmt.Errorf("disable parallel maintenance for merge halfvec index build: %w", err)
+			}
+			return ensureSemanticLabelMergeHalfvecIndexDDL(db, dim)
 		},
 	}
 }

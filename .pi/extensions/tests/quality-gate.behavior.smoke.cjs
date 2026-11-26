@@ -633,7 +633,7 @@ const setup = (router) => {
 	}
 
 	// ============ 场景 O：edit.map 归属外部 + 同指纹不重发（4.1 ⑦ + C2/C11） ============
-	// 别的 change（ch-other）的 edit.map 归属 legacy.vue；本会话绑定 ch-mine（mode.set）。
+	// 别的 change（ch-other）的 edit.map 归属 legacy.vue；本会话绑定 ch-mine（stage.set）。
 	// eslint 报 legacy.vue（front 侧相对形态）→ [外部]；第 2 编辑回合同指纹静默，
 	// 但 gate.check 与 foreign-breakage 记账照记（C11/C10）。
 	{
@@ -642,7 +642,7 @@ const setup = (router) => {
 		fs.writeFileSync(path.join(repo, 'front', 'app', 'new.vue'), '<template/>\n');
 		fs.writeFileSync(path.join(repo, 'front', 'app', 'new2.vue'), '<template/>\n');
 		const hlog = require('./.hlog.cjs'); // 事实库种子（走真 writer，app_id/schema 合法）
-		hlog.logEvent(repo, { kind: 'mode.set', sessionId: 'smoke-o', change: 'ch-mine', payload: { mode: 'implementation', boundChange: 'ch-mine', source: 'skill' } });
+		hlog.logEvent(repo, { kind: 'stage.set', sessionId: 'smoke-o', change: 'ch-mine', payload: { stage: 'implement', stageFamily: 'implementation', boundChange: 'ch-mine', source: 'skill' } });
 		hlog.logEvent(repo, { kind: 'edit.map', sessionId: 'seed-other', change: 'ch-mine', payload: { paths: ['backend-go/internal/mine/ok.go'], n: 1 } });
 		hlog.logEvent(repo, { kind: 'edit.map', sessionId: 'seed-other2', change: 'ch-other', payload: { paths: ['front/app/legacy.vue'], n: 1 } });
 		let files = '';

@@ -48,6 +48,10 @@ type UpdateFeedRequest struct {
 	MaxCompletionRetries  *int   `json:"max_completion_retries"`
 	FirecrawlEnabled      *bool  `json:"firecrawl_enabled"`
 	TaggingEnabled        *bool  `json:"tagging_enabled"`
+	// AIDetectionEnabled 是订阅源级「AI 生成检测」开关（add-ai-generated-article-
+	// detection design D4/D14）：前端 FeedDetailEditor 与其它处理管线 toggle 同层、
+	// 即时保存，写的就是这个字段；缺它会让开关看似生效实则不落库。
+	AIDetectionEnabled *bool `json:"ai_detection_enabled"`
 }
 
 func GetFeeds(c *gin.Context) {
@@ -344,6 +348,9 @@ func UpdateFeed(c *gin.Context) {
 	}
 	if _, exists := bodyMap["tagging_enabled"]; exists && req.TaggingEnabled != nil {
 		updates["tagging_enabled"] = *req.TaggingEnabled
+	}
+	if _, exists := bodyMap["ai_detection_enabled"]; exists && req.AIDetectionEnabled != nil {
+		updates["ai_detection_enabled"] = *req.AIDetectionEnabled
 	}
 
 	if err := repository.Repo.DB().Model(&feed).Updates(updates).Error; err != nil {

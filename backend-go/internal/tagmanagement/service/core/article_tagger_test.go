@@ -116,9 +116,8 @@ func TestFilterGenericLabels(t *testing.T) {
 }
 
 // fix-tagging-pollution spec「LLM 调用成功但零标签」：融合提取成功但候选总数为
-// 零 → 文章不写入任何 article_topic_tags 行、不产生 heuristic 来源标签。旧契约
-// 下分类名「新闻」会经回填（extractor :59-61）降级 heuristic 写库，本用例守住
-// 零候选断根路径。
+// 零 → 文章不写入任何 article_topic_tags 行。旧契约下分类名「新闻」会经规则词
+// 回填降级写库，本用例守住零候选断根路径。
 func TestTagArticleSuccessfulZeroCandidatesWritesNoRows(t *testing.T) {
 	router := newFakeTagChatRouter()
 	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: `{"event_person_tags":[],"keyword_tags":[]}`})
@@ -134,32 +133,40 @@ func TestTagArticleSuccessfulZeroCandidatesWritesNoRows(t *testing.T) {
 	require.Equal(t, 1, router.callCount("tag_extraction_merged"))
 }
 
-// fix-tagging-pollution spec「LLM 调用失败降级 heuristic」：连接拒绝重试耗尽 →
-// 降级 heuristic 提取且来源标记 heuristic（兜底仅保留在「调用失败」触发）。
-func TestTagArticleCallFailureFallsBackToHeuristic(t *testing.T) {
+// retire-heuristic-tag-fallback spec「编排层不兜底规则词并把错误上抛」：连接拒绝
+// 重试耗尽 → 编排层返回错误、文章不写入任何标签行、不产生 heuristic 来源标签
+// （旧契约下这里会降级规则词提取并写库，把失败伪装成成功）。
+func TestTagArticleExtractionFailureReturnsErrorAndWritesNoTags(t *testing.T) {
 	router := newFakeTagChatRouter()
 	for i := 0; i < 3; i++ {
 		router.enqueue("tag_extraction_merged", fakeTagChatResponse{err: errors.New("connection refused")})
 	}
 	db := setupTaggerBehaviorTest(t, router)
 
-	// 正文含 NVIDIA 模式词，保证 heuristic 兜底产出非泛词标签；分类名「新闻」
-	// 由兜底产出但必须被黑名单拦下，恰好覆盖 heuristic 路径的泛词拦截。
+	// 正文含 NVIDIA 模式词：旧契约下规则词兜底会据此产出非泛词标签——本用例
+	// 反向守住「失败即失败、不产出任何标签」。
 	article := createTaggerArticle(t, db, "断流快讯源", "NVIDIA 发布新显卡", "https://example.com/flash-down/1")
 	article.Content = "NVIDIA announces a new datacenter GPU."
 	require.NoError(t, db.Save(&article).Error)
 
-	require.NoError(t, TagArticle(context.Background(), &article, "断流快讯源", "新闻"))
+	err := TagArticle(context.Background(), &article, "断流快讯源", "新闻")
+	require.Error(t, err, "extraction failure must be surfaced so the job fails and retries")
+	require.Contains(t, err.Error(), "connection refused")
 
 	var links []models.ArticleTopicTag
 	require.NoError(t, db.Where("article_id = ?", article.ID).Find(&links).Error)
-	require.NotEmpty(t, links, "call failure must still fall back to heuristic extraction")
-	for _, link := range links {
-		require.Equal(t, "heuristic", link.Source)
-	}
+	require.Empty(t, links, "failed extraction must not write any tag row")
+
+	var heuristicLinks int64
+	require.NoError(t, db.Model(&models.ArticleTopicTag{}).Where("source = ?", "heuristic").Count(&heuristicLinks).Error)
+	require.Zero(t, heuristicLinks, "no source='heuristic' article link may be produced")
+
+	var heuristicTags int64
+	require.NoError(t, db.Model(&models.TopicTag{}).Where("source = ?", "heuristic").Count(&heuristicTags).Error)
+	require.Zero(t, heuristicTags, "no source='heuristic' topic tag may be produced")
+
 	labels := articleTagLabels(t, db, article.ID)
-	require.Contains(t, labels, "NVIDIA")
-	require.NotContains(t, labels, "新闻", "heuristic path must drop the generic category label")
+	require.Empty(t, labels, "article must stay untagged")
 	require.Equal(t, 3, router.callCount("tag_extraction_merged"), "retry budget is exactly 3")
 }
 

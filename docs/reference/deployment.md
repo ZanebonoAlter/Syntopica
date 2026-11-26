@@ -164,6 +164,38 @@ deploy/compose/docker-compose.yml            deploy/compose/docker-compose.firec
 | Ollama | 本地 LLM 推理，已有模型管理 | 已安装 Ollama 或偏好其模型管理时 |
 | Redis | 持久化任务队列后端 | Topic 分析任务需要持久化队列时 |
 
+## 桌面壳（远程模式）
+
+桌面壳是 Tauri 2 应用（`desktop/shell/`），**当前只实现远程模式**：窗口装载服务端已托管的 SPA，所有请求走同一 origin 的 `/api`，**不启动本地后端、不需要本地数据库**。
+
+| 项 | 说明 |
+|------|------|
+| 适用场景 | 已有可访问的 Syntopica 服务端（本机或局域网），想要一个「双击即用」的窗口而不是浏览器 tab |
+| 不适用场景 | 无网络/服务端不可达时的本地离线使用（需等待 sidecar + embedded PG 形态，尚未实现） |
+| 地址配置 | 启动参数 `--server-url` > 环境变量 `SYNTOPICA_SERVER_URL` > 本地配置 > 默认 `http://127.0.0.1:5100/`；失败页可改地址并持久化。详见[配置指南](configuration.md)「桌面壳」 |
+| 服务端要求 | 无额外要求——沿用现有静态托管与 `/api`；同源访问不涉及 CORS 白名单 |
+| 安全边界 | 仅支持 `http://` / `https://`；明文 HTTP 只应用在可信网络（本机 / 家庭局域网） |
+
+### 构建与打包
+
+开发验证在 Linux 本机（`cargo run -- --server-url http://127.0.0.1:5100/`）；**Windows 安装包在 Windows 本机构建**（官方推荐路径，MSI 亦只能在 Windows 生成）：
+
+```bash
+cd desktop/shell
+cargo tauri build        # 产出 target/release/bundle/nsis/*-setup.exe（per-user，免管理员）
+```
+
+平台前置：Windows 需 Rust（MSVC 目标）+ VS Build Tools C++ + WebView2 Runtime（Win11 自带；缺失时安装包会走 Evergreen 引导）；Linux 需 `libwebkit2gtk-4.1-dev` 等 dev 包。
+
+### 平台差异
+
+- **Linux**：启动时强制 `WEBKIT_DISABLE_DMABUF_RENDERER=1`（壳内置，无需用户设置）——2026-11-02 实测：默认 GL 路径在 Pi/Mesa 上整窗花屏，关闭后阅读页/日报页/矩阵页均正常（62fps、p95 17ms）。
+- **Windows**：WebView2（Chromium）默认渲染，无额外开关；关窗走进程退出（无 SIGTERM 语义）。
+
+### 卸载与回滚
+
+卸载应用即可，服务器与数据完全未涉及：无迁移、无回滚脚本、不产生服务端残留。
+
 ## 构建流水线
 
 没有配置 CI/CD 流水线 — 仓库中没有 `.github/workflows/` 文件。构建和部署为手动步骤。
@@ -268,6 +300,9 @@ bash scripts/dev/start-dev.sh back --restart   # 或手动重启 go run
 ```
 
 > **一键脚本**：以上三步封装为 `bash scripts/dev/deploy-frontend.sh`（`--no-restart` 只铺盘不重启）；前端改动收尾顺手跑（AGENTS.md §Build & Verify 已固化），勿让用户打开页面还是旧版。
+> **构建限载已内置（2026-11-24 事故后固化，用户要求作为标准）**：`pnpm generate` 与本机其它 pi 会话叠加时会持续吃满 4 核并抬高 load，2026-11-24 10:08 实测把整机压到 reboot（构建被杀、产物未上线）。脚本现在把构建包进 `run_guarded`：`nice -n 19`（最低优先级）+ `NODE_OPTIONS=--max-old-space-size=3584` + 看门狗（每 20s 采样，仅 `MemAvailable<350MB` 或 `load1>30` 中止，且只杀构建进程组，不影响后续铺盘/重启）。阈值取宽是因为 load average 滞后：构建结束那一瞬仍会冲高，误杀收尾步骤比放过短时高负载代价更大（首次固化时阈值定在 load1>10，就在构建已完成的收尾阶段误杀了重启步骤）。
+>
+> **手工构建同样要限载**：不要在其它 pi 会话跑重活时直接 `pnpm generate`；确需手工跑时用 `nice -n 19 env NODE_OPTIONS=--max-old-space-size=3584 pnpm generate`，并用 `uptime` 与 `awk '/MemAvailable/{print $2/1024}' /proc/meminfo` 盯着，`MemAvailable` 跌破 400MB 立即 `Ctrl-C`。
 
 - 访问 `http://<pi-ip>:5100/`（API、WebSocket、feed 图标、静态页面同端口，与 Docker 部署形态一致）；代价是无 HMR，改前端代码须重新 generate + 拷贝。
 - `backend-go/frontend/` 是构建产物（不入 git 语义的部署产物），**别手改**；后端启动时该目录不存在则自动纯 API 模式（`internal/app/static.go`）。
@@ -340,9 +375,27 @@ command:
   - autovacuum_vacuum_cost_limit=2000          # 默认 200 追不上写入速度
   - -c
   - wal_compression=on                         # 高写入库 WAL 全页镜像压缩
+  - -c
+  - idle_in_transaction_session_timeout=60s    # 事务内慢调用硬护栏（fix-aux-label-idle-tx-cache）
+  - -c
+  - shared_buffers=512MB                       # 容纳 HNSW 索引（2026-11-25，见下）
 ```
 
 **为什么**：默认参数下高写入量表（otel_spans 日增 ~82 万行、embedding 缓存反复重写）的死元组回收严重滞后，实测 TOAST 膨胀 13 倍、库体积膨胀到 12GB；收紧触发阈值 + 提高 cost limit 后 vacuum 跟得上写入。
+
+#### shared_buffers 512MB（fix-aux-label-dedup-ann，2026-11-25）
+
+**默认 128MB 装不下向量索引**：`semantic_labels` 的 `idx_semantic_labels_merge_halfvec_hnsw` 建成后 212MB，`idx_topic_tag_embeddings_identity_halfvec_hnsw` 更大。索引装不进 shared_buffers 时每次 HNSW 图遍历都回落到磁盘——本机数据在 SD 卡（`/dev/mmcblk0p2`），实测 L2 召回冷读 **278ms**，而全命中 shared_buffers 时只有 **5ms**。
+
+512MB 可容纳 212MB 索引 + 热页（树莓派 8GB 内存，留足余量）。配合 `pg_prewarm` 预热索引，冷读基本消失：
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_prewarm;
+SELECT pg_prewarm('idx_semantic_labels_merge_halfvec_hnsw');      -- 27160 页
+SELECT pg_prewarm('idx_topic_tag_embeddings_identity_halfvec_hnsw'); -- 24236 页
+```
+
+**实测效果**（同向量重复 → 不同向量冷路径）：L2 召回 278ms → 18–58ms，热态稳定 5–9ms。容器重启后 shared_buffers 为空，`pg_prewarm` 调用需重跑（或启用 `pg_prewarm.autoprewarm=on` 自动恢复）。
 
 **生效方式**：参数变更需 recreate 容器（`docker compose -f docker-compose.pg.yml up -d`，数据在 `./data` bind mount 不丢）。验证：`docker exec syntopica-postgres psql -U postgres -d syntopica -c "SHOW autovacuum_vacuum_scale_factor;"` → `0.05`。
 
@@ -472,10 +525,11 @@ PostgreSQL 数据通过 `./data/` 目录挂载持久化（`deploy/compose/docker
 
 **定时备份（每日自动，add-pg-key-tables-backup）**：
 
-- 脚本：`scripts/db/backup-key-tables.sh`（也可手动跑）；输出 `backups/pg-key-<timestamp>.dump`（`pg_dump -Fc` 自定义格式，单份约 580MB）
-- 范围：**排除法**——排除日志/追踪/缓存/队列等可再生表（`ai_call_logs`、`otel_spans`、`ai_embedding_cache`、`firecrawl_jobs`、`tag_jobs`、`embedding_queues`、`merge_reembedding_queues`、`notifications`、`discovery_runs`、`discovery_run_items`、`cross_board_relation_runs`、`topic_watch_hits`、`scheduler_tasks`、`reading_behaviors`、`schema_migrations`），其余表全部自动纳入；**新加日志/缓存类表须手动补进脚本内 `EXCLUDED` 清单**。已知边界：排除表的 serial 序列（如 `ai_call_logs_id_seq`）会作为空壳进档（pg_dump 18 无序列级排除），恢复无害——PG 对同名序列直接复用，AutoMigrate 建表不受影响（已实测）
+- 脚本：`scripts/db/backup-key-tables.sh`（也可手动跑）；输出 `backups/pg-key-<timestamp>.dump`（`pg_dump -Fc` 自定义格式，单份约 1GB）+ 同时间戳的行数基线 `backups/pg-key-<timestamp>.dump.counts.tsv`（每行「表名\t行数」，覆盖档内全部表，供恢复侧逐表比对）
+- 范围：**排除法**——排除日志/追踪/缓存/队列等可再生表（`ai_call_logs`、`otel_spans`、`ai_embedding_cache`、`firecrawl_jobs`、`tag_jobs`、`embedding_queues`、`merge_reembedding_queues`、`notifications`、`discovery_runs`、`discovery_run_items`、`cross_board_relation_runs`、`topic_watch_hits`、`scheduler_tasks`、`reading_behaviors`），其余表全部自动纳入；**新加日志/缓存类表须手动补进脚本内 `EXCLUDED` 清单**。已知边界：排除表的 serial 序列（如 `ai_call_logs_id_seq`）会作为空壳进档（pg_dump 18 无序列级排除），恢复无害——PG 对同名序列直接复用，AutoMigrate 建表不受影响（已实测）
+- ⚠️ **`schema_migrations`（迁移历史）必须随档走**（不在排除清单里）：它不是可再生数据，而是**恢复保真的必要输入**——档内缺它，恢复后的库会在**有数据的库上**从零重放整条版本迁移链（DDL 落在存量数据上 ⇒ 维度/约束冲突风险）。历史表述「恢复时 AutoMigrate 自动重跑」不成立：AutoMigrate 只建表/加列，重放版本迁移的是 Phase 2 `runDatabaseMigrations`
 - 定时：crontab 每日 04:00（Asia/Shanghai），日志追加 `logs/db-backup.log`；同一时刻至多一个备份进程（flock）
-- 保留：仅成功备份后轮转，按档名时间戳保留最近 7 份；失败不删旧档、不留残档
+- 保留：仅成功备份后轮转，按档名时间戳保留最近 7 份（行数基线随对应档一并删除，不留孤儿）；失败不删旧档、不留残档
 
 重装/检查 crontab 条目（幂等）：
 
@@ -490,20 +544,25 @@ crontab -l | grep backup-key-tables || \
 docker exec syntopica-postgres pg_dump -U postgres syntopica > backup.sql
 ```
 
-**恢复（`-Fc` 定时备份档）**：恢复用同一容器镜像执行（保证 pg_restore 与 dump 版本一致）：
+**恢复（`-Fc` 定时备份档）**：
+
+⛔ **恢复是灾备通道里最容易造成不可逆后果的操作**——下面这条命令直接把档写回**生产库** `syntopica`，绕过了落库闸门、扩展预装、count 校验与迁移对账。**日常恢复一律用下面的脚本**：
 
 ```bash
-# 1. 校验档完整性（列出目录）
-docker exec -i syntopica-postgres pg_restore -l < backups/pg-key-<timestamp>.dump > /dev/null && echo OK
-
-# 2a. 整库恢复到空库（--clean 先删后建，覆盖现有库；--if-exists 防止对象不存在报错）
-docker exec -i syntopica-postgres pg_restore -U postgres -d syntopica --clean --if-exists < backups/pg-key-<timestamp>.dump
-
-# 2b. 只恢复单表（示例：articles 及其数据）
-docker exec -i syntopica-postgres pg_restore -U postgres -d syntopica --clean --if-exists -t articles < backups/pg-key-<timestamp>.dump
+# ✅ 推荐：恢复到一次性独立库（默认新建），带 count 校验 + 迁移对账 + 人读报告
+bash scripts/db/restore-key-tables.sh \
+  --dump backups/pg-key-<timestamp>.dump \
+  --report /tmp/restore-report.md
 ```
 
-恢复后 `schema_migrations` 无需手工补：后端启动时 GORM AutoMigrate 会自动重跑迁移。
+```bash
+# ⚠️ 高危：直接覆盖生产库（无闸门/无校验）——仅在真正的灾难现场、且已确认档可用时使用
+docker exec -i syntopica-postgres pg_restore -U postgres -d syntopica --clean --if-exists < backups/pg-key-<timestamp>.dump
+```
+
+恢复后 `schema_migrations` **随档恢复**（L1 起 `schema_migrations` 在备份档内），**无需也不应**手工补；档内确有该表时后端启动不会重放已应用的版本迁移。
+
+完整恢复流程（前置条件 → 分步命令 → 每步期望结果 → 验证清单 → 失败时的回滚/换档路径）、已知失败模式与对策、实测耗时量级见 **[`database/RESTORE.md`](database/RESTORE.md)**；演练留痕见 [`database/RESTORE_DRILL.md`](database/RESTORE_DRILL.md)。
 
 ### feed 图标目录（运行时资产，`data/icons/`）
 

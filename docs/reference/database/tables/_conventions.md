@@ -5,8 +5,8 @@
 ## 阅读约定（全局事实）
 
 1. **表名**：GORM 未自定义 `NamingStrategy`，默认蛇形 + 复数；非默认表名由 struct 的 `TableName()` 显式指定。本文档每张表的真实表名以迁移 SQL 与 struct 为准。
-2. **外键（FK）几乎不存在于 DB 层**：`gorm.Config` 设了 `DisableForeignKeyConstraintWhenMigrating: true`，且迁移 `20260601_0001` 主动 drop 了历史上全部 `fk_*`。**全库真实 DB FK 仅 3 处**：`topic_tags_merged_into_id_fkey`，完整 6 条清单见下方「DB 级外键（全库共 6 条）」。本文档中凡是写「关联 / FK」的地方，除特别注明外均为 GORM 逻辑关联，**不**对应 DB 级外键约束。
-3. **向量列维度运行时决定**：除 `topic_tag_embeddings.embedding` 由迁移固定为 `vector(4096)` 外，其余向量列 gorm tag 仅声明 `type:vector`，实际维度由运行时 `embedding_config.embedding_dimension` / `ensureXxxEmbeddingDimension` 设置；HNSW 索引仅当维度 ≤ 2000 时创建。
+2. **外键（FK）几乎不存在于 DB 层**：`gorm.Config` 设了 `DisableForeignKeyConstraintWhenMigrating: true`，且迁移 `20260601_0001` 主动 drop 了历史上全部 `fk_*`。完整清单见下方「DB 级外键（全库共 13 条）」。本文档中凡是写「关联 / FK」的地方，除特别注明外均为 GORM 逻辑关联，**不**对应 DB 级外键约束。
+3. **向量列不承载维度（维度是运行时属性）**：所有向量列的类型声明都是**无维度限定**的 `vector`（`format_type` = `vector`，`atttypmod` = -1）——维度由 embedding 模型的实际输出决定，逐行随值存于 `dimension` 字段；配置表不持有任何维度键（迁移 `20260614_0001` 已删除 `embedding_config.embedding_dimension`）。**写库前必须校验「向量实际维度 == 随值留存的 dimension 字段」**，不一致则拒绝写入并记错误日志（列级约束消失后，这是唯一的维度防线）。索引规则：float32 HNSW 仅当维度 ≤ 2000 **且列带维度限定**时创建（裸 `vector` 列建不了——pgvector 报 `column does not have dimensions`）；`topic_tag_embeddings` 的 identity 部分索引使用 halfvec HNSW，表达式内嵌维度 ≤ 4000（迁移 `20261023_0001` 建、`20261117_0002` 在裸列上按数据采样维度补建），维度漂移时必须重建（表达式内嵌维度不会随运行期变化）。
 4. **字段表列含义**：「类型」= DB 列类型；「约束/默认/索引」= NOT NULL / DEFAULT / 索引 / 唯一 / CHECK 等；「用途」= 业务含义。`string` 无 `size` 时 GORM 默认 256。
 5. **枚举**：除非特别注明「+ CHECK」，枚举取值均为代码层约定，DB 层不强制。
 
@@ -18,7 +18,7 @@
 
 1. **GORM 全局关闭外键迁移**：`backend-go/internal/platform/database/db.go` 设置 `DisableForeignKeyConstraintWhenMigrating: true`。
 2. **迁移 `20260601_0001` 主动 DROP 了历史上 `embedding_queues` / `merge_reembedding_queues` / `topic_tag_embeddings` / `topic_tag_relations` / `topic_tags` 的全部 `fk_*` 约束**（`postgres_migrations.go:472-520`）。
-3. **全库真实存在的 DB 级外键共 6 条**（历史版本曾误写 1/2/3 条，2026-09 逐条核对迁移代码后修正；完整清单见下方「DB 级外键（全库共 6 条）」权威表）。
+3. **全库真实存在的 DB 级外键共 13 条**（历史版本曾误写 1/2/3/6 条，2026-09 逐条核对迁移代码修正至 8 条、2026-10 `add-topic-key-event-markers` 追加 5 条至 13；完整清单见下方「DB 级外键（全库共 13 条）」权威表）。
 4. 其余所有「关联」都是 **GORM 应用层逻辑关联**（struct 的 `foreignKey` tag），DB 层**没有**对应的外键约束，`constraint_name` 形如 `fk_feeds_articles`、`fk_categories_feeds` **在数据库里并不存在**。
 5. **级联删除（OnDelete:CASCADE）声明很不一致**：只有部分 GORM tag 声明了 `constraint:OnDelete:CASCADE`，很多关联没有任何级联声明。详见下方 [FK 引用矩阵](#fk-引用矩阵)。
 
@@ -54,7 +54,9 @@
 | -------- | ------ | ------ | ------ |
 | `idx_topic_tag_embeddings_tag_type_hash` | topic_tag_embeddings | UNIQUE `(topic_tag_id, embedding_type, text_hash)` | `20260514_0001` |
 
-> 注：`topic_tag_embeddings.embedding` 无独立 HNSW 迁移语句；运行时 HNSW 仅作用于 `daily_report_sections.embedding` 与 `board_persistent_topics.embedding`（dim ≤ 2000 才建）。
+> 注：`topic_tag_embeddings.embedding` 的 ANN 路径是迁移 `20261023_0001` / `20261117_0002` 的 halfvec identity 部分 HNSW `idx_topic_tag_embeddings_identity_halfvec_hnsw`（表达式内嵌 `halfvec(N)`，N = 运行时维度，≤4000；维度变了必须重建）。运行时 float32 HNSW `idx_topic_tag_embeddings_embedding` 只在**列带维度限定**且 dim ≤ 2000 时存在——裸 `vector` 列建不了 float32 索引（pgvector `column does not have dimensions`），且存活的 float32 索引会把列钉在旧维度上（迁移 `20261117_0001` 在统一列类型前先删它，运行期在裸列分支也清理遗留索引）。`daily_report_sections.embedding` / `board_persistent_topics.embedding` 同理。
+>
+> 注：`semantic_labels.merge_embedding` 的 ANN 路径同理——迁移 `20261124_0002` 建的 halfvec 部分 HNSW `idx_semantic_labels_merge_halfvec_hnsw`（谓词 `label_type='auxiliary' AND status='active' AND merge_embedding IS NOT NULL`，供辅助标签 L2 去重召回），详见 [semantic-labels.md](semantic-labels.md) 索引节。
 
 ### 唯一约束（表级）
 
@@ -101,6 +103,11 @@
 | `fk_composite_components_composite` | `composite_components.composite_id → semantic_labels(id)` | CASCADE | `20260902_0001` |
 | `fk_board_signal_candidate_discovery` | `board_signal_candidate(discovery_id, semantic_board_id, granularity, period) → board_signal_discovery(id, semantic_board_id, granularity, period)`（复合，靶靠唯一约束 `uq_board_signal_discovery_id_owner`） | RESTRICT | `20260922_0001` |
 | `fk_topic_enrichment_result_signal_candidate` | `topic_enrichment_result(source_signal_id, semantic_board_id, granularity, period) → board_signal_candidate(id, semantic_board_id, granularity, period)`（复合，MATCH SIMPLE：`source_signal_id` 为 NULL 的旧行不在 FK 范围内） | RESTRICT | `20260922_0001` |
+| `fk_topic_key_event_markers_board` | `topic_key_event_markers.semantic_board_id → semantic_labels(id)` | CASCADE | `20261012_0001` |
+| `fk_topic_key_event_markers_topic` | `topic_key_event_markers.persistent_topic_id → board_persistent_topics(id)` | SET NULL | `20261012_0001` |
+| `fk_topic_key_event_markers_report` | `topic_key_event_markers.source_report_id → board_daily_reports(id)` | SET NULL | `20261012_0001` |
+| `fk_topic_key_event_markers_section` | `topic_key_event_markers.source_section_id → daily_report_sections(id)` | SET NULL | `20261012_0001` |
+| `fk_topic_key_event_markers_thread` | `topic_key_event_markers.source_thread_id → daily_report_threads(id)` | SET NULL | `20261012_0001` |
 
 > 其余所有表间关联均为 GORM 逻辑关联，**DB 层未强制**（`DisableForeignKeyConstraintWhenMigrating: true`）——**但请对照上方实测修正：存量遗留 FK 仍生效**，本句只描述「新关联不再靠 DB 强制」这一趋势，不能当成「没有 FK」读。
 
@@ -108,18 +115,42 @@
 
 ## 向量维度规则总述
 
-| 表.列 | 维度来源 | 说明 |
-| -------- | ------ | ------ |
-| `topic_tag_embeddings.embedding` | **迁移固定 4096** | 唯一维度固定的向量列（迁移 `20260403_0003`） |
-| `semantic_labels.embedding` | 运行时 | `auxlabel.EnsureVectorDimensionOnce` 按 `embedding_config.embedding_dimension` 设置 |
-| `semantic_labels.merge_embedding` | 运行时 | 同上 |
-| `daily_report_sections.embedding` | 运行时 | `ensureSectionEmbeddingDimension` |
-| `daily_report_threads.embedding` | 运行时 | （随分区维度） |
-| `board_persistent_topics.embedding` | 运行时 | `ensurePersistentTopicEmbeddingDimension` |
-| `preference_vectors.embedding` | 运行时 | 偏好画像重算时按 `topic_tag_embeddings` semantic 轨维度写入（入库记 `dimension`/`model`，粗筛前校验一致） |
-| `route_embeddings.embedding` | 运行时 | 路由向量，与偏好向量同空间（入库记 `dimension`/`model`） |
+**总则**：向量列的 schema 不承载维度（全部为无维度限定的 `vector`），维度是**运行时属性**——由 embedding 模型的实际输出决定，逐行随值存于 `dimension` 字段。
 
-> HNSW 索引仅当维度 ≤ 2000 时创建（pgvector 限制）；> 2000 时跳过 HNSW，仅保留向量列。
+| 表.列 | 列类型 | 维度来源 | 说明 |
+| -------- | ------ | ------ | ------ |
+| `topic_tag_embeddings.embedding` | `vector`（无限定） | 运行时（当前生产 2560） | 写入前校验 `vector_dims == dimension`（`core.SaveEmbedding`）；identity 部分索引用 halfvec HNSW，表达式内嵌维度 ≤4000，维度漂移时重建 |
+| `semantic_labels.embedding` | `vector`（无限定） | 运行时 | `auxlabel.EnsureSemanticLabelVectorDimension`（裸列不 ALTER） |
+| `semantic_labels.merge_embedding` | `vector`（无限定） | 运行时 | 同上 |
+| `daily_report_sections.embedding` | `vector`（无限定） | 运行时 | `ensureSectionEmbeddingDimension`（裸列不 ALTER） |
+| `daily_report_threads.embedding` | `vector`（无限定） | 运行时 | （随分区维度） |
+| `board_persistent_topics.embedding` | `vector`（无限定） | 运行时 | `ensurePersistentTopicEmbeddingDimension`（裸列不 ALTER） |
+| `term_notes.embedding` | `vector`（无限定） | 运行时 | P2 预留，P1 永不写入 |
+| `preference_vectors.embedding` | `vector`（无限定） | 运行时 | 偏好画像重算时按 `topic_tag_embeddings` semantic 轨维度写入（入库记 `dimension`/`model`，粗筛前校验一致） |
+| `route_embeddings.embedding` | `vector`（无限定） | 运行时 | 路由向量，与偏好向量同空间（入库记 `dimension`/`model`） |
+
+> **存量统一**：迁移 `20261117_0001` 把六个带维度限定的存量列（`topic_tag_embeddings.embedding` / `daily_report_sections.embedding` / `semantic_labels.embedding`+`merge_embedding` / `term_notes.embedding` / `board_persistent_topics.embedding`）统一为无维度限定形态（幂等；去 typmod 是放宽约束，不重写表、不改存量向量值——实测见 `database/RESTORE.md` §8）。**执行窗口实测（2026-11-17，一次性恢复库）**：不重写表体（`relfilenode` 不变），但 `topic_tag_embeddings`（33,832 行 × 2560 维）的 ALTER 耗时 ~310s——成本在该表 3 个 halfvec HNSW 索引被 PG 随 ALTER 重建，其余五列同秒完成；需在低峰执行。
+> float32 HNSW 索引仅当维度 ≤ 2000 **且列带维度限定**时创建（pgvector 限制；裸 `vector` 列建不了）；`topic_tag_embeddings` 的 identity 行另有 halfvec HNSW 部分索引（≤4000 维，表达式内嵌维度），供语义搜索 ANN 候选；>4000 时两类索引都跳过，语义路回退全表精确扫描。
+
+---
+
+## 模型名列宽规则总述
+
+embedding 模型名只有一个来源语义：`airouter.EmbeddingResult.Model` = 路由绑定的 `ai_models.name`。凡落库该值的列，列宽 **MUST NOT 窄于** `ai_models.name`（VARCHAR(100)）——注册表存得下的名字，任何落库处都必须存得下。
+
+| 表.列 | 列宽 | 说明 |
+| -------- | ------ | ------ |
+| `ai_models.name` | VARCHAR(100) | **基准**：模型注册表（vendor 内唯一） |
+| `ai_call_logs.model` | VARCHAR(100) | 调用日志快照 |
+| `ai_embedding_cache.model` | VARCHAR(100) | embedding 缓存行 |
+| `topic_tag_embeddings.model` | VARCHAR(100) | 标签向量（迁移 `20261103_0001` 由 50 加宽） |
+| `candidate_embeddings.model` | VARCHAR(100) | 候选向量（同迁移加宽） |
+| `preference_vectors.model` | VARCHAR(100) | 偏好向量（同迁移加宽） |
+| `route_embeddings.model` | VARCHAR(100) | 路由向量（同迁移加宽） |
+| `discovery_interest_entries.model` | VARCHAR(100) | 兴趣条目向量（同迁移加宽） |
+
+> 违反后果实测（2026-11-03，fix-embedding-model-column-width）：本地 llama.cpp / GGUF 模型把模型文件绝对路径当名字注册（61 字符）→ 超限 → Postgres 报 `SQLSTATE 22001`（value too long for type character varying）→ 整条 embedding 任务失败（向量已算出却存不进去）；且命中 embedding 缓存时返回的是缓存行里存的模型名，**主路由是短名模型也挡不住**。
+> 两条维护纪律：① gorm tag 与 DDL 必须同批改（`size:50` → `size:100`），否则 AutoMigrate 会把列改回窄列；② 列宽不变式由 `backend-go/internal/platform/database/embedding_model_column_width_test.go` 守住（新增窄列即红）。
 
 ---
 
@@ -129,7 +160,7 @@
 
 ### Part A — 真实 DB 级外键约束
 
-即上方「DB 级外键（全库共 6 条，权威清单）」，不再重复维护两份。最早一条（`topic_tags_merged_into_id_fkey`，自引用，用于话题合并）由 `postgres_migrations.go` 显式 `ADD CONSTRAINT` 创建；迁移 `20260601_0001` 先 DROP 了所有历史 `fk_*` 后仅重建此 1 条，其余 5 条由后续版本迁移逐条补齐。
+即上方「DB 级外键（全库共 13 条，权威清单）」，不再重复维护两份。最早一条（`topic_tags_merged_into_id_fkey`，自引用，用于话题合并）由 `postgres_migrations.go` 显式 `ADD CONSTRAINT` 创建；迁移 `20260601_0001` 先 DROP 了所有历史 `fk_*` 后仅重建此 1 条，其余条目由后续版本迁移逐条补齐（2026-10 `20261012_0001` 一次补 5 条，全部落在 `topic_key_event_markers`）。
 
 ### Part B — GORM 应用层逻辑关联（foreignKey tag，DB 层未强制外键）
 
@@ -206,7 +237,7 @@
 以下三张桥接表**均无 `id` 列**，使用复合主键（代码权威）：
 
 - **`topic_tag_semantic_labels`**：连接 `topic_tags` ↔ `semantic_labels`（auxiliary）。复合主键 `(topic_tag_id, semantic_label_id)`，无 `created_at`，两端 `OnDelete:CASCADE`。
-- **`topic_tag_board_labels`**：连接 `topic_tags` ↔ `semantic_labels`（board），含 `score` / `match_reason` / `downgraded` / `direction_mismatch`。复合主键 `(topic_tag_id, semantic_board_id)`，两端 `OnDelete:CASCADE`。
+- **`topic_tag_board_labels`**：连接 `topic_tags` ↔ `semantic_labels`（board），含 `score` / `match_reason` / `direction_mismatch`（`downgraded` 列 2026-11-12 退役）。复合主键 `(topic_tag_id, semantic_board_id)`，两端 `OnDelete:CASCADE`。
 - **`board_composition`**：连接 `semantic_labels`（board）↔ `semantic_labels`（auxiliary）。复合主键 `(board_id, auxiliary_label_id)`，无时间戳列，两端 `OnDelete:CASCADE`。
 
 > ⚠️ 旧版本文档曾把这三张表写成 `BIGSERIAL id PK`，与代码不符，已纠正。
@@ -228,6 +259,17 @@
 - **`ai_call_logs`**：存储 `route_name` 和 `provider_name`（冗余）以保留调用时的上下文快照，即使后续路由/供应商被修改或删除。
 - **`board_upgrade_suggestions.auxiliary_label_ids`**（JSONB `[]uint`）：逻辑指向 `semantic_labels.id`（auxiliary），不保证完整性。
 - **`daily_report_threads.tag_ids` / `related_article_ids`**（JSONB）：逻辑指向 `topic_tags.id` / `articles.id`，无 FK。其中 `related_article_ids` 的**完整性由写方维护**：任何删除 `articles` 行的路径 MUST 在同一事务内、删行前先改指保留条（去重归并）或剔除引用（删源级联等），维护器 `internal/platform/articlerefs`；数组保序、去重（首个为准）、空引用写 `[]`，MUST NOT 写 JSON `null` 标量（`jsonb_array_elements_text` 遇 null 抛 SQLSTATE 22023，会让整条查询静默失败）。存量悬空由迁移 `20260917_0002` 一次性修复（规范化非数组值 + 分批剪除悬空 id，幂等）；日报 job 每日以只读探针记录悬空计数。语义与约束见 `flow/daily-report.md` 约束 21。
+
+### 追加式审计留痕表（append-only，刻意无 DB 级外键）
+
+两张留痕表的引用列**故意不建 FK、也不声明 GORM 关联**——留痕必须比被引用的行活得更久（`ON DELETE CASCADE` 会静默抹掉「谁在什么时候改过什么」的历史，`RESTRICT` 又会阻塞删行）：
+
+| 表 | 被引用对象（逻辑引用，无 FK） | 追加时机 |
+| --- | --- | --- |
+| `topic_anchor_overrides` | `board_persistent_topics.id`（`topic_id`，index `idx_topic_anchor_overrides_topic`） | 每次人工重设话题首义（`PATCH /api/daily-reports/topics/:id/anchor`） |
+| `section_assignment_overrides` | `daily_report_sections.id` / `board_persistent_topics.id`（`section_id` index `idx_section_assignment_overrides_section`） | 每次人工移除 / 加回 section 的泳道归属（`PATCH /api/daily-reports/sections/:id/assignment`） |
+
+> 两表都**无 UPDATE / DELETE 路径**（只追加），也**无 UNIQUE 约束**（同对象可有多行历史，按 `created_at`/`id` 排序即时间线）。建表走显式迁移 `20261113_0002` / `20261113_0004`，模型不进 AutoMigrate；字段见 [`daily-report-watch.md`](daily-report-watch.md) §9.13/§9.14。
 
 ### JSON-stored ID Lists（无 FK 约束的关系）
 

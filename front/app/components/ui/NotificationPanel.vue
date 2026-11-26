@@ -87,7 +87,7 @@ async function onClearConfirm() {
 function onItemClick(item: AppNotification) {
   if (!item.is_read) void markRead(item.id)
   if (item.link_type === 'daily-report') {
-    // 日报读者在 /tags 页（useDailyReportReader 挂 TagsPage）；link_id 为生成日期，
+    // 日报读者在 /tags/:boardId/:date 阅读台（useConsoleReading 宿主）；link_id 为生成日期，
     // 页面内默认展示最新日期，暂不带 query（无锚定到具体日期的路由参数）
     void navigateTo('/tags')
   }

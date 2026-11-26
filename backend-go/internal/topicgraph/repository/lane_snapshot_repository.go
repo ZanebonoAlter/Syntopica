@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"gorm.io/gorm/clause"
+
+	"syntopica-backend/internal/platform/logging"
 )
 
 // ── 泳道动态（overview-lane-dynamics）────────────────────────────────────────
@@ -30,9 +32,45 @@ const (
 	LaneDynamicsDefaultDays = 14
 )
 
-// GetBoardReportAnchor returns the board's latest report period_date
-// (normalized noon UTC). ok=false when the board has no reports — the caller
-// uses it to distinguish the no-report empty state (tasks 2.2).
+// LaneDailyCount is one report day's magnitude signal for the settlement
+// prompt (slim-lane-snapshot-trend D1): date + anchored section count +
+// thread count. System-computed — the LLM never counts for itself.
+type LaneDailyCount struct {
+	PeriodDate time.Time
+	SectionCnt int
+	ThreadCnt  int
+}
+
+// ListDailyThreadCounts aggregates, per report day in [from, to], how many
+// anchored sections and threads the lane has (slim-lane-snapshot-trend D1:
+// 量级信号由系统计算供给). Days without a report produce no row — the
+// caller renders them explicitly rather than leaving gaps to interpretation.
+// Same inclusive window semantics as ListLaneSnapshotMaterial so the
+// magnitude signal always covers exactly the material window.
+func (r *TopicGraphRepository) ListDailyThreadCounts(topicID uint, from, to time.Time) ([]LaneDailyCount, error) {
+	var rows []LaneDailyCount
+	err := r.db.Table("daily_report_sections AS s").
+		Select("r.period_date AS period_date, COUNT(DISTINCT s.id) AS section_cnt, COUNT(t.id) AS thread_cnt").
+		Joins("JOIN board_daily_reports r ON r.id = s.report_id").
+		Joins("LEFT JOIN daily_report_threads t ON t.section_id = s.id").
+		Where("s.persistent_topic_id = ? AND r.status = ? AND r.period_date >= ? AND r.period_date <= ?",
+			topicID, ReportStatusCompleted, from, to).
+		Group("r.period_date").
+		Order("r.period_date ASC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("lane snapshot: daily thread counts: %w", err)
+	}
+	return rows, nil
+}
+
+// GetBoardReportAnchor returns the board's latest **completed** report
+// period_date (normalized noon UTC). ok=false when the board has no completed
+// report — the caller uses it to distinguish the no-report empty state (tasks 2.2).
+//
+// completed 口径（fix-lane-metric-provenance D10）：未完成的日报（status =
+// 'generating' 等）不是「已发布的日报」，不参与任何窗口锚点——矩阵观察窗、
+// 泳道结算素材窗、compose-candidates 窗口三处必须落在同一天上。
 // Uses the GORM struct-scan path (not sql.Row.Scan) so time columns coming
 // back as strings (SQLite driver in service tests) are converted the same
 // way every other period_date scan in this package is.
@@ -42,7 +80,7 @@ func (r *TopicGraphRepository) GetBoardReportAnchor(boardID uint) (time.Time, bo
 	}
 	err := r.db.Model(&BoardDailyReport{}).
 		Select("period_date").
-		Where("semantic_board_id = ?", boardID).
+		Where("semantic_board_id = ? AND status = ?", boardID, ReportStatusCompleted).
 		Order("period_date DESC").
 		Limit(1).
 		Scan(&row).Error
@@ -93,10 +131,14 @@ func (r *TopicGraphRepository) ListLaneSnapshotMaterial(topicID uint, from, to t
 		ClusterLabel string
 		PeriodDate   time.Time
 	}
+	// completed 口径（fix-lane-metric-provenance D10 / review R-2）：未完成日报不是已发布
+	// 日报，其分区不得进结算素材（否则同日重跑中的 generating 行会被当成素材重复计入，
+	// 且与锚点 GetBoardReportAnchor 的 completed 口径不一致）。
 	err := r.db.Table("daily_report_sections AS s").
 		Select("s.id, s.cluster_label, r.period_date").
 		Joins("JOIN board_daily_reports r ON r.id = s.report_id").
-		Where("s.persistent_topic_id = ? AND r.period_date >= ? AND r.period_date <= ?", topicID, from, to).
+		Where("s.persistent_topic_id = ? AND r.status = ? AND r.period_date >= ? AND r.period_date <= ?",
+			topicID, ReportStatusCompleted, from, to).
 		Order("r.period_date ASC, s.id ASC").
 		Scan(&secs).Error
 	if err != nil {
@@ -200,57 +242,134 @@ func (r *TopicGraphRepository) ListActiveWatchLinkedTopicIDs(boardID uint) (map[
 // section label + up to LaneTimelineEventsPerSection thread titles
 // (events) + folded_count for the rest (spec: 数量可截断但 SHALL 提示被折叠数).
 type LaneDynamicsTimelineSection struct {
-	SectionID   uint     `json:"section_id"`
-	Label       string   `json:"label"`
-	Events      []string `json:"events"`
-	FoldedCount int      `json:"folded_count"`
+	SectionID uint   `json:"section_id"`
+	Label     string `json:"label"`
+	// ThreadCount is the bucket's thread TOTAL (综合稿 included) — it is NOT
+	// the clue count. The clue count of the day lives on LaneDynamicsTimelineDay
+	// (ClueCount); the frontend derives the per-bucket non-composite count as
+	// ThreadCount - CompositeCount.
+	ThreadCount int `json:"thread_count"`
+	// CompositeCount is the number of composite (综合稿) threads in this
+	// bucket (fix-lane-metric-provenance D1). The frontend needs the
+	// difference to state "另有 N 条综合稿未计入" without exposing a second
+	// clue-count口径 in the same sentence.
+	CompositeCount int      `json:"composite_count"`
+	Events         []string `json:"events"`
+	FoldedCount    int      `json:"folded_count"`
 }
 
 // LaneDynamicsTimelineDay groups one report date's sections (ascending
 // chronological order; the date↔event mapping comes from the backend so the
 // frontend never infers it — spec).
+//
+// ClueCount is the day's clue (thread) total across ALL of the lane's sections
+// — the sum over theme buckets, never a bucket peak. It is the ONE quantity the
+// matrix day cell, the evolution node and the top time-window curve display
+// (retire-story-adopt-event-metrics D4), and it is the input of the same-day
+// lane heat. Composite (综合稿) threads are excluded — a multi-event piece must
+// not inflate any single lane's count. Event-line aggregates (story count,
+// hottest story identity, unassigned events, participant max) are retired: no
+// new event identity is produced any more (spec: SHALL NOT 再下发).
 type LaneDynamicsTimelineDay struct {
 	Date     string                        `json:"date"` // YYYY-MM-DD
 	Sections []LaneDynamicsTimelineSection `json:"sections"`
+	// ClueCount = 当日线索合计（各主题桶非综合稿 thread 数之和）。
+	ClueCount int `json:"clue_count"`
 }
 
 // LaneDynamicsSnapshot is the settled rolling summary; nil on the lane means
 // "no snapshot yet" (前端「待结算」占位，时间线照常渲染 — spec).
-// Detail is the ≤500字 long-form narrative; nil means the long form is missing
+// Detail carries the legacy long-form narrative (存量历史值透出; slim-lane-snapshot-trend: 新结算恒空→nil)
 // (legacy rows / degraded generations — lane-trend-overview design D3)，与
 // 整份快照缺失（snapshot=null）两级缺失可区分；空串归一为 nil。
 type LaneDynamicsSnapshot struct {
 	Summary string  `json:"summary"`
 	AsOf    string  `json:"as_of"`            // YYYY-MM-DD
-	Detail  *string `json:"detail,omitempty"` // 长版全文；nil=长版缺失（存量/降级）
+	Detail  *string `json:"detail,omitempty"` // 存量历史长版透出；新结算恒空→nil（omitempty 不出现）
 }
 
 // LaneDynamicsLane is one lane card's full data.
 type LaneDynamicsLane struct {
-	TopicID         uint                      `json:"topic_id"`
-	Label           string                    `json:"label"`
-	WatchLinked     bool                      `json:"watch_linked"`
-	SectionCount14d int                       `json:"section_count_14d"` // 排序键（D4 命名）
-	Snapshot        *LaneDynamicsSnapshot     `json:"snapshot"`
-	Timeline        []LaneDynamicsTimelineDay `json:"timeline"`
+	TopicID     uint   `json:"topic_id"`
+	Label       string `json:"label"`
+	WatchLinked bool   `json:"watch_linked"`
+	// SectionCount14d is the in-window anchored SECTION count, kept for
+	// display only. Ordering uses lane_heat (see GetBoardLaneDynamics),
+	// so a day split into several sibling buckets cannot inflate a lane's rank.
+	SectionCount14d int `json:"section_count_14d"`
+	// ThreadCount14d is the in-window clue total (sum of the daily clue counts)
+	// — the ordering tie-breaker after lane heat (a bucket split or a section
+	// count must not masquerade as more heat).
+	ThreadCount14d int `json:"thread_count_14d"`
+	// LaneHeat is the same-day heat from lane_heat_repository.go
+	// (heat-v2-lane-clues-1d): anchor-day clue count × 1.0 for active lanes,
+	// × lane_heat_candidate_weight for candidates. No half-life, no cross-day
+	// accumulation — it only expresses today.
+	LaneHeat float64                   `json:"lane_heat"`
+	Snapshot *LaneDynamicsSnapshot     `json:"snapshot"`
+	Timeline []LaneDynamicsTimelineDay `json:"timeline"`
 }
 
 // LaneDynamicsCandidate is one candidate-bar entry (只读提示，转正走话题管理).
+// The anchor-day clue count and its weighted heat travel with the entry so the
+// board attention can include candidate lanes at lane_heat_candidate_weight
+// without any consumer re-deriving the formula (design D7/D8).
 type LaneDynamicsCandidate struct {
 	TopicID      uint   `json:"topic_id"`
 	Label        string `json:"label"`
 	LastSeenDate string `json:"last_seen_date"`
 	RecentHint   string `json:"recent_hint"` // 最新 section 标题
+	// AnchorDate is the board's own anchor day the clue count was measured on.
+	AnchorDate string `json:"anchor_date"`
+	// ClueCount is that lane's clue total on the anchor day (0 is a real zero).
+	ClueCount int `json:"clue_count"`
+	// LaneHeat = ClueCount × lane_heat_candidate_weight.
+	LaneHeat float64 `json:"lane_heat"`
+}
+
+// LaneDynamicsOtherDay is one report day's 「未入泳道」aggregate: how many
+// sections of that day belong to no lane of the board, and how many
+// non-composite clues (threads) those sections carry.
+//
+// 「未入泳道」= persistent_topic_id 为空、或指向的既不是本板块 active 话题、也不是
+// watch 关联话题（与前端「当日其他话题」组的 A 名单排除同口径）。综合稿（composite）
+// 不计线索数（与泳道格同量纲），但分区数照算。
+type LaneDynamicsOtherDay struct {
+	Date     string `json:"date"` // YYYY-MM-DD
+	Sections int    `json:"sections"`
+	Clues    int    `json:"clues"`
 }
 
 // LaneDynamicsResponse is the GET /semantic-boards/:id/lane-dynamics payload.
 // Empty states (tasks 2.2): no reports → HasReports=false + empty non-nil
 // lanes/candidates; reports but no active lanes → HasReports=true + empty lanes.
+//
+// HeatRuleVersion pins the deterministic formula behind lane_heat
+// (heat-v2-lane-clues-1d). The story-identity meta (stories_backfilled) and the
+// story-signal coverage markers (heat_incomplete / heat_stale_feed_ids) are
+// retired with the story heat they described: the new heat is report geometry,
+// it has no feed-freshness dependency and no “unbackfilled” state.
 type LaneDynamicsResponse struct {
-	WindowDays int                     `json:"window_days"`
-	HasReports bool                    `json:"has_reports"`
-	Lanes      []LaneDynamicsLane      `json:"lanes"`
-	Candidates []LaneDynamicsCandidate `json:"candidates"`
+	WindowDays int  `json:"window_days"`
+	HasReports bool `json:"has_reports"`
+	// AnchorDate is the board's latest COMPLETED report day (YYYY-MM-DD) the
+	// window is anchored on — the same anchor the compose-candidates window
+	// uses (fix-lane-metric-provenance D10). Empty string when the board has
+	// no completed report yet. The frontend uses it as the matrix axis end so
+	// both windows end on the same day.
+	AnchorDate      string `json:"anchor_date"`
+	HeatRuleVersion string `json:"heat_rule_version"`
+	// CluesDegraded = 当日线索聚合（CountLaneCluesByDate）失败，本次 lane_heat 是
+	// 「算不出来的 0」而非「今天确实没线索」。单版块端点仍按既有语义降级为 0 热
+	// 且不阻断响应；雷达总览据此把该版块判为「未取到」（不拿 0 冒充业务结论）。
+	CluesDegraded bool                    `json:"clues_degraded"`
+	Lanes         []LaneDynamicsLane      `json:"lanes"`
+	Candidates    []LaneDynamicsCandidate `json:"candidates"`
+	// OtherTopics = 逐日「未入泳道」聚合：窗口内每个 completed 日报日一条（含真实
+	// 0 —— 有日报但当天没有未入泳道分区时出 0/0，不省略成缺失）。值 = 该日未入泳道
+	// 的分区数 + 这些分区的非综合稿线索数。只描述既有归属，MUST NOT 参与泳道行 /
+	// 候选 / 热度的任何计算。空数组非 null（与 lanes/candidates 同一空态契约）。
+	OtherTopics []LaneDynamicsOtherDay `json:"other_topics"`
 }
 
 // laneSectionRow mirrors the windowed anchored-section projection shared by
@@ -265,12 +384,18 @@ type laneSectionRow struct {
 // listLaneWindowSections loads all sections anchored to topics of this board
 // within [from, anchor] (inclusive), ordered oldest-first. GORM-safe standard
 // SQL (JOIN sections↔reports), PG/SQLite compatible.
+//
+// Only COMPLETED reports contribute (fix-lane-metric-provenance D10): an
+// unfinished report is not a published daily report, so its sections must not
+// show up in the matrix timeline nor shift the window anchor. The
+// compose-candidates window filters the same way — both windows then describe
+// the same set of report days.
 func (r *TopicGraphRepository) listLaneWindowSections(boardID uint, from, to time.Time, topicIDs []uint) ([]laneSectionRow, error) {
 	q := r.db.Table("daily_report_sections AS s").
 		Select("s.id, s.persistent_topic_id AS topic_id, s.cluster_label, r.period_date").
 		Joins("JOIN board_daily_reports r ON r.id = s.report_id").
-		Where("r.semantic_board_id = ? AND r.period_date >= ? AND r.period_date <= ? AND s.persistent_topic_id IS NOT NULL",
-			boardID, from, to)
+		Where("r.semantic_board_id = ? AND r.status = ? AND r.period_date >= ? AND r.period_date <= ? AND s.persistent_topic_id IS NOT NULL",
+			boardID, ReportStatusCompleted, from, to)
 	if topicIDs != nil {
 		q = q.Where("s.persistent_topic_id IN ?", topicIDs)
 	}
@@ -281,76 +406,340 @@ func (r *TopicGraphRepository) listLaneWindowSections(boardID uint, from, to tim
 	return rows, nil
 }
 
+// laneSectionThreads is one section's thread projection: the titles used for
+// the top-N / folded display, plus the clue count (non-composite threads) that
+// feeds the day total and the same-day heat, plus the composite count the
+// frontend needs to state the "另有 N 条综合稿未计入" difference.
+type laneSectionThreads struct {
+	Titles []string
+	Clues  int
+	// Composite counts the 综合稿 threads of this bucket (excluded from Clues).
+	Composite int
+}
+
 // listLaneSectionThreads batch-loads thread titles for the given sections in
-// generation order (id ASC) so the top-N + fold split is deterministic.
-func (r *TopicGraphRepository) listLaneSectionThreads(sectionIDs []uint) (map[uint][]string, error) {
-	out := make(map[uint][]string, len(sectionIDs))
+// generation order (id ASC) so the top-N + fold split is deterministic. The
+// clue count excludes composite (综合稿) threads — the same exclusion the clue
+// query and the heat formula apply (spec: 综合稿不计线索数). The composite
+// count comes from the same scan (the `scope` column is already selected).
+func (r *TopicGraphRepository) listLaneSectionThreads(sectionIDs []uint) (map[uint]laneSectionThreads, error) {
+	out := make(map[uint]laneSectionThreads, len(sectionIDs))
 	if len(sectionIDs) == 0 {
 		return out, nil
 	}
 	var ths []struct {
 		SectionID uint
 		Title     string
+		Scope     string
 	}
 	if err := r.db.Table("daily_report_threads").
-		Select("section_id, title").
+		Select("section_id, title, scope").
 		Where("section_id IN ?", sectionIDs).
 		Order("id ASC").
 		Scan(&ths).Error; err != nil {
 		return nil, fmt.Errorf("lane dynamics: section threads: %w", err)
 	}
 	for _, th := range ths {
-		out[th.SectionID] = append(out[th.SectionID], th.Title)
+		entry := out[th.SectionID]
+		entry.Titles = append(entry.Titles, th.Title)
+		if th.Scope != ThreadScopeComposite {
+			entry.Clues++
+		} else {
+			entry.Composite++
+		}
+		out[th.SectionID] = entry
 	}
 	return out, nil
 }
 
+// listOtherTopicsWindow aggregates, per COMPLETED report day in [from, to],
+// the sections that belong to no lane of this board（「未入泳道」）and the
+// non-composite clue (thread) count those sections carry.
+//
+// 排除集 laneTopicIDs = 该板块 active 话题 ∪ watch 关联话题（调用方给全量：
+// 窗内没分区的 active 话题，其历史分区同样不算「其他话题」）。其余分区计入——
+// candidate / archived / 没有 persistent topic 都算（与前端「当日其他话题」组
+// 的 A 名单排除同口径）。
+//
+// 综合稿（composite）不计线索数（与泳道格同量纲），分区数照算。日期骨架 = 窗口
+// 内 completed 日报日：某日没有未入泳道分区时仍出一条 0/0（真实零，不是缺失）；
+// 未完成日报整天不参与（与泳道时间线同边界）。
+func (r *TopicGraphRepository) listOtherTopicsWindow(boardID uint, from, to time.Time, laneTopicIDs []uint) ([]LaneDynamicsOtherDay, error) {
+	// ① 日期骨架：窗口内 completed 日报日（升序，每天一条）。
+	var reportDays []struct {
+		PeriodDate time.Time
+	}
+	if err := r.db.Model(&BoardDailyReport{}).
+		Distinct().
+		Select("period_date").
+		Where("semantic_board_id = ? AND status = ? AND period_date >= ? AND period_date <= ?",
+			boardID, ReportStatusCompleted, from, to).
+		Order("period_date ASC").
+		Scan(&reportDays).Error; err != nil {
+		return nil, fmt.Errorf("lane dynamics: other topics report days: %w", err)
+	}
+	out := make([]LaneDynamicsOtherDay, 0, len(reportDays))
+	if len(reportDays) == 0 {
+		return out, nil
+	}
+
+	// ② 一次窗口聚合：未入泳道分区数 + 它们的非综合稿线索数。
+	type otherTopicsRow struct {
+		PeriodDate time.Time
+		Sections   int
+		Clues      int
+	}
+	q := r.db.Table("daily_report_sections AS s").
+		Select("r.period_date AS period_date, COUNT(DISTINCT s.id) AS sections, "+
+			"COALESCE(SUM(CASE WHEN t.id IS NOT NULL AND COALESCE(t.scope, '') <> ? THEN 1 ELSE 0 END), 0) AS clues",
+			ThreadScopeComposite).
+		Joins("JOIN board_daily_reports r ON r.id = s.report_id").
+		Joins("LEFT JOIN daily_report_threads t ON t.section_id = s.id").
+		Where("r.semantic_board_id = ? AND r.status = ? AND r.period_date >= ? AND r.period_date <= ?",
+			boardID, ReportStatusCompleted, from, to)
+	if len(laneTopicIDs) > 0 {
+		// 排除集非空才加 NOT IN（空集时 NOT IN 无可用语义）。
+		q = q.Where("(s.persistent_topic_id IS NULL OR s.persistent_topic_id NOT IN ?)", laneTopicIDs)
+	}
+	var rows []otherTopicsRow
+	if err := q.Group("r.period_date").Order("r.period_date ASC").Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("lane dynamics: other topics aggregate: %w", err)
+	}
+	aggByDate := make(map[string]otherTopicsRow, len(rows))
+	for _, row := range rows {
+		aggByDate[NormalizeReportDate(row.PeriodDate).Format("2006-01-02")] = row
+	}
+
+	// ③ 骨架补零：每个 completed 日报日恰好一条，聚合没命中的按真实 0 补。
+	for _, day := range reportDays {
+		key := NormalizeReportDate(day.PeriodDate).Format("2006-01-02")
+		row := aggByDate[key]
+		out = append(out, LaneDynamicsOtherDay{Date: key, Sections: row.Sections, Clues: row.Clues})
+	}
+	return out, nil
+}
+
+// otherTopicsExcludedTopicIDs returns the topic ids whose sections are NOT
+// 「未入泳道」: the board's active topics ∪ its watch-linked topics. The set is
+// NOT limited to the lanes that happen to have sections in the window — an
+// active topic without in-window sections still owns its historical sections
+// (those must not resurface as 「其他话题」).
+//
+// 只在**非归档**话题（level.topics）里取：lanes 也不会物化归档话题，若把
+// watch 指向的归档话题也排除，它的分区会既不在泳道、也不在「其他话题」——
+// 与前端 A 名单排除（只看实际返回的泳道）不一致。
+func otherTopicsExcludedTopicIDs(level *boardLevelData) []uint {
+	set := make(map[uint]bool, len(level.topics))
+	for _, topic := range level.topics {
+		if topic.Status == TopicStatusActive || level.watchLinked[topic.ID] {
+			set[topic.ID] = true
+		}
+	}
+	ids := make([]uint, 0, len(set))
+	for id := range set {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+// ── 板级数据加载器（雷达总览批量取数）────────────────────────────────────
+//
+// 泳道计算的输入分两层：
+//   - 板级（board-level）：版块锚点日、非归档话题、watch 关联话题；
+//   - 版块内（per-board）：窗口 sections / threads / 快照 / 当天线索数 / 候选提示。
+//
+// 板级这三样与泳道窗口无关，天然可跨版块批量取：雷达总览一次拿全部版块的板级
+// 数据（3 条 SQL），单版块端点拿自己的一份（同样 3 条）。两条路径共用同一份
+// 聚合代码（computeBoardLaneDynamics）——取数方式不同，口径代码只有一份。
+
+// boardLevelData is one board's board-level input of the lane computation.
+type boardLevelData struct {
+	// anchor is the board's latest COMPLETED report day (normalized noon UTC).
+	anchor time.Time
+	// hasAnchor = the board has at least one completed report.
+	hasAnchor bool
+	// topics = the board's non-archived topics (DB order).
+	topics []BoardPersistentTopic
+	// topicByID = topics keyed by topic id.
+	topicByID map[uint]BoardPersistentTopic
+	// watchLinked = topic ids referenced by ACTIVE watches of the board.
+	watchLinked map[uint]bool
+}
+
+// loadBoardLevel loads ONE board's board-level data.
+func (r *TopicGraphRepository) loadBoardLevel(boardID uint) (*boardLevelData, error) {
+	levels, err := r.loadBoardLevels([]uint{boardID})
+	if err != nil {
+		return nil, err
+	}
+	level, ok := levels[boardID]
+	if !ok {
+		// 取数成功但这个版块没有任何板级数据 → 无锚点（空泳道响应）。
+		return &boardLevelData{topicByID: map[uint]BoardPersistentTopic{}, watchLinked: map[uint]bool{}}, nil
+	}
+	return level, nil
+}
+
+// loadBoardLevels loads the board-level data of MANY boards in three queries
+// (anchor / watch-linked / topics) —— 每类一条，不是每版块一条。
+//
+// anchor 口径与 GetBoardReportAnchor 逐字一致：只认 status='completed' 的最新
+// period_date。取「每个版块最新一行」用 ROW_NUMBER() 窗口函数（PG 与 SQLite
+// 都支持；DISTINCT ON 只有 PG 能用，而本包的 service 层测试跑内存 SQLite）。
+// board_daily_reports 的 (semantic_board_id, period_date) 有唯一索引，同日不会有
+// 并列行，窗口函数的取舍是确定的。
+func (r *TopicGraphRepository) loadBoardLevels(boardIDs []uint) (map[uint]*boardLevelData, error) {
+	out := make(map[uint]*boardLevelData, len(boardIDs))
+	for _, id := range boardIDs {
+		out[id] = &boardLevelData{
+			topicByID:   map[uint]BoardPersistentTopic{},
+			watchLinked: map[uint]bool{},
+		}
+	}
+	if len(boardIDs) == 0 {
+		return out, nil
+	}
+
+	// ① 锚点日：每个版块最新一期 **completed** 日报。
+	var anchors []struct {
+		SemanticBoardID uint
+		PeriodDate      time.Time
+	}
+	if err := r.db.Raw(
+		"SELECT semantic_board_id, period_date FROM ("+
+			"SELECT semantic_board_id, period_date, "+
+			"ROW_NUMBER() OVER (PARTITION BY semantic_board_id ORDER BY period_date DESC) AS rn "+
+			"FROM board_daily_reports WHERE semantic_board_id IN (?) AND status = ?"+
+			") ranked WHERE rn = 1",
+		boardIDs, ReportStatusCompleted).
+		Scan(&anchors).Error; err != nil {
+		return nil, fmt.Errorf("lane dynamics: board anchors: %w", err)
+	}
+	for _, a := range anchors {
+		level, ok := out[a.SemanticBoardID]
+		if !ok || level.hasAnchor {
+			continue
+		}
+		level.anchor = NormalizeReportDate(a.PeriodDate)
+		level.hasAnchor = true
+	}
+
+	// ② watch 关联话题（ACTIVE watches）—— 「我在追踪」泳道集合。
+	var watched []struct {
+		SemanticBoardID   uint
+		PersistentTopicID uint
+	}
+	if err := r.db.Model(&BoardTopicWatch{}).
+		Select("semantic_board_id, persistent_topic_id").
+		Where("semantic_board_id IN ? AND status = ? AND persistent_topic_id IS NOT NULL",
+			boardIDs, WatchStatusActive).
+		Distinct().
+		Scan(&watched).Error; err != nil {
+		return nil, fmt.Errorf("lane dynamics: watch-linked topics: %w", err)
+	}
+	for _, w := range watched {
+		if level, ok := out[w.SemanticBoardID]; ok {
+			level.watchLinked[w.PersistentTopicID] = true
+		}
+	}
+
+	// ③ 非归档话题（lanes 取自 active ∪ watch-linked；归档泳道两种口径都排除）。
+	//
+	// 只取泳道计算真正用到的列：board_persistent_topics 带 embedding / centroid
+	// 向量列，13 个活跃版块实测 2074 行 ≈ 41MB 向量载荷——整表 SELECT * 光取回
+	// 就要 ~1s（EXPLAIN 看不到：TOAST 向量不在堆页里），而泳道口径一个向量都
+	// 不用。向量列不参与任何分桶 / 热度 / 线索窗计算，故不取。
+	var topics []BoardPersistentTopic
+	if err := r.db.Model(&BoardPersistentTopic{}).
+		Select("id, semantic_board_id, label, status, hit_count, last_seen_date").
+		Where("semantic_board_id IN ? AND status != ?", boardIDs, TopicStatusArchived).
+		Find(&topics).Error; err != nil {
+		return nil, fmt.Errorf("lane dynamics: board topics: %w", err)
+	}
+	for _, t := range topics {
+		level, ok := out[t.SemanticBoardID]
+		if !ok {
+			continue
+		}
+		level.topics = append(level.topics, t)
+		level.topicByID[t.ID] = t
+	}
+	return out, nil
+}
+
+// laneDynamicsSettings is the request-scoped input of the lane computation:
+// the two ai_settings reads it needs. Reading them once per request (instead
+// of once per board) keeps the values identical and removes N-1 duplicate
+// reads per board.
+type laneDynamicsSettings struct {
+	candidateWeight float64
+	topicConfig     PersistentTopicConfig
+}
+
+// loadLaneDynamicsSettings reads the request-scoped lane settings.
+func (r *TopicGraphRepository) loadLaneDynamicsSettings() laneDynamicsSettings {
+	return laneDynamicsSettings{
+		candidateWeight: LoadLaneHeatCandidateWeight(r.db),
+		topicConfig:     LoadPersistentTopicConfig(r.db),
+	}
+}
+
 // GetBoardLaneDynamics is the single-shot aggregate behind
-// GET /semantic-boards/:id/lane-dynamics?days=14 (design D4):
+// GET /semantic-boards/:id/lane-dynamics?days=14 (design D4).
+//
+// It loads the board's board-level data (anchor / watch-linked / topics) and
+// hands it to computeBoardLaneDynamics —— the SAME aggregation the radar
+// overview's batch path runs. 取数方式不同，口径代码只有一份。
 //   - window anchored at the board's MAX(period_date) going back `days` days
 //     (inclusive both ends — same convention as the landscape date axis), NOT
 //     now(), so 态势句素材与时间线同窗 (spec);
-//   - lanes = active ∪ watch-linked (non-archived), ranked by in-window
-//     section count DESC; zero-count (沉寂) lanes are not returned;
+//   - lanes = active ∪ watch-linked (non-archived), ranked by the same-day
+//     lane heat DESC → in-window clue total DESC → topic id ASC
+//     (retire-story-adopt-event-metrics D4/D6). Section counts, day counts and
+//     event-line counts never decide rank; zero-day (沉寂) lanes are not
+//     returned;
+//   - per-day payload = that day's clue total (buckets summed, composite
+//     threads excluded) — no story count, no hottest-story identity;
 //   - candidates = visible-gate candidates (hit_count >= upgrade_threshold,
-//     FilterVisibleTopics 口径) with their latest section title as hint.
+//     FilterVisibleTopics 口径) with their latest section title as hint, their
+//     anchor-day clue count and its weighted heat (candidates contribute to the
+//     board attention at lane_heat_candidate_weight).
 func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*LaneDynamicsResponse, error) {
 	if days <= 0 {
 		days = LaneDynamicsDefaultDays
 	}
-	resp := &LaneDynamicsResponse{
-		WindowDays: days,
-		Lanes:      []LaneDynamicsLane{},
-		Candidates: []LaneDynamicsCandidate{},
-	}
-
-	anchor, ok, err := r.GetBoardReportAnchor(boardID)
+	level, err := r.loadBoardLevel(boardID)
 	if err != nil {
 		return nil, err
 	}
-	if !ok {
+	return r.computeBoardLaneDynamics(level, boardID, days, r.loadLaneDynamicsSettings())
+}
+
+// computeBoardLaneDynamics is the ONE lane-dynamics aggregation: board-level
+// data + request-scoped settings → lanes / candidates / heat. The single-board
+// endpoint and the radar overview's batch path both run THIS function.
+// 取数方式不同（单版块 vs 批量），口径代码只有一份。
+func (r *TopicGraphRepository) computeBoardLaneDynamics(level *boardLevelData, boardID uint, days int, settings laneDynamicsSettings) (*LaneDynamicsResponse, error) {
+	resp := &LaneDynamicsResponse{
+		WindowDays:      days,
+		HeatRuleVersion: LaneHeatRuleVersion,
+		Lanes:           []LaneDynamicsLane{},
+		Candidates:      []LaneDynamicsCandidate{},
+		OtherTopics:     []LaneDynamicsOtherDay{},
+	}
+	if level == nil || !level.hasAnchor {
 		// 无日报：空数组非 null（tasks 2.2）。
 		return resp, nil
 	}
+	anchor := level.anchor
 	resp.HasReports = true
-	from := anchor.AddDate(0, 0, -days)
+	resp.AnchorDate = NormalizeReportDate(anchor).Format("2006-01-02")
+	from := anchor.AddDate(0, 0, -(days - 1))
 
-	watchLinked, err := r.ListActiveWatchLinkedTopicIDs(boardID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Non-archived topics of the board (lanes draw from active ∪ watch-linked;
-	// archived lanes are excluded either way).
-	var topics []BoardPersistentTopic
-	if err := r.db.Where("semantic_board_id = ? AND status != ?", boardID, TopicStatusArchived).
-		Find(&topics).Error; err != nil {
-		return nil, fmt.Errorf("lane dynamics: board topics: %w", err)
-	}
-	topicByID := make(map[uint]BoardPersistentTopic, len(topics))
-	for _, t := range topics {
-		topicByID[t.ID] = t
-	}
+	watchLinked := level.watchLinked
+	topics := level.topics
+	topicByID := level.topicByID
 
 	secs, err := r.listLaneWindowSections(boardID, from, anchor, nil)
 	if err != nil {
@@ -409,6 +798,25 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 	if err != nil {
 		return nil, err
 	}
+
+	// 当天热度：口径唯一实现见 lane_heat_repository.go（heat-v2-lane-clues-1d）。
+	// 全板一次聚合锚点日线索数（覆盖 active + candidate），不逐 lane 探库；
+	// 失败降级为 0 热并告警，不阻断响应。
+	candidateWeight := settings.candidateWeight
+	clueByTopic, err := r.CountLaneCluesByDate(boardID, anchor)
+	if err != nil {
+		// 单版块端点保持既有降级（0 热 + 告警，不阻断响应），但必须如实标记：
+		// 雷达总览看到 CluesDegraded 会把该版块判为「未取到」——否则 0 热会被
+		// 渲染成「关注强度 0.0」，正是 fix-radar-overview-false-zero 要消灭的假 0。
+		logging.Warnf("lane dynamics: board %d clue counts degraded: %v", boardID, err)
+		clueByTopic = map[uint]int{}
+		resp.CluesDegraded = true
+	}
+	laneHeat := make(map[uint]float64, len(laneIDs))
+	for _, id := range laneIDs {
+		laneHeat[id] = ComputeLaneHeat(topicByID[id].Status, clueByTopic[id], candidateWeight)
+	}
+
 	snaps, err := r.GetLaneSnapshotsByTopicIDs(laneIDs)
 	if err != nil {
 		return nil, err
@@ -421,6 +829,7 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 			Label:           a.topic.Label,
 			WatchLinked:     watchLinked[id],
 			SectionCount14d: a.count,
+			LaneHeat:        laneHeat[id],
 			Timeline:        make([]LaneDynamicsTimelineDay, 0, len(a.dates)),
 		}
 		if snap, ok := snaps[id]; ok {
@@ -441,40 +850,58 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 			dateKey := a.dates[i]
 			day := LaneDynamicsTimelineDay{Date: dateKey, Sections: []LaneDynamicsTimelineSection{}}
 			for _, s := range a.byDate[dateKey] {
-				titles := threadsBySection[s.ID]
-				events := titles
+				entry := threadsBySection[s.ID]
+				events := entry.Titles
 				if len(events) > LaneTimelineEventsPerSection {
 					events = events[:LaneTimelineEventsPerSection]
 				}
 				if events == nil {
 					events = []string{}
 				}
-				folded := len(titles) - len(events)
+				folded := len(entry.Titles) - len(events)
 				day.Sections = append(day.Sections, LaneDynamicsTimelineSection{
-					SectionID:   s.ID,
-					Label:       s.ClusterLabel,
-					Events:      events,
-					FoldedCount: folded,
+					SectionID:      s.ID,
+					Label:          s.ClusterLabel,
+					ThreadCount:    len(entry.Titles),
+					CompositeCount: entry.Composite,
+					Events:         events,
+					FoldedCount:    folded,
 				})
+				// 当日线索合计 = 各主题桶非综合稿线索数之和（不取桶峰值）。
+				day.ClueCount += entry.Clues
 			}
+			lane.ThreadCount14d += day.ClueCount
 			lane.Timeline = append(lane.Timeline, day)
 		}
 		resp.Lanes = append(resp.Lanes, lane)
 	}
 
-	// Rank by in-window section count DESC (spec: 活跃排序); tie: id ASC for
-	// deterministic output.
+	// 行序：泳道当天热度降序 → 全窗线索合计降序 → topic id 升序（spec）。
+	// section 条数 / 出现天数 / 事件线数一律不参与排序——泳道内主题分桶会把
+	// 同一天拆成多条 section，任何几何排序都会奖励「当天拆得多」的泳道。
 	sort.SliceStable(resp.Lanes, func(i, j int) bool {
-		if resp.Lanes[i].SectionCount14d != resp.Lanes[j].SectionCount14d {
-			return resp.Lanes[i].SectionCount14d > resp.Lanes[j].SectionCount14d
+		if resp.Lanes[i].LaneHeat != resp.Lanes[j].LaneHeat {
+			return resp.Lanes[i].LaneHeat > resp.Lanes[j].LaneHeat
+		}
+		if resp.Lanes[i].ThreadCount14d != resp.Lanes[j].ThreadCount14d {
+			return resp.Lanes[i].ThreadCount14d > resp.Lanes[j].ThreadCount14d
 		}
 		return resp.Lanes[i].TopicID < resp.Lanes[j].TopicID
 	})
 
+	// 「未入泳道」逐日聚合：窗口内每个 completed 日报日一条（含真实 0）。失败
+	// 向上抛（端点 500）——不静默补 0：那会把「算不出来」说成「当天没有其他
+	// 话题」（假 0）。
+	otherTopics, err := r.listOtherTopicsWindow(boardID, from, anchor, otherTopicsExcludedTopicIDs(level))
+	if err != nil {
+		return nil, err
+	}
+	resp.OtherTopics = otherTopics
+
 	// Candidate bar: visible-gate candidates (hit_count >= upgrade_threshold —
 	// FilterVisibleTopics 口径 restricted to status=candidate) with their
 	// latest section title as hint (最近动向，不window限—最新一条可在窗口外).
-	cfg := LoadPersistentTopicConfig(r.db)
+	cfg := settings.topicConfig
 	var candIDs []uint
 	for _, t := range topics {
 		if t.Status == TopicStatusCandidate && t.HitCount >= cfg.UpgradeThreshold {
@@ -486,7 +913,7 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 		if err := r.db.Table("daily_report_sections AS s").
 			Select("s.id, s.persistent_topic_id AS topic_id, s.cluster_label, r.period_date").
 			Joins("JOIN board_daily_reports r ON r.id = s.report_id").
-			Where("s.persistent_topic_id IN ?", candIDs).
+			Where("s.persistent_topic_id IN ? AND r.status = ?", candIDs, ReportStatusCompleted).
 			Order("r.period_date DESC, s.id ASC").
 			Scan(&hintRows).Error; err != nil {
 			return nil, fmt.Errorf("lane dynamics: candidate hints: %w", err)
@@ -497,13 +924,18 @@ func (r *TopicGraphRepository) GetBoardLaneDynamics(boardID uint, days int) (*La
 				hintByTopic[h.TopicID] = h.ClusterLabel
 			}
 		}
+		anchorDate := NormalizeReportDate(anchor).Format("2006-01-02")
 		for _, id := range candIDs {
 			t := topicByID[id]
+			clues := clueByTopic[id]
 			resp.Candidates = append(resp.Candidates, LaneDynamicsCandidate{
 				TopicID:      id,
 				Label:        t.Label,
 				LastSeenDate: NormalizeReportDate(t.LastSeenDate).Format("2006-01-02"),
 				RecentHint:   hintByTopic[id],
+				AnchorDate:   anchorDate,
+				ClueCount:    clues,
+				LaneHeat:     ComputeLaneHeat(TopicStatusCandidate, clues, candidateWeight),
 			})
 		}
 		// Stable order: most recently seen first (tie: id ASC).

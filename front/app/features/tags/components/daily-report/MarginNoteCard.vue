@@ -150,15 +150,28 @@ defineExpose({
             {{ webLabel(web) }}
           </a>
         </div>
-        <!-- 联网降级标记（add-searxng-health-indicator）：仅 empty（链路启用但无结果）
-             时渲染；ok/disabled/旧行 NULL 不渲染（用户主动关闭不打扰，历史数据不追溯）。
-             纯展示：不影响回答内容、引用校验与静默降级行为。 -->
+        <!-- 联网状态标记（add-searxng-health-indicator + switch-margin-note-search-to-deepseek §2.2）：
+             empty→「联网搜索无结果」（链路启用但本轮无结果）；ok 按本轮是否引用网络来源区分
+             「已联网」/「已联网 · 未采用」；disabled/旧行 NULL 不渲染（用户主动关闭不打扰，
+             历史数据不追溯）。纯展示：不影响回答内容、引用校验与静默降级行为。 -->
         <span
           v-if="qa.web_search_status === 'empty'"
-          class="mn-qa__search-empty"
+          class="mn-qa__web-status"
           data-testid="mn-web-search-empty"
           title="本次问答联网搜索未获得结果，可在设置-数据源与网络中测试连接"
         >联网搜索无结果</span>
+        <span
+          v-else-if="qa.web_search_status === 'ok' && qa.cited_web_sources?.length"
+          class="mn-qa__web-status"
+          data-testid="mn-web-ok"
+          title="本次问答已联网检索并引用了网络来源"
+        >已联网</span>
+        <span
+          v-else-if="qa.web_search_status === 'ok'"
+          class="mn-qa__web-status"
+          data-testid="mn-web-unused"
+          title="已搜索到结果，但模型本轮未引用"
+        >已联网 · 未采用</span>
         <!-- D7 口径：本地引用与网络来源均空才标纯模型知识。 -->
         <p
           v-if="!qa.cited_article_ids.length && !qa.cited_web_sources?.length"
@@ -428,8 +441,9 @@ defineExpose({
   font-style: italic;
 }
 
-/* 联网降级标记：与 mn-web-chip 中性色系同族（弱化展示，无交互），仅 title 提示。 */
-.mn-qa__search-empty {
+/* 联网状态标记（无结果 / 已联网 / 已联网未采用三态共用）：与 mn-web-chip 中性色系同族
+   （弱化展示，无交互），仅 title 提示。 */
+.mn-qa__web-status {
   display: inline-block;
   margin-top: 0.35rem;
   padding: 0.05rem 0.4rem;

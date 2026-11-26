@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
 
 	"syntopica-backend/internal/platform/logging"
+	"syntopica-backend/internal/reader/search"
 	"syntopica-backend/internal/tagmanagement/repository"
 )
 
@@ -35,24 +37,6 @@ func getEmbeddingQueueService() *EmbeddingQueueService {
 	return embeddingQueueService
 }
 
-// legacyExtractTopics is the old heuristic-based extraction (for fallback)
-func legacyExtractTopics(input ExtractionInput) []TopicTag {
-	// Use the existing extractor.go logic
-	rawTags := ExtractTopics(input)
-	result := make([]TopicTag, len(rawTags))
-	for i, t := range rawTags {
-		category := NormalizeDisplayCategory(t.Kind, t.Category)
-		result[i] = TopicTag{
-			Label:    t.Label,
-			Slug:     t.Slug,
-			Category: category,
-			Kind:     t.Kind, // Keep for backward compat
-			Score:    t.Score,
-		}
-	}
-	return result
-}
-
 // findOrCreateTag finds an existing tag or creates a new one
 // Uses three-level matching: exact/alias → embedding similarity → create new
 func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleContext string, articleID uint) (*models.TopicTag, error) {
@@ -62,6 +46,12 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 
 	if cached, ok := GetTagCache().Get(slug, category); ok {
 		logging.Infof("findOrCreateTag: label=%q slug=%q category=%s cache=hit existingID=%d", tag.Label, slug, category, cached.ID)
+		// 事件指纹持久化（缓存命中分支）：缓存对象可能带旧 metadata，
+		// persistEventFingerprint 读 DB 真值合并；先写者赢，不翻转已有指纹。
+		if err := persistEventFingerprint(cached, tag.Fingerprint); err != nil {
+			logging.Warnf("findOrCreateTag: persist event fingerprint for cached tag %d failed: %v", cached.ID, err)
+		}
+		GetTagCache().Set(slug, category, cached)
 		return cached, nil
 	}
 
@@ -107,6 +97,10 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 					if category != "event" {
 						go ensureTagEmbedding(es, existing.ID)
 					}
+					// 事件指纹持久化（exact 分支）
+					if err := persistEventFingerprint(existing, tag.Fingerprint); err != nil {
+						logging.Warnf("findOrCreateTag: persist event fingerprint for tag %d failed: %v", existing.ID, err)
+					}
 					GetTagCache().Set(slug, category, existing)
 					return existing, nil
 				}
@@ -143,9 +137,16 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 		if err := repository.Repo.DB().Save(&dbTag).Error; err != nil {
 			return nil, err
 		}
+		// 标签写入失联想词典缓存（add-article-search 2.8 接线：label 变更后
+		// 下次搜索重新装载词典）
+		search.DefaultDict().InvalidateDict()
 		// Backfill embedding if missing (fallback path)
 		if es != nil && category != "event" {
 			go ensureTagEmbedding(es, dbTag.ID)
+		}
+		// 事件指纹持久化（slug 兑底分支）
+		if err := persistEventFingerprint(&dbTag, tag.Fingerprint); err != nil {
+			logging.Warnf("findOrCreateTag: persist event fingerprint for tag %d failed: %v", dbTag.ID, err)
 		}
 		GetTagCache().Set(slug, category, &dbTag)
 		return &dbTag, nil
@@ -167,6 +168,8 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 	if err := repository.Repo.DB().Create(&newTag).Error; err != nil {
 		return nil, err
 	}
+	// 新标签入库 → 搜索词典缓存失效重载（同上接线）
+	search.DefaultDict().InvalidateDict()
 
 	if len(savedCandidates) > 0 {
 		RecordMergeSuggestions(newTag.ID, tag.Label, category, savedCandidates)
@@ -180,8 +183,102 @@ func findOrCreateTag(ctx context.Context, tag TopicTag, source string, articleCo
 		go generateTagDescription(newTag.ID, tag.Label, category, articleContext) //nolint:gosec
 	}
 
+	// 事件指纹持久化（新建分支）：Create 后读 DB metadata 合并写入
+	if err := persistEventFingerprint(&newTag, tag.Fingerprint); err != nil {
+		logging.Warnf("findOrCreateTag: persist event fingerprint for new tag %d failed: %v", newTag.ID, err)
+	}
+
 	GetTagCache().Set(slug, category, &newTag)
 	return &newTag, nil
+}
+
+// eventFingerprintMetadataKey is the topic_tags.metadata key holding the
+// structured event fingerprint nested object (add-event-story-heat).
+const eventFingerprintMetadataKey = "event_fingerprint"
+
+// entitySubjectMetadataKey is the topic_tags.metadata key holding the
+// shadow-mode entity-subject record (normalize-event-subject-entities D10):
+// the FIRST-round verbatim mention + stable short identity description plus
+// the resolution outcome. Independent lazy key — WRITTEN ONLY in shadow mode,
+// has NO read path this iteration, never touches event_fingerprint.
+const entitySubjectMetadataKey = "entity_subject"
+
+// fingerprintMapComplete reports whether a metadata-loaded fingerprint map
+// carries all four identity fields (occurred_at optional) — same completeness
+// rule as (*EventFingerprint).Complete.
+func fingerprintMapComplete(m map[string]any) bool {
+	if m == nil {
+		return false
+	}
+	for _, key := range []string{"subject", "subject_key", "action", "object"} {
+		v, ok := m[key].(string)
+		if !ok || strings.TrimSpace(v) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// mergeFingerprintMetadata merges an event fingerprint into a tag's existing
+// metadata map (pure function; caller owns the DB read-modify-write). Rules
+// (add-event-story-heat batch 2.4):
+//   - nil/incomplete fp or existing COMPLETE fingerprint → unchanged（先写者赢：
+//     同一标签不因不同文章反复翻身份）；
+//   - otherwise → write the nested event_fingerprint object, omitting empty
+//     fields (occurred_at optional)；
+//   - existing sibling keys (event_keywords 等) must survive.
+func mergeFingerprintMetadata(meta models.MetadataMap, fp *EventFingerprint) models.MetadataMap {
+	if fp == nil || !fp.Complete() {
+		return meta
+	}
+	if meta == nil {
+		meta = models.MetadataMap{}
+	}
+	if existing, ok := meta[eventFingerprintMetadataKey].(map[string]any); ok && fingerprintMapComplete(existing) {
+		return meta
+	}
+	nested := map[string]any{}
+	if fp.Subject != "" {
+		nested["subject"] = fp.Subject
+	}
+	if fp.SubjectKey != "" {
+		nested["subject_key"] = fp.SubjectKey
+	}
+	if fp.Action != "" {
+		nested["action"] = fp.Action
+	}
+	if fp.Object != "" {
+		nested["object"] = fp.Object
+	}
+	if fp.OccurredAt != "" {
+		nested["occurred_at"] = fp.OccurredAt
+	}
+	meta[eventFingerprintMetadataKey] = nested
+	return meta
+}
+
+// persistEventFingerprint writes an event tag's structured fingerprint into
+// topic_tags.metadata (nested under event_fingerprint). No-op when fp is nil
+// or incomplete (incomplete fingerprints never block the tag). The tag's
+// metadata is read fresh from the DB — NOT from the passed object or the tag
+// cache, which may carry stale values — then merged (first writer wins: an
+// already-complete fingerprint is kept verbatim) and persisted via Updates,
+// preserving sibling keys like event_keywords. On success the passed tag's
+// Metadata is synced to the merged value so callers can refresh the cache.
+func persistEventFingerprint(tag *models.TopicTag, fp *EventFingerprint) error {
+	if tag == nil || fp == nil || !fp.Complete() {
+		return nil
+	}
+	var existing models.TopicTag
+	if err := repository.Repo.DB().Select("metadata").Where("id = ?", tag.ID).First(&existing).Error; err != nil {
+		return fmt.Errorf("load metadata for event fingerprint (tag %d): %w", tag.ID, err)
+	}
+	merged := mergeFingerprintMetadata(existing.Metadata, fp)
+	if err := repository.Repo.DB().Model(&models.TopicTag{}).Where("id = ?", tag.ID).Updates(map[string]any{"metadata": merged}).Error; err != nil {
+		return fmt.Errorf("save event fingerprint for tag %d: %w", tag.ID, err)
+	}
+	tag.Metadata = merged
+	return nil
 }
 
 // generateTagDescription generates a description for a tag via LLM and updates the database.
@@ -352,6 +449,10 @@ Respond with JSON: {"description": "your answer"}`, label, category, articleCont
 // enqueues tag re-embedding. Idempotent: repeated calls overwrite the same
 // row instead of creating duplicates. Shared by the async new-tag path and
 // the anchor-fix regeneration CLI.
+//
+// 与 event_fingerprint 共存：这里是对 metadata 的读-改-写（先 Select metadata
+// 再只覆盖 event_keywords/description），不会碰 persistEventFingerprint 写入的
+// event_fingerprint 嵌套对象；两侧都必须保持读-改-写，禁止盲写整个 metadata。
 func saveTagDescription(isEvent bool, tagID uint, desc string, keywords []string) error {
 	if len([]rune(desc)) > 500 {
 		desc = string([]rune(desc)[:500])
@@ -430,4 +531,74 @@ func tagDescriptionForCategory(desc, category string) string {
 		return ""
 	}
 	return desc
+}
+
+// EntitySubjectRecord is the payload persisted under the lazy
+// metadata.entity_subject key (shadow mode only). Carries the first-round
+// verbatim产出 plus the resolution outcome for later wiring / auditing.
+type EntitySubjectRecord struct {
+	// First-round verbatim outputs (same call as the fingerprint).
+	Subject     string `json:"subject,omitempty"`
+	SubjectKey  string `json:"subject_key,omitempty"`
+	SubjectDesc string `json:"subject_desc,omitempty"`
+	// Resolution outcome (entity layer).
+	EntityID  uint   `json:"entity_id,omitempty"`
+	EntityKey string `json:"entity_key,omitempty"`
+	Status    string `json:"status"` // created | reused | idempotent | unresolved
+	Reason    string `json:"reason,omitempty"`
+	Mode      string `json:"mode"`
+}
+
+// mergeEntitySubjectMetadata merges the entity-subject record into a tag's
+// metadata map (pure function; caller owns the DB read-modify-write).
+// First-writer-wins EXCEPT unresolved: an unresolved record is not a stored
+// decision (the mention was never normalized), so a later successful
+// resolution MAY replace it. A successful record is never flipped — the same
+// tag does not re-decide its identity per article. Sibling keys
+// (event_fingerprint, event_keywords, …) always survive.
+func mergeEntitySubjectMetadata(meta models.MetadataMap, rec *EntitySubjectRecord) models.MetadataMap {
+	if rec == nil {
+		return meta
+	}
+	if meta == nil {
+		meta = models.MetadataMap{}
+	}
+	if existing, ok := meta[entitySubjectMetadataKey].(map[string]any); ok {
+		if status, _ := existing["status"].(string); status != "" && status != "unresolved" {
+			return meta // a successful decision is frozen (first writer wins)
+		}
+	}
+	meta[entitySubjectMetadataKey] = map[string]any{
+		"subject":      rec.Subject,
+		"subject_key":  rec.SubjectKey,
+		"subject_desc": rec.SubjectDesc,
+		"entity_id":    rec.EntityID,
+		"entity_key":   rec.EntityKey,
+		"status":       rec.Status,
+		"reason":       rec.Reason,
+		"mode":         rec.Mode,
+	}
+	return meta
+}
+
+// PersistEntitySubject writes the shadow-mode entity-subject record into
+// topic_tags.metadata under the independent entity_subject key. Same
+// read-modify-write discipline as persistEventFingerprint: metadata is loaded
+// FRESH from the DB (never from the passed object or the tag cache), only
+// this ONE key is merged, sibling keys survive, and the write goes through a
+// scoped Updates. NEVER blindly overwrites the whole metadata column.
+func PersistEntitySubject(tag *models.TopicTag, rec *EntitySubjectRecord) error {
+	if tag == nil || rec == nil {
+		return nil
+	}
+	var existing models.TopicTag
+	if err := repository.Repo.DB().Select("metadata").Where("id = ?", tag.ID).First(&existing).Error; err != nil {
+		return fmt.Errorf("load metadata for entity subject (tag %d): %w", tag.ID, err)
+	}
+	merged := mergeEntitySubjectMetadata(existing.Metadata, rec)
+	if err := repository.Repo.DB().Model(&models.TopicTag{}).Where("id = ?", tag.ID).Updates(map[string]any{"metadata": merged}).Error; err != nil {
+		return fmt.Errorf("save entity subject for tag %d: %w", tag.ID, err)
+	}
+	tag.Metadata = merged
+	return nil
 }

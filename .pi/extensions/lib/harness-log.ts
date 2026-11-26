@@ -12,7 +12,9 @@
  *   pin.read           30 天
  *   gate.check         30 天
  *   subagent.dispatch  30 天
- *   mode.set           30 天（constraint-injection-tier-b：resume 档位恢复取数）
+ *   stage.set          30 天（stage-driven-constraint-injection D7：取代 mode.set——阶段/绑定变化记账）
+ *   constraint.read    30 天（stage-driven-constraint-injection D6：约束文档读取记账；归档对账唯一事实源）
+ *   mode.set           30 天（legacy：改造前既有行——只读 + TTL 自然消退，写侧已切 stage.set）
  *   spill.write        30 天（tool-output-spill：大工具结果 spill 记账）
  *   subagent.complete  30 天（harness-observability-fixes D3：后台子线程完成回填）
  *   policy.decision    30 天（harden-harness-policy-and-spill：spec-gate/quota-gate/test-scope-guard 显著裁决统一记账）
@@ -38,10 +40,20 @@
  *   logEvent(cwd, { kind: "gate.check", sessionId, change, payload })
  *   queryBySession(cwd, sessionId, ["constraint.inject"])
  *   queryByChange(cwd, "my-change")
+ *   logStageSet(cwd, sessionId, stage, stageFamily, boundChange, source)
+ *   queryLatestStageSet(sessionId)        // 双读：stage.set → 旧 mode.set 按 mode 映射回族
+ *   logConstraintRead(cwd, sessionId, docPath, boundChange)
+ *   queryConstraintReads(sessionId) / queryConstraintReadsByChange(changeName)
  */
 import { mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
+import {
+	stageFamilyOf,
+	stageFamilyOfLegacyMode,
+	type Stage,
+	type StageFamily,
+} from "./stage";
 
 /* ---------- node:sqlite 引入（含实验性 warning 外科抑制） ---------- */
 
@@ -94,15 +106,24 @@ const SIZE_FUSE_BYTES = 100 * 1024 * 1024;
 const APP_ID = 0x53594e54;
 const SCHEMA_VERSION = 1;
 
+/**
+ * 事件 kind 词汇表。
+ *
+ * `stage.set` 取代 `mode.set`（stage-driven-constraint-injection D7）：写侧已切 `stage.set`，
+ * `mode.set` 作为**过渡期 legacy kind** 保留——既有行不改写不删除（30 天保留期自然消退），
+ * 读方过渡期双读（`queryLatestStageSet`）。30 天后可从本表移除 `mode.set`。
+ */
 export type HarnessEventKind =
 	| "session.start"
 	| "session.rollup"
 	| "constraint.inject"
+	| "constraint.read"
 	| "pin.write"
 	| "pin.read"
 	| "gate.check"
 	| "patrol.check"
 	| "subagent.dispatch"
+	| "stage.set"
 	| "mode.set"
 	| "spill.write"
 	| "subagent.complete"
@@ -132,10 +153,12 @@ const RETENTION_DAYS: Partial<Record<HarnessEventKind, number>> = {
 	"session.start": 90,
 	"session.rollup": 90,
 	"constraint.inject": 30,
+	"constraint.read": 30,
 	"pin.read": 30,
 	"gate.check": 30,
 	"subagent.dispatch": 30,
-	"mode.set": 30,
+	"stage.set": 30,
+	"mode.set": 30, // legacy：既有行 30 天自然消退（不改写不删除）
 	"spill.write": 30,
 	"subagent.complete": 30,
 	"policy.decision": 30,
@@ -336,4 +359,214 @@ export function queryLatestByKind(
 		console.error(`[harness-log] query failed: ${(e as Error).message}`);
 		return null;
 	}
+}
+
+/* ---------- 阶段记账（stage.set）与约束文档读取记账（constraint.read） ---------- */
+
+/** 阶段/绑定变化的归因来源（stage.set 与 legacy mode.set 同枚举） */
+export type StageSetSource =
+	| "command"
+	| "skill"
+	| "edit-dir"
+	| "recover"
+	| "inherit"
+	| "fallback";
+
+/** 阶段读取结果（stage.set 新事件 / legacy mode.set 双读回退） */
+export interface StageSetInfo {
+	/** 阶段（6 档取值）；legacy mode.set 行无 stage → null */
+	stage: Stage | null;
+	/** 阶段族（**恒由 stage 派生**；legacy 行按 mode 映射回族——D2：族不可独立写） */
+	stageFamily: StageFamily | null;
+	/** 绑定的 change 名（可空） */
+	boundChange: string | null;
+	/** 归因来源（可空） */
+	source: string | null;
+	/** 事件 kind（stage.set 或 legacy mode.set） */
+	kind: "stage.set" | "mode.set";
+	/** 事件时间戳（ISO 8601 UTC） */
+	ts: string;
+	/** 事件所属会话 */
+	sessionId: string;
+}
+
+/**
+ * 阶段/绑定变化记账（stage.set）。payload 含 stage / stageFamily / boundChange / source，
+ * change 列同步写绑定 change 名。
+ * stageFamily 入参只作兼容位——**落库值恒为 stage 派生值**（D2：阶段族不可独立写）。
+ * 记账失败返回 false（fail-loud）；**MUST NOT 阻断阶段激活本身**（调用方忽略返回值即可）。
+ */
+export function logStageSet(
+	cwd: string,
+	sessionId: string,
+	stage: Stage,
+	stageFamily: StageFamily,
+	boundChange: string | null,
+	source: StageSetSource | string,
+): boolean {
+	const family = stageFamilyOf(stage) ?? stageFamily;
+	return logEvent(cwd, {
+		kind: "stage.set",
+		sessionId,
+		change: boundChange ?? null,
+		payload: {
+			stage,
+			stageFamily: family,
+			boundChange: boundChange ?? null,
+			source,
+		},
+	});
+}
+
+/**
+ * 查某会话的最新阶段（**双读过渡**，design D7）：
+ * 先查 `stage.set`；无结果时查 legacy `mode.set`，按 `requirements`→planning、
+ * `implementation`→implementation 映射回族返回（**不视为错误**）；两者皆无 → null。
+ * 既有 mode.set 行不改写不删除（30 天保留期自然消退）——本函数只读。
+ * cwd 省略时取 process.cwd()（事实库随 cwd 定位）。
+ */
+export function queryLatestStageSet(
+	sessionId: string,
+	cwd: string = process.cwd(),
+): StageSetInfo | null {
+	const stageRows = queryBySession(cwd, sessionId, ["stage.set"]);
+	for (const row of [...stageRows].reverse()) {
+		const info = stageSetInfoFromRow(row, "stage.set");
+		if (info) return info;
+	}
+	const legacyRows = queryBySession(cwd, sessionId, ["mode.set"]);
+	for (const row of [...legacyRows].reverse()) {
+		const info = stageSetInfoFromRow(row, "mode.set");
+		if (info) return info;
+	}
+	return null;
+}
+
+/**
+ * 单行 → 阶段读取结果。
+ * stage.set 的**合法 legacy 绑定行**（stage=null 且 stageFamily=null，由 logStageBinding /
+ * logInvalidStageMarker 写入）必须作为「当前状态 = 绑定 boundChange、未绑定阶段」返回——
+ * 若当损坏行跳过，queryLatestStageSet 会回退读到更旧的阶段行，导致恢复/继承/门禁
+ * 拿到陈旧 change 与阶段（review R-1）。真正跳过的只有：payload 损坏、stage 非法字符串、
+ * stage 与 stageFamily 矛盾（stage=null 但 family 非空）的行。
+ */
+function stageSetInfoFromRow(
+	row: HarnessEventRow,
+	kind: "stage.set" | "mode.set",
+): StageSetInfo | null {
+	let payload: {
+		stage?: unknown;
+		stageFamily?: unknown;
+		boundChange?: unknown;
+		source?: unknown;
+		mode?: unknown;
+	};
+	try {
+		payload = JSON.parse(row.payload) as typeof payload;
+	} catch {
+		return null;
+	}
+	if (!payload || typeof payload !== "object") return null;
+	const boundChange =
+		typeof payload.boundChange === "string" && payload.boundChange.length > 0
+			? payload.boundChange
+			: null;
+	const source = typeof payload.source === "string" ? payload.source : null;
+
+	if (kind === "stage.set") {
+		const stage = typeof payload.stage === "string" ? payload.stage : null;
+		// 合法 legacy 绑定行：stage=null 且 stageFamily=null → 绑定仍在、无阶段（不是损坏）
+		if (stage === null && payload.stageFamily == null) {
+			return {
+				stage: null,
+				stageFamily: null,
+				boundChange,
+				source,
+				kind,
+				ts: row.ts,
+				sessionId: row.session_id,
+			};
+		}
+		const family = stageFamilyOf(stage);
+		if (!stage || !family) return null;
+		return {
+			stage: stage as Stage,
+			stageFamily: family,
+			boundChange,
+			source,
+			kind,
+			ts: row.ts,
+			sessionId: row.session_id,
+		};
+	}
+	// legacy mode.set：行内无 stage 字段，按 mode 映射回族（requirements→planning）
+	const family = stageFamilyOfLegacyMode(
+		typeof payload.mode === "string" ? payload.mode : null,
+	);
+	if (!family) return null;
+	return {
+		stage: null,
+		stageFamily: family,
+		boundChange,
+		source,
+		kind,
+		ts: row.ts,
+		sessionId: row.session_id,
+	};
+}
+
+/**
+ * 约束文档读取记账（constraint.read）：payload = { path }（文档的仓库根相对路径），
+ * change 列为读取时刻会话绑定的 change（可空）。
+ * **写入失败 MUST NOT 阻断 agent 动作**——返回 false 由调用方忽略即可（fail-loud 记账、流程照常）。
+ * 幂等：同一会话 + 同一文档 + 同一 change 只记一条（避免事实库膨胀）。
+ */
+export function logConstraintRead(
+	cwd: string,
+	sessionId: string,
+	docPath: string,
+	boundChange: string | null,
+): boolean {
+	if (typeof docPath !== "string" || docPath.trim().length === 0) {
+		console.error("[harness-log] constraint.read 缺文档路径，未记账");
+		return false;
+	}
+	const p = docPath.trim();
+	for (const row of queryConstraintReads(sessionId, cwd)) {
+		if ((row.change ?? null) !== (boundChange ?? null)) continue;
+		if (constraintReadPath(row) !== p) continue;
+		return true; // 已记过——不重复追加
+	}
+	return logEvent(cwd, {
+		kind: "constraint.read",
+		sessionId,
+		change: boundChange ?? null,
+		payload: { path: p, boundChange: boundChange ?? null },
+	});
+}
+
+/** constraint.read 行的文档路径（payload 损坏 → null） */
+export function constraintReadPath(row: HarnessEventRow): string | null {
+	try {
+		const payload = JSON.parse(row.payload) as { path?: unknown };
+		return typeof payload.path === "string" ? payload.path : null;
+	} catch {
+		return null;
+	}
+}
+
+/** 按会话查约束文档读取记录（kind=constraint.read，按 id 升序） */
+export function queryConstraintReads(
+	sessionId: string,
+	cwd: string = process.cwd(),
+): HarnessEventRow[] {
+	return queryBySession(cwd, sessionId, ["constraint.read"]);
+}
+
+/** 按 change 查约束文档读取记录（kind=constraint.read，按 id 升序） */
+export function queryConstraintReadsByChange(
+	changeName: string,
+	cwd: string = process.cwd(),
+): HarnessEventRow[] {
+	return queryByChange(cwd, changeName, ["constraint.read"]);
 }

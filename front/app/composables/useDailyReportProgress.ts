@@ -26,6 +26,10 @@ export function useDailyReportProgress() {
 
   // 订阅 daily_report_progress
   const unsubProgress = stream.on<Record<string, unknown>>(EVENT_TYPES.DAILY_REPORT_PROGRESS, (msg) => {
+    // 缺口补填的逐格进度复用同一事件类型（run_scope=backfill）——不属于本弹窗
+    // 的这次生成：串台会让补填的「1/1 完成」提前把 done 拉起来（补填终态走
+    // 独立事件 daily_report_backfill_done，不走本通道）。
+    if (msg.run_scope === 'backfill') return
     if (!jobId.value) jobId.value = (msg.job_id as string) ?? null
     const rawStatus = (msg.status as string) === 'processing' ? 'generating' : (msg.status as string)
     const status: BoardProgress['status'] = ['waiting', 'generating', 'completed', 'failed'].includes(rawStatus)

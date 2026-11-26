@@ -211,4 +211,125 @@ describe('ArticleCardView 行式渲染', () => {
     await nextTick()
     expect(w.find('.row-cover img').exists()).toBe(false)
   })
+
+  // ===== 搜索命中 chip 与归档角标（add-article-search）：缺省零渲染，传入才生效 =====
+
+  it('搜索三型命中 chip：🔍关键词 info / 🏷语义+分数 success / ✨扩展 warning（内联 meta 行）', () => {
+    const w = mountCard(article(), {
+      hitReasons: [
+        { type: 'keyword', text: '特斯拉', score: 0.24 },
+        { type: 'semantic', text: '新能源车', score: 0.83 },
+        { type: 'expand', text: '起火' },
+      ],
+    })
+    const chips = w.findAll('.hit-chip')
+    expect(chips.length).toBe(3)
+    expect(chips[0]!.classes()).toContain('hit-keyword')
+    expect(chips[0]!.text()).toContain('🔍')
+    expect(chips[0]!.text()).toContain('命中「特斯拉」')
+    expect(chips[1]!.classes()).toContain('hit-semantic')
+    expect(chips[1]!.text()).toContain('🏷')
+    expect(chips[1]!.text()).toContain('标签「新能源车」')
+    // 语义分数保留两位小数回显
+    expect(chips[1]!.find('.hit-chip-score').text()).toBe('0.83')
+    expect(chips[2]!.classes()).toContain('hit-expand')
+    expect(chips[2]!.text()).toContain('✨')
+    expect(chips[2]!.text()).toContain('扩展词「起火」')
+    // chip 落在 meta 行内（不新增行，行高不变）
+    expect(w.find('.row-meta').find('.hit-chip').exists()).toBe(true)
+  })
+
+  it('归档角标：标题尾「已归档」灰描边小标签 + 行降饱和类；语义三色走既有 token 不新造色', () => {
+    const w = mountCard(article(), { archived: true })
+    expect(w.find('article').classes()).toContain('article-row-archived')
+    const badge = w.find('.archived-badge')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('已归档')
+    expect(w.find('.row-title').text()).toContain('已归档')
+
+    // 样式锚（防样式重构丢失）：三型 chip 色 + subtle 变体 + 归档降饱和限定封面/文字（不碰浮层）
+    const css = readCss()
+    expect(css).toContain('.article-row .hit-keyword')
+    expect(css).toContain('color-mix(in srgb, var(--color-info) 12%, transparent)')
+    expect(css).toContain('.article-row .hit-semantic')
+    expect(css).toContain('var(--color-success-subtle)')
+    expect(css).toContain('.article-row .hit-expand')
+    expect(css).toContain('var(--color-warning-subtle)')
+    expect(css).toContain('.article-row.article-row-archived .row-cover img')
+    expect(css).not.toMatch(/\.article-row\.article-row-archived\s*\{[^}]*filter/)
+  })
+
+  it('缺省 props（列表既有用法）：不渲染 chip/角标，模板与现列表一致', () => {
+    const w = mountCard(article())
+    expect(w.findAll('.hit-chip').length).toBe(0)
+    expect(w.find('.archived-badge').exists()).toBe(false)
+    expect(w.find('article').classes()).not.toContain('article-row-archived')
+  })
+
+  // ===== 疑似 AI 生成角标（add-ai-generated-article-detection）=====
+
+  it('疑似 AI 生成角标：suspect 压封面右上角（不占标题宽、不进 meta 行），未判定/非 AI/缺省一律不渲染也不占位', () => {
+    const suspect = mountCard(article({ aiDetectionStatus: 'suspect' }))
+    const badge = suspect.find('.suspect-badge')
+    expect(badge.exists()).toBe(true)
+    // 紧凑短标 + 完整文案走无障碍名（修订 C：165px meta 行装不下全称角标）
+    expect(badge.text()).toBe('AI')
+    expect(badge.attributes('aria-label')).toBe('疑似 AI 生成')
+    expect(badge.attributes('title')).toBe('疑似 AI 生成')
+    // 结构断言：角标在封面槽内——既不在标题链（R-5 会被 clamp 盒整块裁掉），
+    // 也不在 meta 行（R-13 后实测会裁掉右侧 4px 并把来源名压到 0 宽）
+    expect(suspect.find('.row-cover').find('.suspect-badge').exists()).toBe(true)
+    expect(suspect.find('.row-title').find('.suspect-badge').exists()).toBe(false)
+    expect(suspect.find('.row-heading').find('.suspect-badge').exists()).toBe(false)
+    expect(suspect.find('.row-meta').find('.suspect-badge').exists()).toBe(false)
+    // meta 行内容不变：时间 / 来源名 / 处理状态图标都还在
+    expect(suspect.find('.row-meta > .row-time').exists()).toBe(true)
+    expect(suspect.find('.row-meta > .row-identity').exists()).toBe(true)
+    expect(suspect.find('.row-meta > .row-state-icon, .row-meta > .row-state-spin').exists()).toBe(true)
+
+    const unknown = mountCard(article({ aiDetectionStatus: 'unknown' }))
+    expect(unknown.find('.suspect-badge').exists()).toBe(false)
+    expect(unknown.text()).not.toContain('疑似 AI 生成')
+
+    expect(mountCard(article({ aiDetectionStatus: 'not_ai' })).find('.suspect-badge').exists()).toBe(false)
+    expect(mountCard(article()).find('.suspect-badge').exists()).toBe(false)
+  })
+
+  it('clamp 盒仍只包标题：.row-title 保留两行截断，角标在盒外 → 长标题截断时角标仍可见', () => {
+    const css = readCss()
+    const titleStart = css.indexOf('.article-row .row-title {')
+    expect(titleStart).toBeGreaterThan(-1)
+    const titleBlock = css.slice(titleStart, css.indexOf('}', titleStart))
+    expect(titleBlock).toContain('-webkit-line-clamp: 2')
+    expect(titleBlock).toContain('overflow: hidden')
+    // 角标已离开标题行与 meta 行（修订 C）：只挂在封面槽上，不受 clamp / meta nowrap 影响
+    expect(css).not.toContain('.article-row .row-heading .suspect-badge {')
+    expect(css).not.toContain('.article-row .row-meta .suspect-badge {')
+  })
+
+  it('疑似 AI 角标不改行高：压封面绝对定位、实底 pill，字色用 text-secondary（不用 muted）', () => {
+    const css = readCss()
+    const start = css.indexOf('.article-row .suspect-badge {')
+    expect(start).toBeGreaterThan(-1)
+    const block = css.slice(start, css.indexOf('}', start))
+    expect(block).toContain('position: absolute')
+    expect(block).toContain('top: 3px')
+    expect(block).toContain('right: 3px')
+    expect(block).toContain('font-size: 10px')
+    expect(block).toContain('font-weight: 700')
+    expect(block).toContain('padding: 0 4px')
+    expect(block).toContain('border-radius: 4px')
+    expect(block).toContain('border: 1px solid var(--color-border-medium)')
+    expect(block).toContain('background: var(--color-bg-elevated)')
+    expect(block).toContain('box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16)')
+    expect(block).toContain('color: var(--color-text-secondary)')
+    expect(block).not.toContain('--color-text-muted')
+    // 定位基准：封面槽必须是定位容器，否则绝对定位会跑到整行右上（压住收藏星/状态图标）
+    const coverStart = css.indexOf('.article-row .row-cover {')
+    expect(coverStart).toBeGreaterThan(-1)
+    const coverBlock = css.slice(coverStart, css.indexOf('}', coverStart))
+    expect(coverBlock).toContain('position: relative')
+    // 虚拟列表行高假设不变：行仍是固定 100px
+    expect(css).toContain('height: 100px')
+  })
 })

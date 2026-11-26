@@ -15,20 +15,29 @@
 | `aliases` | TEXT | — | 别名列表（JSON 数组） |
 | `description` | TEXT | — | LLM 生成的标签描述 |
 | `is_canonical` | BOOLEAN | DEFAULT false | 是否为规范标签 |
-| `source` | VARCHAR(20) | DEFAULT 'llm' | 来源：`llm` / `heuristic` / `manual` |
+| `source` | VARCHAR(20) | DEFAULT 'llm' | 来源：`llm` / `manual`（`heuristic` 已于 2026-11-12 随 retire-heuristic-tag-fallback 退役，存量值由该 change 的清理清零） |
 | `feed_count` | INTEGER | DEFAULT 0 | 引用此标签的不重复 Feed 数；打标路径不增量维护，由 TagQualityScoreJob 周期对账重算 |
 | `status` | VARCHAR(20) | NOT NULL DEFAULT 'active'; index | 状态：`active` / `merged` |
 | `merged_into_id` | INTEGER | index | 合并目标标签 ID（**唯一真实 DB FK**：`topic_tags_merged_into_id_fkey ... ON DELETE CASCADE`） |
 | `is_watched` | BOOLEAN | DEFAULT false | 是否为用户关注标签 |
 | `watched_at` | TIMESTAMP | —（`*time.Time`） | 关注时间 |
 | `quality_score` | FLOAT | DEFAULT 0 | 质量评分 |
-| `metadata` | JSONB | DEFAULT '{}'（serializer:json） | 扩展元数据 |
+| `metadata` | JSONB | DEFAULT '{}'（serializer:json） | 扩展元数据（见下方 metadata 结构约定） |
 | `kind` | VARCHAR(20) | DEFAULT 'keyword' | **已废弃**，映射到 `category`，保留兼容 |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 | `updated_at` | TIMESTAMP | — | 更新时间 |
 
 > ⚠️ `(category, slug)` 是**普通复合索引**（gorm tag `index:idx_topic_tags_category_slug`，**非 unique**），不强制唯一。
 > ⚠️ 旧文档曾列 `concept_id`：迁移 `20260522_0001` 已 `DROP COLUMN`，struct 无此字段，请勿引用。
+
+**`metadata` 结构约定**（add-event-story-heat 起）：`category='event'` 的标签在打标同一次 LLM 调用内产出结构化指纹，写在该列，**不新增列**（其余 category 不产出）：
+
+| 键 | 类型 | 说明 |
+| --- | --- | --- |
+| `event_fingerprint` | OBJECT | 嵌套结构：`subject` / `subject_key`（`类型:规范名`，如 `person:trump`）/ `action` / `object` / `occurred_at`（可空，缺失时由关联文章最早 `pub_date` 代替） |
+| `fingerprint_trusted` | BOOLEAN | 平铺（非嵌套）；与已有 `metadata.event_keywords` + `topic_tags.aliases` 做纯字符串一致性校验的结果。`false` = 指纹不可信，归属判定走降级路径（不阻断标签入库） |
+
+> 写入先写者赢（已存在非空 `event_fingerprint` 不覆盖），读侧以 DB 真值为准（`event_keywords` 是异步生成的，校验只能在归属时读库做）。解析/校验唯一实现 `topicgraph/service/story_fingerprint.go`；格式契约见 `flow/topic-graph.md` 约束 12。
 
 ### 4.2 topic_tag_embeddings（主题标签向量）
 
@@ -37,16 +46,20 @@
 | `id` | SERIAL | PK | 主键 |
 | `topic_tag_id` | INTEGER | NOT NULL; 复合唯一 `idx_topic_tag_embeddings_tag_type_hash`; **FK `fk_topic_tag_embeddings_tag` → topic_tags.id ON DELETE CASCADE（迁移 `20260820_0001`）** | 关联标签 ID |
 | `embedding_type` | VARCHAR(20) | NOT NULL DEFAULT 'identity'; 复合唯一同上 | 嵌入类型：`identity` / `semantic` / `event_keyword` |
-| `embedding` | **vector(4096)** | — | pgvector 向量列（**迁移 `20260403_0003` 固定 4096 维**；struct 字段名 `embedding_vec`，列名 `embedding`） |
+| `embedding` | **vector**（无维度限定） | — | pgvector 向量列（**运行时维度**：列类型不承载维度，维度由 embedding 模型的实际输出决定，逐行存于 `dimension` 列；写入前校验两者一致，不一致拒写；迁移 `20261117_0001` 把存量的 `vector(2560)` 统一为无维度限定形态；struct 字段名 `embedding_vec`，列名 `embedding`） |
 | `dimension` | INTEGER | NOT NULL | 向量维度 |
-| `model` | VARCHAR(50) | NOT NULL | 生成模型名称 |
+| `model` | VARCHAR(100) | NOT NULL | 生成模型名称（= `ai_models.name`，列宽**不得窄于**模型注册表，见下方不变式） |
 | `text_hash` | VARCHAR(64) | 复合唯一同上 | 标签文本哈希，参与唯一约束（同一 tag+type 可有多行不同 text_hash） |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 | `updated_at` | TIMESTAMP | — | 更新时间 |
 
 唯一约束：`idx_topic_tag_embeddings_tag_type_hash (topic_tag_id, embedding_type, text_hash)`（gorm tag + 迁移 `20260514_0001` 双重声明）。
 
-> ⚠️ `topic_tag_embeddings.embedding` 是唯一维度固定的向量列（4096）。旧文档曾写 `vector(1536)`，错误。
+**模型名列宽不变式（迁移 `20261103_0001`，fix-embedding-model-column-width）**：`model` 列宽 **MUST NOT 窄于**模型注册表 `ai_models.name`（两者均为 100）——模型名在注册表里存得下，在任何落库处就必须存得下。违反后果实测过：本地 llama.cpp / GGUF 模型把模型文件绝对路径当名字注册（61 字符）→ 超限 → Postgres 报 `SQLSTATE 22001`（value too long for type character varying）→ 整条 embedding 任务失败（向量已算出却存不进去）；命中 embedding 缓存时返回的是缓存行里存的模型名，所以**主路由是短名模型也挡不住**。gorm tag 与 DDL 必须同批改（`size:50` → `size:100`），否则 AutoMigrate 会把列改回窄列。同族不变式覆盖 discovery 域四张向量表（见 [`preference-discovery.md`](preference-discovery.md)）。
+
+**语义搜索向量索引（迁移 `20261023_0001`，optimize-search-semantic-index）**：`idx_topic_tag_embeddings_identity_halfvec_hnsw` —— 部分 HNSW 索引，表达式 `((embedding::halfvec(N)) halfvec_cosine_ops)`，谓词 `WHERE embedding_type = 'identity'`；N = 运行时维度（≤4000 才建，pgvector halfvec 上限）。列无维度限定时 N 从**存量数据采样**（`SELECT vector_dims(embedding) ... LIMIT 1`，迁移 `20261117_0002`；表空则跳过，等运行时首次写入时由 `ensureVectorDimension` 建）。float32 HNSW 受 2000 维限制，且**只在线列带维度限定时可建**（裸 `vector` 列 pgvector 报 `column does not have dimensions`）；语义搜索先走该索引取 top-128 近似候选，再用原始 float32 `<=>` 精确复算 cosine。维度变更时 `ensureVectorDimension` 会 drop 后按新维度重建；>4000 维跳过、语义路回退全表精确扫描。
+
+> ⚠️ `topic_tag_embeddings.embedding` 的**列类型不再声明维度**（`vector`，无 typmod）——迁移 `20261117_0001` 把存量的 `vector(2560)` 统一为无维度限定形态（去 typmod 是放宽约束：不重写表、不改存量向量值，实测见 [`database/RESTORE.md`](../../RESTORE.md) §8）。维度只活在运行时与数据里（逐行 `dimension` 列 + 写入前一致性校验）。
 > ⚠️ 旧文档曾列 `vector`（TEXT 旧版 JSON 向量）：迁移 `20260601_0001b` 已 `DROP COLUMN`，请勿引用。
 > `TopicTagEmbedding.TopicTag` 声明了 `constraint:OnDelete:CASCADE`（GORM 层）；DB 层 FK 由迁移 `20260820_0001` 补齐（此前仅 GORM 声明、DB 无约束，删 tag 后向量残留成孤儿，2026-08-20 已清理 25.6 万孤儿行）。
 
@@ -61,7 +74,7 @@
 | `anchor_date` | TIMESTAMP | 复合唯一同上 | 锚点日期 |
 | `article_count` | INTEGER | — | 覆盖的文章数量 |
 | `payload_json` | TEXT | — | 分析结果 JSON |
-| `source` | string(256) | — | 来源：`ai` / `heuristic` / `cached` |
+| `source` | string(256) | — | 来源：`ai` / `cached`（`heuristic` 已于 2026-11-12 退役） |
 | `version` | INTEGER | — | 分析版本号 |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 | `updated_at` | TIMESTAMP | — | 更新时间 |
@@ -136,12 +149,25 @@
 | `created_at` | TIMESTAMP | — | 创建时间 |
 | `updated_at` | TIMESTAMP | — | 更新时间 |
 
+### 4.8 tag_category_meta（标签分类默认展示属性，静态元数据）
+
+标签分类（`event` / `person` / `keyword`）的默认展示属性目录（展示名 / 图标 / 颜色）。
+
+> **实际状态（2026-11-19 核实）**：本表由 `tagmanagement` 的 AutoMigrate 注册清单（`wire.go` 的 `RegisterModels`）建出，但模型 `TagCategoryMeta` **无任何 gorm tag、无主键**，代码内除注册处外**无读写路径**、无 seed 迁移，真库 0 行（列全可空，无主键 / 无索引）。分类展示属性实际由代码常量提供——`tagmanagement/models/tag_models.go` 的 `DefaultTagCategories()` / `GetCategoryMeta()`（`event`=事件/`mdi:calendar-star`/`#f59e0b`，`person`=人物/`mdi:account`/`#10b981`，`keyword`=关键词/`mdi:tag`/`#6366f1`）。**改本表不改变任何界面行为**；新增/调整分类展示请改常量。
+
+| 字段名 | 类型 | 约束/默认/索引 | 用途 |
+| -------- | ------ | ------ | ------ |
+| `key` | TEXT | 可空；无 PK / 无索引 | 分类键：`event` / `person` / `keyword` |
+| `label` | TEXT | 可空 | 展示名（事件 / 人物 / 关键词） |
+| `default_icon` | TEXT | 可空 | 默认图标（Iconify id） |
+| `color` | TEXT | 可空 | 默认颜色（节点 / 徽章） |
+
 ---
 
 
 ## 域 ER 图
 
-> 实线关系 = GORM 逻辑关联；标注「真实DB FK」的边 = DB 物理外键（共 6 条，全清单见 [_conventions.md](_conventions.md)）。外域邻居表仅标名，字段见其所属域文档。
+> 实线关系 = GORM 逻辑关联；标注「真实DB FK」的边 = DB 物理外键（共 13 条，全清单见 [_conventions.md](_conventions.md)）。外域邻居表仅标名，字段见其所属域文档。
 
 ```mermaid
 erDiagram

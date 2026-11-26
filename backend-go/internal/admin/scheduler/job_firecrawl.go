@@ -207,6 +207,11 @@ func processFirecrawlJob(
 					logging.Warnf("[Firecrawl] Failed to enqueue fallback retag for article %d: %v", art.ID, err)
 				}
 			}
+			// 抓取终态失败的文章同样要判定（design D4 ②）：判定输入回退 RSS 正文。
+			// 不判的话，付费墙/反爬失败的长文永远拿不到判定结论。
+			if err := content.EnqueueAIDetectionJob(repository.Repo.DB(), &feed, art.ID, content.AIDetectionReasonFirecrawlFailed); err != nil {
+				logging.Warnf("[Firecrawl] Failed to enqueue AI detection for article %d after crawl failure: %v", art.ID, err)
+			}
 			logging.Infof("[Firecrawl] Article %d reached crawl retry limit, falling back to RSS content for tagging/summary", art.ID)
 		}
 		return
@@ -228,6 +233,12 @@ func processFirecrawlJob(
 		updates["summary_status"] = "incomplete"
 	}
 	repository.Repo.DB().Model(&art).Updates(updates)
+
+	// 疑似 AI 判定（design D4 ①）：全文就绪即入队，判定输入优先用全文。判定与
+	// 打标/摘要互不影响——入队失败只记日志，不拖累下面的打标与作业完成。
+	if err := content.EnqueueAIDetectionJob(repository.Repo.DB(), &feed, art.ID, content.AIDetectionReasonFirecrawlCompleted); err != nil {
+		logging.Warnf("[Firecrawl] Failed to enqueue AI detection for article %d after crawl: %v", art.ID, err)
+	}
 
 	if feed.TaggingEnabled {
 		if err := tagging.NewTagJobQueue(repository.Repo.DB()).Enqueue(tagging.TagJobRequest{

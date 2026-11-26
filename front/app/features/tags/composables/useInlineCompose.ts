@@ -29,7 +29,7 @@ import {
   outlierFlags,
   rankCandidates,
 } from '~/features/tags/components/composeReport'
-import type { ComposeCandidate } from '~/api/persistentTopics'
+import type { ComposeCandidate, ManualTopicResult } from '~/api/persistentTopics'
 import type { BoardTopicListItem } from '~/api/dailyReports'
 import type { DistanceTier } from '~/features/tags/components/composeReport'
 
@@ -91,8 +91,8 @@ export interface UseInlineComposeOptions {
   boardId: Ref<number | string>
   /** host 传入的 candidate 话题（已 status==='candidate'）。 */
   candidateTopics: Ref<BoardTopicListItem[]>
-  /** 保存/启用成功后 host 刷新总览。 */
-  onSaved: () => void | Promise<void>
+  /** 保存/启用成功后 host 刷新总览；手动建泳道保存时带新建话题（矩阵高亮用）。 */
+  onSaved: (topic?: ManualTopicResult) => void | Promise<void>
   /** host 弹 AppDialog 列出移出项；true=用户确认。 */
   requestMoveOutConfirm: (items: MoveOutItem[]) => Promise<boolean>
   /** getComposeCandidates 的 days，默认 30。 */
@@ -374,10 +374,10 @@ export function useInlineCompose(opts: UseInlineComposeOptions) {
   }
 
   /**
-   * 采纳（并入新泳道）：预填 laneName=topic.label + 预勾未勾选的 unassigned。
+   * 采纳（并入新泳道）：预填 laneName=topic.label + 预勾该话题全部 owned section，
+   * 再补相似待确认（cosineDistance≤matchThreshold 升序），总上限 adoptPreselectCap。
    * centroid=pool 中 persistentTopicId===topic.id 的 embedding（aggregatePreview.mean）；
-   * 无 centroid 则跳过预勾。预勾：cosineDistance≤matchThreshold 升序，截断 adoptPreselectCap。
-   * 纯前端，无 API；不替换已有勾选。
+   * 无 centroid 则跳过预勾。纯前端，无 API；不替换已有勾选。
    */
   async function adopt(item: SidebarCandidateItem): Promise<void> {
     laneName.value = item.topic.label
@@ -385,13 +385,17 @@ export function useInlineCompose(opts: UseInlineComposeOptions) {
     const owned = pool.value.filter(c => c.persistentTopicId === topicId)
     const centroid = aggregatePreview(owned.map(c => c.embedding)).mean
     if (!centroid) return
-    const picks = pool.value
+    const ownedPicks = owned
+      .filter(c => !selectedIds.value.has(c.id))
+      .map(c => c.id)
+      .slice(0, adoptPreselectCap)
+    const similarPicks = pool.value
       .filter(c => c.persistentTopicId == null && !selectedIds.value.has(c.id))
       .map(c => ({ id: c.id, d: cosineDistance(c.embedding, centroid) }))
       .filter(x => x.d <= matchThreshold.value)
       .sort((a, b) => a.d - b.d)
-      .slice(0, adoptPreselectCap)
       .map(x => x.id)
+    const picks = [...new Set([...ownedPicks, ...similarPicks])].slice(0, adoptPreselectCap)
     if (picks.length === 0) return
     const next = new Set(selectedIds.value)
     for (const id of picks) next.add(id)
@@ -441,7 +445,7 @@ export function useInlineCompose(opts: UseInlineComposeOptions) {
         [...selectedIds.value],
       )
       if (res.success) {
-        await opts.onSaved()
+        await opts.onSaved(res.data?.topic)
         exit()
       } else {
         error.value = res.error || '保存失败'

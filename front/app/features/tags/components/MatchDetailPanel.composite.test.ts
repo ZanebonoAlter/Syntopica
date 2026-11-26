@@ -38,7 +38,6 @@ function compositeHitDetail(): MatchDetailResponse {
     semantic_board_id: 5,
     match_reason: 'composite_hit',
     score: 1,
-    downgraded: false,
     direction_mismatch: false,
     direction_sim: 0.1,
     effective_min_hits: 2,

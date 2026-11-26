@@ -2,12 +2,18 @@ package repository_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"syntopica-backend/internal/dataenrichment/repository"
 	"syntopica-backend/internal/platform/testutil"
+
+	// Side-effect: register TopicKeyEventMarker etc. so the golden-schema
+	// AutoMigrate creates the marker tables this test writes to.
+	_ "syntopica-backend/internal/topicgraph/repository"
 )
 
 // Signal report results (board-signal-reports DB-3..DB-5): kind/shape CHECKs,
@@ -229,4 +235,50 @@ func TestListSignalReportResultsIsKindAndPeriodIsolated(t *testing.T) {
 	require.Nil(t, gran)
 	require.Nil(t, period)
 	require.Nil(t, source)
+}
+
+// TestSignalDiscoverySnapshotSurvivesMarkerUnmark (add-topic-key-event-markers
+// 2.4)：发现批次的 input_snapshot 冻结了当时的人工关注字段；后续用户取消
+// 标记（甚至确认新事件）不改写旧快照字节——研究读到的仍是发现时刻的选择。
+func TestSignalDiscoverySnapshotSurvivesMarkerUnmark(t *testing.T) {
+	repo := setupSignalReportDB(t)
+
+	snapshot := []byte(`{"granularity":"month","period":"2026-08","lanes":[{"lane_id":7,` +
+		`"confirmed_key_events":[{"marker_id":9001,"title":"冻结事件","evidence_verified":true}]}]}`)
+	boardID := uint(94101)
+	_, _, err := repo.CreateSignalDiscoveryBatch(context.Background(),
+		&repository.BoardSignalDiscovery{
+			SemanticBoardID: boardID, Granularity: "month", Period: "2026-08",
+			AnalysisMode: repository.SignalAnalysisModeCurrent,
+			Cutoff:       time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+			InputSnapshot: snapshot,
+		}, nil)
+	require.NoError(t, err)
+
+	// Later user action: the marker is unmarked (state → dismissed) directly.
+	// (Board label first — the marker's board FK validates against it.)
+	require.NoError(t, repo.DB().Exec(`INSERT INTO semantic_labels (label, slug, label_type, status, created_at, updated_at)
+		VALUES ('freeze-board', 'freeze-board-94101', 'board', 'active', now(), now())`).Error)
+	var freezeBoardID uint
+	require.NoError(t, repo.DB().Raw(`SELECT id FROM semantic_labels WHERE slug = 'freeze-board-94101'`).Scan(&freezeBoardID).Error)
+	// Orphan marker (topic pointer NULL) — the freeze test only needs a row
+	// whose state the user later flips; ownership is irrelevant here.
+	require.NoError(t, repo.DB().Exec(`INSERT INTO topic_key_event_markers
+		(semantic_board_id, source_key, source_period_date, title_snapshot, state, revision, created_at, updated_at)
+		VALUES (?, 'freeze-key', DATE '2026-08-10', '冻结事件', 'confirmed', 1, now(), now())`, freezeBoardID).Error)
+	require.NoError(t, repo.DB().Exec(`UPDATE topic_key_event_markers SET state = 'dismissed' WHERE source_key = 'freeze-key'`).Error)
+
+	// The frozen snapshot survives the unmark untouched. jsonb columns are
+	// format-normalized by PostgreSQL, so the assertion compares PARSED JSON
+	// (the unmark UPDATE never targeted the discovery row — same value, same
+	// row version).
+	var discID uint
+	require.NoError(t, repo.DB().Raw(`SELECT id FROM board_signal_discovery WHERE semantic_board_id = ? ORDER BY id DESC LIMIT 1`, boardID).Scan(&discID).Error)
+	reloaded, err := repo.GetSignalDiscoveryByID(context.Background(), discID)
+	require.NoError(t, err)
+	var before, after map[string]any
+	require.NoError(t, json.Unmarshal(snapshot, &before))
+	require.NoError(t, json.Unmarshal(reloaded.InputSnapshot, &after))
+	require.Equal(t, before, after, "撤销标记不改写已冻结的发现快照")
+	require.Contains(t, string(reloaded.InputSnapshot), "冻结事件")
 }

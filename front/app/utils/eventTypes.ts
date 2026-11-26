@@ -17,6 +17,9 @@ export const EVENT_TYPES = {
   // 日报生成进度
   DAILY_REPORT_PROGRESS: 'daily_report_progress',
   DAILY_REPORT_DONE: 'daily_report_done',
+  // 日报缺口补填终态（独立事件类型：daily_report_done 被既有消费方无 job_id
+  // 过滤地消费，复用会把补填终态误认成「本次今日生成」的结果）
+  DAILY_REPORT_BACKFILL_DONE: 'daily_report_backfill_done',
 
   // 标签整理进度
   ORGANIZE_PROGRESS: 'organize_progress',

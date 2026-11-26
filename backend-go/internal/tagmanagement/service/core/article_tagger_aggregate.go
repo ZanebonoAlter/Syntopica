@@ -48,6 +48,8 @@ func tagAggregateArticle(ctx context.Context, article *models.Article, input Ext
 				Aliases:         et.Aliases,
 				Description:     et.Description,
 				AuxiliaryLabels: et.AuxiliaryLabels,
+				Fingerprint:     et.Fingerprint,
+				SubjectDesc:     et.SubjectDesc,
 				Score:           score,
 			})
 			if len(tags) >= maxAggregateArticleTags {

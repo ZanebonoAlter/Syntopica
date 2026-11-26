@@ -67,8 +67,9 @@ func (AnnotationQA) TableName() string { return "annotation_qas" }
 
 // TermNote — derived term library. term_norm 是归一化唯一键（trim + 全角→半角
 // + 英文大小写折叠），同词再次出现命中既有条目 hit_count 累计，不重复建条。
-// Embedding 是 P2 相似词归并预留（vector(2560)，P1 永不写入）；指针类型保证
-// 零值落 NULL 而非空串（vector 列拒绝 ""，见 testing.md 陷阱表）。
+// Embedding 是 P2 相似词归并预留（无维度限定的 vector——维度是运行时属性，
+// 不属于 schema 契约；P1 永不写入）；指针类型保证零值落 NULL 而非空串
+// （vector 列拒绝 ""，见 testing.md 陷阱表）。
 type TermNote struct {
 	ID               uint   `gorm:"primarykey" json:"id"`
 	TermNorm         string `gorm:"type:text;not null;uniqueIndex:uq_term_notes_term_norm" json:"term_norm"`
@@ -79,7 +80,7 @@ type TermNote struct {
 	FirstSeenDate *time.Time `gorm:"type:date" json:"first_seen_date,omitempty"`
 	LastSeenAt    time.Time  `gorm:"not null" json:"last_seen_at"`
 	CreatedAt     time.Time  `json:"created_at"`
-	Embedding     *string    `gorm:"type:vector(2560)" json:"-"`
+	Embedding     *string    `gorm:"type:vector" json:"-"`
 }
 
 func (TermNote) TableName() string { return "term_notes" }

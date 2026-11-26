@@ -61,7 +61,7 @@ type RouteEmbedding struct {
 	RouteID      uint      `gorm:"uniqueIndex:idx_route_embeddings_route" json:"route_id"`
 	EmbeddingVec string    `gorm:"type:vector;column:embedding" json:"-"`
 	Dimension    int       `json:"dimension"`
-	Model        string    `gorm:"size:50" json:"model"`
+	Model        string    `gorm:"size:100" json:"model"`
 	TextHash     string    `gorm:"size:64;index" json:"text_hash"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { readFileSync } from 'node:fs'
+import { defineComponent, h } from 'vue'
+import AppDialog from '~/components/ui/AppDialog.vue'
+import { Z_INDEX, nestedOverlayZ } from '~/components/ui/layout-contract'
 import CompositeLabelEditDialog from './CompositeLabelEditDialog.vue'
 import type { CompositeLabel } from '~/api/compositeLabels'
 
@@ -287,5 +291,89 @@ describe('CompositeLabelEditDialog — 版块上下文与共现联动（design D
     await flushPromises()
     expect(addCompositionMock).toHaveBeenCalledWith(2197, 42)
     expect(w.find('[data-testid="composite-label-result"]').text()).toContain('已挂载到「美国新闻」')
+  })
+})
+
+/**
+ * 层级契约（standard/frontend/layout.md「浮层层级契约」）：
+ * 组合标签创建弹窗是「弹窗内再开的嵌套浮层」——层级必须严格高于宿主弹窗遮罩，
+ * 否则被宿主遮罩（连同 backdrop blur）整块盖住，用户点了「创建并挂载」完全看不到弹窗
+ * （2026-10-30 用户实机报障）。
+ *
+ * 断言取**内联** z-index：vitest 未开启 css 处理，`<style scoped>` 不生效，
+ * 样式表里写死的层级读不到（getComputedStyle 恒为空），只有内联绑定值可断言。
+ */
+const LayerHost = defineComponent({
+  setup() {
+    return () => h(AppDialog, { modelValue: true, size: 'xl' }, {
+      default: () => h(CompositeLabelEditDialog, { visible: true }),
+    })
+  },
+})
+
+/** 宿主在更高档（阅读层）时的组合宿主：嵌套浮层按 nestedOverlayZ(hostZ) 抬升后显式传入。 */
+const RaisedLayerHost = defineComponent({
+  setup() {
+    return () => h(AppDialog, { modelValue: true, size: 'xl', zIndex: Z_INDEX.readingDialog }, {
+      default: () => h(CompositeLabelEditDialog, { visible: true, zIndex: nestedOverlayZ(Z_INDEX.readingDialog) }),
+    })
+  },
+})
+
+describe('CompositeLabelEditDialog — 层级契约（浮层层级契约）', () => {
+  it('嵌套浮层内联层级严格大于宿主 AppDialog 遮罩内联层级（不被宿主遮罩盖住）', async () => {
+    const host = mount(LayerHost, { global: { stubs: { teleport: true } } })
+    await flushPromises()
+    const hostOverlay = host.find('.app-dialog-overlay').element as HTMLElement
+    const nestedOverlay = host.find('.cld-overlay').element as HTMLElement
+    const hostZ = Number(hostOverlay.style.zIndex)
+    const nestedZ = Number(nestedOverlay.style.zIndex)
+    expect(hostZ).toBe(Z_INDEX.dialog)
+    expect(nestedZ).toBe(Z_INDEX.dialogNested)
+    expect(nestedZ).toBeGreaterThan(hostZ)
+  })
+
+  it('宿主在更高档时：嵌套浮层按 nestedOverlayZ(hostZ) 抬升后仍严格高于宿主', async () => {
+    const host = mount(RaisedLayerHost, { global: { stubs: { teleport: true } } })
+    await flushPromises()
+    const hostOverlay = host.find('.app-dialog-overlay').element as HTMLElement
+    const nestedOverlay = host.find('.cld-overlay').element as HTMLElement
+    const hostZ = Number(hostOverlay.style.zIndex)
+    const nestedZ = Number(nestedOverlay.style.zIndex)
+    expect(hostZ).toBe(Z_INDEX.readingDialog)
+    expect(nestedZ).toBe(nestedOverlayZ(Z_INDEX.readingDialog))
+    expect(nestedZ).toBeGreaterThan(hostZ)
+  })
+})
+
+/**
+ * 浮层展示合理性锚（standard/frontend/layout.md「浮层组件展示合理性锚」）：
+ * 该组件是自建浮层（Teleport + overlay），单测须带两条锚——
+ *  1) 源码规则锚：<style> 里 .cld-overlay 必须含 position: fixed + inset: 0；
+ *     层级已按「浮层层级契约」改为档位表内联注入（:style="{ zIndex }"），<style> 不得
+ *     再写死 z-index——避免双源漂移（层级只有内联一处来源）。
+ *  2) Teleport 挂载锚：不 stub teleport 挂载时 overlay 必须渲染在 document.body，
+ *     不能退化成流内 div（浮层挂载点回退）。
+ * vitest 未开启 css 处理，SFC 样式不注入 DOM，getComputedStyle 恒为空 —— 只能读源码文本。
+ */
+describe('CompositeLabelEditDialog — 浮层展示合理性锚', () => {
+  it('样式表含 .cld-overlay 定位规则：position:fixed + inset:0，且不写死 z-index', () => {
+    const src = readFileSync(`${import.meta.dirname}/CompositeLabelEditDialog.vue`, 'utf8')
+    const style = src.slice(src.indexOf('<style'))
+    expect(style).toMatch(/\.cld-overlay\s*\{[^}]*position:\s*fixed/s)
+    expect(style).toMatch(/\.cld-overlay\s*\{[^}]*inset:\s*0/s)
+    const rule = style.match(/\.cld-overlay\s*\{([^}]*)\}/s)
+    expect(rule).toBeTruthy()
+    expect(rule![1]).not.toMatch(/z-index/)
+  })
+
+  it('overlay 渲染挂载到 body（Teleport 生效，非流内 div）', async () => {
+    const w = mount(CompositeLabelEditDialog, { props: { visible: true, composites: [] } })
+    await flushPromises()
+    const overlay = document.body.querySelector('.cld-overlay')
+    expect(overlay).toBeTruthy()
+    expect(overlay!.parentElement).toBe(document.body)
+    w.unmount()
+    expect(document.body.querySelector('.cld-overlay')).toBeNull()
   })
 })

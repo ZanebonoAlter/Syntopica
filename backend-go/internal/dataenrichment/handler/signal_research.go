@@ -2,10 +2,12 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -31,6 +33,15 @@ import (
 // 任务身份（tasks 4.7 进展持久化的滚动行主键；stub 下可为空）。
 type SignalResearchRunner interface {
 	ResearchCandidate(ctx context.Context, boardID, candidateID uint, jobID string, hook func(stage string)) (uint, error)
+}
+
+// SignalCandidateIgnoredError marks a research start rejected because the
+// candidate carries the user's ignore marker（D1：已忽略候选的新研究/显式重研
+// 409，先恢复；不取消任何任务，不删报告）.
+type SignalCandidateIgnoredError struct{}
+
+func (e *SignalCandidateIgnoredError) Error() string {
+	return "signal candidate is ignored; restore it before researching"
 }
 
 // SetSignalResearch wires the research runner post-construction（与
@@ -111,7 +122,20 @@ func (h *EnrichmentHandler) triggerSignalResearch(c *gin.Context) {
 		}
 	}
 
-	st, err := h.analysis.StartSignal(AnalysisScopeBoard, boardID, AnalysisJobKindBoardSignalReport, signalResearchJobTimeout,
+	st, err := h.analysis.StartSignalGuarded(AnalysisScopeBoard, boardID, AnalysisJobKindBoardSignalReport, signalResearchJobTimeout,
+		// 忽略守卫（D1）：与研究启动同一临界区串行判定——忽略先生效则新研究
+		// 409；研究先注册则忽略侧拿 MutateBoardExclusively 拿不到无 running
+		// 窗口，返 409。两个顺序都到不了对方的新状态。
+		func() error {
+			marker, gerr := h.repo.GetSignalDisposition(c.Request.Context(), candidateID)
+			if gerr != nil {
+				return gerr
+			}
+			if marker != nil {
+				return &SignalCandidateIgnoredError{}
+			}
+			return nil
+		},
 		func(ctx context.Context, report func(SignalJobPatch)) error {
 			// 启动即报 candidate_id（2a 合同：派生「研究中」依赖 live job 的
 			// candidate_id patch）+ 周期身份。
@@ -145,6 +169,12 @@ func (h *EnrichmentHandler) triggerSignalResearch(c *gin.Context) {
 		if errors.As(err, &runErr) {
 			// 409 携当前任务身份：同板块任一任务在跑（含自身候选重复点击）。
 			respondErrorWithData(c, http.StatusConflict, "board analysis already running", runErr.Current)
+			return
+		}
+		var ignoredErr *SignalCandidateIgnoredError
+		if errors.As(err, &ignoredErr) {
+			// 409 要求先恢复（D1）；不取消任务、不删报告，GET 旧报告不受限。
+			respondErrorWithData(c, http.StatusConflict, ignoredErr.Error(), gin.H{"reason": "candidate_ignored"})
 			return
 		}
 		respondError(c, http.StatusInternalServerError, err.Error())
@@ -273,4 +303,172 @@ func serializeSignalReportDetail(r *repository.TopicEnrichmentResult) gin.H {
 	out["tool_calls"] = tryParseJSON(r.ToolCalls)
 	out["input_snapshot"] = tryParseJSON(r.InputSnapshot)
 	return out
+}
+
+// ── 候选忽略标记与详情（redesign-enrichment-research-workbench 2.2）────────────
+
+// putSignalDisposition handles PUT /signals/:candidateId/disposition with
+// body {"ignored": bool}（D2：required boolean ignored，未知/多余字段一律
+// 400——本端点永远改不了候选内容/快照/score）。忽略走板块 runner 独占临界区：
+// 同板块任一任务在跑 → 409（运行中的忽略不可达）；忽略/恢复均幂等、零 LLM；
+// 跨板块/不存在 404，不部分改数据。
+func (h *EnrichmentHandler) putSignalDisposition(c *gin.Context) {
+	boardID, ok := parseBoardID(c)
+	if !ok {
+		return
+	}
+	candidateID, ok := parseIDParam(c, "candidateId")
+	if !ok {
+		return
+	}
+	var req struct {
+		Ignored *bool `json:"ignored"`
+	}
+	if c.Request.Body == nil || c.Request.ContentLength == 0 {
+		respondError(c, http.StatusBadRequest, "body {\"ignored\": bool} is required")
+		return
+	}
+	dec := json.NewDecoder(c.Request.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil || req.Ignored == nil {
+		respondError(c, http.StatusBadRequest, "ignored (boolean) is required; unknown fields rejected")
+		return
+	}
+
+	candidate, err := h.repo.GetSignalCandidateByID(c.Request.Context(), candidateID)
+	if err != nil || candidate.SemanticBoardID != boardID {
+		respondError(c, http.StatusNotFound, "signal candidate not found")
+		return
+	}
+
+	if !*req.Ignored {
+		// 恢复：删标记行，幂等；不触发研究、不取消任务、报告不动。恢复不与
+		// 任务互斥（不改变任何 job 状态）。
+		if err := h.repo.RestoreSignalCandidate(c.Request.Context(), boardID, candidateID); err != nil {
+			if errors.Is(err, repository.ErrSignalCandidateNotFound) {
+				respondError(c, http.StatusNotFound, "signal candidate not found")
+				return
+			}
+			respondError(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		respondOK(c, gin.H{"candidate_id": candidateID, "ignored": false, "ignored_at": nil})
+		return
+	}
+
+	var ignoredAt time.Time
+	mutErr := h.analysis.MutateBoardExclusively(AnalysisScopeBoard, boardID, func() error {
+		at, ierr := h.repo.IgnoreSignalCandidate(c.Request.Context(), boardID, candidateID)
+		if ierr == nil {
+			ignoredAt = at
+		}
+		return ierr
+	})
+	if mutErr != nil {
+		var runErr *RunningJobError
+		if errors.As(mutErr, &runErr) {
+			respondErrorWithData(c, http.StatusConflict, "board analysis already running", runErr.Current)
+			return
+		}
+		if errors.Is(mutErr, repository.ErrSignalCandidateNotFound) {
+			respondError(c, http.StatusNotFound, "signal candidate not found")
+			return
+		}
+		respondError(c, http.StatusInternalServerError, mutErr.Error())
+		return
+	}
+	respondOK(c, gin.H{"candidate_id": candidateID, "ignored": true, "ignored_at": ignoredAt})
+}
+
+// getSignalCandidate handles GET /signals/:candidateId（D2 详情）：候选字段 +
+// ignored_at + 派生状态/最新报告 + 最近研究进展 + 冻结边界（cutoff/批次时间）。
+// 只加载当前项；跨板块/不存在 404。related_topics 由冻结材料解析层填充
+// （2.3），本端点不重装材料、零 LLM。
+func (h *EnrichmentHandler) getSignalCandidate(c *gin.Context) {
+	boardID, ok := parseBoardID(c)
+	if !ok {
+		return
+	}
+	candidateID, ok := parseIDParam(c, "candidateId")
+	if !ok {
+		return
+	}
+	candidate, err := h.repo.GetSignalCandidateByID(c.Request.Context(), candidateID)
+	if err != nil || candidate.SemanticBoardID != boardID {
+		respondError(c, http.StatusNotFound, "signal candidate not found")
+		return
+	}
+	disposition, err := h.repo.GetSignalDisposition(c.Request.Context(), candidateID)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	status, latest := h.deriveSignalCandidateStatus(c.Request.Context(), boardID, candidateID)
+	progress, err := h.repo.GetLatestSignalResearchProgress(c.Request.Context(), candidateID)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	discovery, err := h.repo.GetSignalDiscoveryByID(c.Request.Context(), candidate.DiscoveryID)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var ignoredAt any
+	if disposition != nil {
+		ignoredAt = disposition.IgnoredAt
+	}
+	// 依据 → 话题关联：只解冻结快照，零 LLM；缺失/失效如实进 gaps（2.3/D3）。
+	relatedTopics, relatedGaps, rerr := service.ResolveSignalRelatedTopics(c.Request.Context(), h.db, boardID, candidate.EvidenceRefs, discovery.InputSnapshot)
+	if rerr != nil {
+		respondError(c, http.StatusInternalServerError, rerr.Error())
+		return
+	}
+	var progressOut any
+	if progress != nil {
+		stopReason := any(nil)
+		errText := any(nil)
+		if progress.StopReason != "" {
+			stopReason = progress.StopReason
+		}
+		if progress.Error != "" {
+			errText = progress.Error
+		}
+		progressOut = gin.H{
+			"job_id":            progress.JobID,
+			"rounds_done":       progress.RoundsDone,
+			"source_calls":      progress.SourceCalls,
+			"calculation_calls": progress.CalculationCalls,
+			"ledger":            tryParseJSON(progress.Ledger),
+			"status":            progress.Status,
+			"stop_reason":       stopReason,
+			"error":             errText,
+			"updated_at":        progress.UpdatedAt,
+		}
+	}
+	respondOK(c, gin.H{
+		"id":                   candidate.ID,
+		"discovery_id":         candidate.DiscoveryID,
+		"semantic_board_id":    candidate.SemanticBoardID,
+		"granularity":          candidate.Granularity,
+		"period":               candidate.Period,
+		"signal":               candidate.Signal,
+		"why_it_matters":       candidate.WhyItMatters,
+		"research_question":    candidate.ResearchQuestion,
+		"evidence_refs":        tryParseJSON(candidate.EvidenceRefs),
+		"research_brief":       tryParseJSON(candidate.ResearchBrief),
+		"research_contract":    service.SignalResearchContractOf(discovery.InputSnapshot),
+		"score":                candidate.Score,
+		"rationale":            candidate.Rationale,
+		"created_at":           candidate.CreatedAt,
+		"discovery_created_at": discovery.CreatedAt,
+		"cutoff":               discovery.Cutoff,
+		"analysis_mode":        discovery.AnalysisMode,
+		"ignored_at":           ignoredAt,
+		"status":               status,
+		"latest_result_id":     latest,
+		"last_research":        progressOut,
+		"related_topics":       relatedTopics,
+		"related_gaps":         relatedGaps,
+	})
 }

@@ -1,3 +1,5 @@
+<!-- domain: ui -->
+
 # spa-loading-ux Specification
 
 ## Purpose

@@ -57,7 +57,7 @@ func NewFirecrawlService(config *FirecrawlConfig) *FirecrawlService {
 
 	return &FirecrawlService{
 		config: config,
-		client: httpclient.New(httpclient.WithTimeout(time.Duration(timeout) * time.Second)),
+		client: httpclient.New(httpclient.WithTimeout(time.Duration(timeout)*time.Second), httpclient.WithCrawlScope()),
 	}
 }
 

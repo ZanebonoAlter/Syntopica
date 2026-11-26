@@ -134,8 +134,38 @@ describe('ArticleContentPreviewPanel', () => {
     const lede = wrapper.find('.lede')
     expect(lede.text()).toContain('详情导语文本。')
     expect(lede.text()).not.toContain('列表层导语文本内容。')
-    // 详情 HTML 仍走 v-html
-    expect(lede.find('p').exists()).toBe(true)
+    // 导语一律纯文本渲染（fix-reader-lede-blank-space）：详情 HTML 不再作为标签进入 DOM
+    expect(lede.find('p').exists()).toBe(false)
+  })
+
+  it('导语以纯文本渲染：第三方 HTML 不产生元素子节点、不绑定事件属性', () => {
+    const wrapper = mountPanel(
+      { description: '<div style="opacity: 0"><img src="x" onerror="alert(1)">隐藏段落</div><p>可见导语</p>' },
+      { showDescription: true },
+    )
+    const lede = wrapper.find('.lede')
+    expect(lede.exists()).toBe(true)
+    // 纯文本节点：导语内不得有任何元素
+    expect(lede.element.querySelectorAll('*').length).toBe(0)
+    expect(lede.html()).not.toContain('onerror')
+    expect(lede.text()).toContain('可见导语')
+    // 隐藏子树文本不进导语
+    expect(lede.text()).not.toContain('隐藏段落')
+  })
+
+  it('整篇被隐藏的 description 不渲染导语段（不留空白占位）', () => {
+    const wrapper = mountPanel(
+      { description: '<div style="visibility: visible; opacity: 0;">整篇隐藏正文</div>' },
+      { showDescription: true },
+    )
+    expect(wrapper.find('.lede').exists()).toBe(false)
+  })
+
+  it('导语文本长度不超过 300 字符（超长截断）', () => {
+    const wrapper = mountPanel({ description: `<p>${'长'.repeat(500)}</p>` }, { showDescription: true })
+    const lede = wrapper.find('.lede')
+    expect(lede.exists()).toBe(true)
+    expect(lede.text().length).toBeLessThanOrEqual(300)
   })
 
   it('no longer renders processing banner / manual action row / content source toggle', () => {
@@ -171,5 +201,27 @@ describe('ArticleContentPreviewPanel', () => {
     expect(block.find('.fig-cap').text()).toBe('图 1')
     expect(wrapper.find('.markdown-article pre code.language-mermaid').exists()).toBe(false)
     mermaidRenderMock.mockReset()
+  })
+
+  // ===== 疑似 AI 生成 chip（add-ai-generated-article-detection）=====
+
+  it('疑似 AI 生成 chip：suspect 渲染在标签区，未判定/非 AI/缺省不渲染也不占位', () => {
+    const suspect = mountPanel({ aiDetectionStatus: 'suspect' })
+    const chip = suspect.find('.suspect-chip')
+    expect(chip.exists()).toBe(true)
+    expect(chip.text()).toBe('疑似 AI 生成')
+    // 落在标签区内（.tag-row 内），不进正文区
+    expect(suspect.find('.tag-row').find('.suspect-chip').exists()).toBe(true)
+
+    expect(mountPanel({ aiDetectionStatus: 'unknown' }).find('.suspect-chip').exists()).toBe(false)
+    expect(mountPanel({ aiDetectionStatus: 'not_ai' }).find('.suspect-chip').exists()).toBe(false)
+    expect(mountPanel().find('.suspect-chip').exists()).toBe(false)
+  })
+
+  it('疑似 AI chip 是静态胶囊：不带 watch 按钮、不复用 ArticleTagList', () => {
+    const suspect = mountPanel({ aiDetectionStatus: 'suspect', tags: [] })
+    const chip = suspect.find('.suspect-chip')
+    expect(chip.find('button').exists()).toBe(false)
+    expect(chip.classes()).not.toContain('article-tag')
   })
 })

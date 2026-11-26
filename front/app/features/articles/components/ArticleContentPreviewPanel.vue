@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { Icon } from '@iconify/vue'
 import dayjs from 'dayjs'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { Article } from '~/types'
 import ArticleTagList from '~/features/articles/components/ArticleTagList.vue'
 import { useMermaidRender } from '~/composables/useMermaidRender'
 import { proxiedImageUrl } from '~/utils/imageProxy'
+import { toPlainText } from '~/utils/htmlSanitize'
+import { AI_SUSPECT_LABEL, isAiSuspect } from '~/utils/aiDetection'
 import '~/components/article/ArticleContent.css'
 
 defineOptions({ inheritAttrs: false })
@@ -59,6 +61,24 @@ const props = withDefaults(defineProps<{
 // mermaid 图渲染（render-mermaid-diagrams）：宿主 = 阅读列整体，覆盖 AI 整理稿与正文两个 v-html 区
 const readingColRef = ref<HTMLElement | null>(null)
 useMermaidRender(readingColRef, () => `${props.renderedStoredSummary ?? ''}|${props.displayContent ?? ''}`)
+
+// 导语长度上限：与后端摘要清洗上限（≤300 字符）同口径，导语段不呈现更长的内容
+const LEDE_MAX_RUNES = 300
+
+// 导语纯文本（fix-reader-lede-blank-space）：
+// 详情 description 优先、为空回退列表 excerpt，两者都先去标签取纯文本。
+// 第三方 HTML 不得经 v-html 直出——部分源的摘要/正文是整篇文章的 HTML，
+// 根节点带 opacity:0，不可见却照样占位（实测单篇导语段高 8046px 空白），
+// 且 <img onerror=...> 一类事件属性会被真实执行。
+const ledePlainText = computed(() => {
+  const description = toPlainText(props.article?.description ?? '', LEDE_MAX_RUNES)
+  if (description) return description
+  return toPlainText(props.article?.excerpt ?? '', LEDE_MAX_RUNES)
+})
+
+// 疑似 AI 生成标记（add-ai-generated-article-detection）：静态胶囊，不复用带操作能力的
+// ArticleTagList（后者绑 topic-tag 且带 watch 按钮）；仅 suspect 渲染，不占位。
+const showSuspectChip = computed(() => isAiSuspect(props.article?.aiDetectionStatus))
 </script>
 
 <template>
@@ -92,6 +112,7 @@ useMermaidRender(readingColRef, () => `${props.renderedStoredSummary ?? ''}|${pr
         show-watch
         @watch-toggle="handleTagWatchToggle"
       />
+      <span v-if="showSuspectChip" class="suspect-chip">{{ AI_SUSPECT_LABEL }}</span>
       <span v-if="manualTaggingLoading" class="inline-flex items-center gap-1 text-xs text-[var(--color-text-secondary)]">
         <Icon icon="mdi:loading" width="14" height="14" class="animate-spin" />
         正在生成标签...
@@ -113,12 +134,8 @@ useMermaidRender(readingColRef, () => `${props.renderedStoredSummary ?? ''}|${pr
     </div>
 
     <!-- 导语：description 有实质内容时，无边框浅色段（guard 收紧后无占位块） -->
-    <div v-if="showDescription" class="lede">
-      <!-- description 走 v-html（与既有行为一致）；excerpt 是后端去标签后的纯文本，
-           必须用 v-text 渲染，避免 a&b<c 这类文本被 v-html 当标签吞掉 -->
-      <div v-if="article?.description" v-html="article.description" />
-      <div v-else v-text="article?.excerpt ?? ''" />
-    </div>
+    <!-- 一律纯文本渲染：清空后的空串不渲染、不留占位块 -->
+    <div v-if="showDescription && ledePlainText" class="lede" v-text="ledePlainText" />
 
     <!-- Image -->
     <div v-if="articleImageUrl" class="article-image">
@@ -156,3 +173,22 @@ useMermaidRender(readingColRef, () => `${props.renderedStoredSummary ?? ''}|${pr
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 疑似 AI 生成胶囊（add-ai-generated-article-detection）：几何照抄 .article-tag
+   （ArticleTagList 的 scoped 样式不外溢，故此处自行声明）；
+   底色用 --color-bg-elevated 而非硬编码 rgba，dark 主题自适应。 */
+.suspect-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.9rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 999px;
+  background: var(--color-bg-elevated);
+  padding: 0.25rem 0.72rem;
+  color: var(--color-text-secondary);
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1;
+}
+</style>

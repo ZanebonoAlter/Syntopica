@@ -62,8 +62,9 @@ var reprobeInterval = 60 * time.Second
 // ready. The health gate is the article-ingestion precondition (spec: 健康就绪
 // 判定 核心路由硬条件): embedding backs article vectors and topic_tagging backs
 // tag extraction, so a missing or unreachable tagging route means articles can
-// only land with degraded heuristic tags — the gate must stay closed
-// (fail-closed). Non-core routes (summary / digest_polish / data_enrichment_* /
+// only land untagged (retire-heuristic-tag-fallback: the rule-word fallback
+// that used to give them degraded generic tags is retired) — the gate must
+// stay closed (fail-closed). Non-core routes (summary / digest_polish / data_enrichment_* /
 // feed_discovery / open_notebook) do NOT take part in the verdict; their
 // reachability is still reported in the snapshot details.
 //

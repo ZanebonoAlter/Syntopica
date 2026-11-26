@@ -1,0 +1,1229 @@
+{
+  "board_id": 1980,
+  "representation_version": "related-event-v1",
+  "provider": "qwen3-embedding",
+  "model": "qwen3-embedding",
+  "threshold": 0.82,
+  "window_days": 30,
+  "as_of": "2026-11-10T13:37:58Z",
+  "window_start": "2026-10-11T13:37:58Z",
+  "tag_count": 782,
+  "embedded": 782,
+  "failed": 0,
+  "pair_count": 305371,
+  "above_threshold_count": 5919,
+  "sample_rule": "pairs scored with cosine over representation related-event-v1; direct sample = stratified over ALL pairs with score \u003e= 0.8200 sorted by score desc then a_id/b_id asc (every k-th, so the whole qualifying band is represented, not only the top scores); near sample = the 10 pairs closest below the threshold; no manual cherry-picking",
+  "direct_pairs": [
+    {
+      "a_id": 250053,
+      "a_label": "Exin Therapeutics 团队对比测试多个 AI 智能体在活体手术中的表现",
+      "a_aux": [
+        "Grok",
+        "Claude Sonnet 4.6",
+        "Claude Opus 5.5",
+        "地点"
+      ],
+      "b_id": 250058,
+      "b_label": "Exin Therapeutics 团队测试不同 AI 智能体在活体手术中的表现",
+      "b_aux": [
+        "Grok",
+        "Claude Opus 5.5",
+        "地点",
+        "Exin Therapeutics"
+      ],
+      "score": 0.9939567227495559
+    },
+    {
+      "a_id": 251046,
+      "a_label": "AI 编程助手技能体系对比分析",
+      "a_aux": [
+        "Codex",
+        "Claude Code",
+        "Skill",
+        "Pi-Bolt",
+        "Rules"
+      ],
+      "b_id": 253355,
+      "b_label": "AI 编程助手技能配置与协作规范",
+      "b_aux": [
+        "Codex",
+        "Claude Code",
+        "Pi-Bolt"
+      ],
+      "score": 0.9377366487856249
+    },
+    {
+      "a_id": 264140,
+      "a_label": "Google 宣布计划 2027 年初停用学生账号的 AI 与搜索服务",
+      "a_aux": [
+        "Gemini",
+        "Google",
+        "加州",
+        "Alphabet Inc.",
+        "Chromebook"
+      ],
+      "b_id": 264144,
+      "b_label": "北卡州父母起诉 Google 及 Alphabet 因 AI 产品导致女儿自杀风险",
+      "b_aux": [
+        "Gemini",
+        "Google",
+        "加州",
+        "Alphabet Inc.",
+        "Chromebook"
+      ],
+      "score": 0.9183522589797294
+    },
+    {
+      "a_id": 265953,
+      "a_label": "英伟达股票因黄仁勋事件引发舆论发酵而盘前大跌",
+      "a_aux": [
+        "马斯克",
+        "英伟达",
+        "特朗普"
+      ],
+      "b_id": 266725,
+      "b_label": "英伟达启动独立调查并维持黄仁勋职务",
+      "b_aux": [
+        "马斯克",
+        "英伟达",
+        "特朗普",
+        "立法机构",
+        "安全审查"
+      ],
+      "score": 0.9031312181191905
+    },
+    {
+      "a_id": 261677,
+      "a_label": "AI 初创企业 Anthropic IPO 计划或被迫推迟",
+      "a_aux": [
+        "Anthropic",
+        "IPO",
+        "IPO 推迟",
+        "投资者质疑"
+      ],
+      "b_id": 267269,
+      "b_label": "Anthropic 发布旗舰模型 Fable 5.2 并启动 IPO 路演",
+      "b_aux": [
+        "Anthropic",
+        "IPO",
+        "Fable 5.5"
+      ],
+      "score": 0.8937408510427993
+    },
+    {
+      "a_id": 251046,
+      "a_label": "AI 编程助手技能体系对比分析",
+      "a_aux": [
+        "Codex",
+        "Claude Code",
+        "Skill",
+        "Pi-Bolt",
+        "Rules"
+      ],
+      "b_id": 252476,
+      "b_label": "Codex、ZCode、KimiCode 电脑操作能力对比测试",
+      "b_aux": [
+        "Codex",
+        "ZCode",
+        "Kimi Code",
+        "计算机操作能力",
+        "3D 建模",
+        "Agent 工具",
+        "Tripo3D"
+      ],
+      "score": 0.8862423007411299
+    },
+    {
+      "a_id": 251120,
+      "a_label": "vibe coding 开发中 Claude Code 与 ChatGPT 协作生成美术与玩法",
+      "a_aux": [
+        "ChatGPT",
+        "Claude Code",
+        "vibe coding",
+        "自动对局脚本",
+        "试玩反馈"
+      ],
+      "b_id": 265834,
+      "b_label": "个人开发者创建 AI Vibe Coding 项目收集网站",
+      "b_aux": [
+        "vibe coding",
+        "博主",
+        "ai.mustbe.cool"
+      ],
+      "score": 0.8799445710489369
+    },
+    {
+      "a_id": 255538,
+      "a_label": "Claude Code 与 Codex 在 AI 工程中的能力对比与配置",
+      "a_aux": [
+        "Codex",
+        "Claude Code",
+        "MCP",
+        "Agent Skills",
+        "Context Window"
+      ],
+      "b_id": 265921,
+      "b_label": "Claude Code 团队公开六层代码审查流程",
+      "b_aux": [
+        "Claude Code",
+        "Anthropic",
+        "Boris Cherny",
+        "代码评审",
+        "智能体审查"
+      ],
+      "score": 0.8749757259222808
+    },
+    {
+      "a_id": 248988,
+      "a_label": "DeepSeek 开源 Super-agent 架构",
+      "a_aux": [
+        "DeepSeek",
+        "Super-agent",
+        "主动提交修复 PR",
+        "连续",
+        "高效"
+      ],
+      "b_id": 250654,
+      "b_label": "AI 公司提出相反的 Agent 架构演进方案",
+      "b_aux": [
+        "DeepSeek",
+        "Anthropic",
+        "Subagent",
+        "Agent 架构",
+        "Router 层"
+      ],
+      "score": 0.8709761538634156
+    },
+    {
+      "a_id": 250248,
+      "a_label": "Agent 架构选型决策指南发布",
+      "a_aux": [
+        "React",
+        "多 Agent",
+        "Workflow",
+        "Agent 架构",
+        "Planner-Executor"
+      ],
+      "b_id": 255512,
+      "b_label": "DeepSeek Harness 团队发布 Super-agent 设计探索",
+      "b_aux": [
+        "DeepSeek Harness",
+        "Super-agent",
+        "Watchdog",
+        "Worker",
+        "LobeHub"
+      ],
+      "score": 0.8668926875010508
+    },
+    {
+      "a_id": 256371,
+      "a_label": "Anthropic 招股书披露与财务对比",
+      "a_aux": [
+        "MiniMax",
+        "Anthropic",
+        "智谱 AI",
+        "SEC",
+        "S-1表格"
+      ],
+      "b_id": 262662,
+      "b_label": "Anthropic IPO 估值预期下调",
+      "b_aux": [
+        "Anthropic",
+        "IPO",
+        "潜在投资者",
+        "估值区间"
+      ],
+      "score": 0.8635720740448428
+    },
+    {
+      "a_id": 225647,
+      "a_label": "Superpowers 插件通过工程纪律约束 Claude Code 的编程行为",
+      "a_aux": [
+        "GitHub",
+        "Claude Code",
+        "Superpowers",
+        "工程纪律",
+        "纯文本分发"
+      ],
+      "b_id": 251410,
+      "b_label": "Anthropic 否认恶意 Claude Code 扩展涉及自身系统遭入侵",
+      "b_aux": [
+        "Anthropic",
+        "SSH",
+        "恶意扩展",
+        "Cursor 市场",
+        "Sophos X-Ops"
+      ],
+      "score": 0.8605746331210591
+    },
+    {
+      "a_id": 266727,
+      "a_label": "黄仁勋承认出轨并引发政治风波",
+      "a_aux": [
+        "英伟达",
+        "黄仁勋",
+        "政府机构",
+        "美国政治势力",
+        "舆论事件"
+      ],
+      "b_id": 267184,
+      "b_label": "郭嘉昆驳斥黄仁勋涉华间谍论",
+      "b_aux": [
+        "英伟达",
+        "郭嘉昆",
+        "情报机构",
+        "间谍指控",
+        "外交声明"
+      ],
+      "score": 0.8579551206708074
+    },
+    {
+      "a_id": 249893,
+      "a_label": "AI 使用 Claude Code 完成游戏打包与性能优化",
+      "a_aux": [
+        "Godot",
+        "Claude Code",
+        "macOS",
+        "导出安装包"
+      ],
+      "b_id": 259771,
+      "b_label": "Claude Code 模型性能显著提升",
+      "b_aux": [
+        "Claude Code",
+        "Opus 5.5",
+        "任务时长提升 41 倍"
+      ],
+      "score": 0.855410265283603
+    },
+    {
+      "a_id": 249812,
+      "a_label": "Agentic RAG 边界探索与 LLM Wiki 转向研究",
+      "a_aux": [
+        "RAG",
+        "LLM",
+        "Agentic RAG",
+        "Wiki",
+        "覆盖感知"
+      ],
+      "b_id": 267938,
+      "b_label": "Anthropic 公开 Contextual Retrieval 方法",
+      "b_aux": [
+        "Anthropic",
+        "Contextual Retrieval",
+        "检索失败率"
+      ],
+      "score": 0.853189442870589
+    },
+    {
+      "a_id": 250640,
+      "a_label": "评级机构预测 Anthropic 上市后将获垃圾级评级",
+      "a_aux": [
+        "Anthropic",
+        "穆迪",
+        "惠誉",
+        "标普",
+        "KBRA"
+      ],
+      "b_id": 262662,
+      "b_label": "Anthropic IPO 估值预期下调",
+      "b_aux": [
+        "Anthropic",
+        "IPO",
+        "潜在投资者",
+        "估值区间"
+      ],
+      "score": 0.8512604866762029
+    },
+    {
+      "a_id": 247892,
+      "a_label": "AI 模型生命周期缩短",
+      "a_aux": [
+        "OpenAI",
+        "Anthropic",
+        "Opus 5.5",
+        "GPT-4o",
+        "Claude 3.7 Sonnet"
+      ],
+      "b_id": 265781,
+      "b_label": "Anthropic 发布 35 页报告揭示 AI 加速科研产出数据",
+      "b_aux": [
+        "Claude",
+        "Claude Code",
+        "Anthropic",
+        "METR",
+        "Claude Science"
+      ],
+      "score": 0.8495730192705792
+    },
+    {
+      "a_id": 230499,
+      "a_label": "MiniMax 开源 MiniMax M3.1 Flash 模型权重",
+      "a_aux": [
+        "MiniMax",
+        "MiniMax M3",
+        "vLLM",
+        "华为昇腾"
+      ],
+      "b_id": 247794,
+      "b_label": "OpenAI 与 Anthropic 同日曝光新一代旗舰模型",
+      "b_aux": [
+        "OpenAI",
+        "Anthropic",
+        "GPT-6 Astra",
+        "Gemini 4 Pro",
+        "Claude Mythos 5"
+      ],
+      "score": 0.8477642108038059
+    },
+    {
+      "a_id": 257739,
+      "a_label": "OpenAI 发布 GPT-6.2 Astra 模型灰测结果",
+      "a_aux": [
+        "OpenAI",
+        "AI",
+        "GPT-6 Astra",
+        "灰测"
+      ],
+      "b_id": 259693,
+      "b_label": "Astra 团队通过修改通义千问 3.5 0.8B 的特定神经元权重以提升数学题解题准确率",
+      "b_aux": [
+        "Astra",
+        "Qwen3.5-9B",
+        "MIT CSAIL",
+        "权重修改",
+        "前馈网络"
+      ],
+      "score": 0.8461863823956297
+    },
+    {
+      "a_id": 252458,
+      "a_label": "WorkBuddy 专家与专家团的组织机制解析",
+      "a_aux": [
+        "WorkBuddy",
+        "Subagent",
+        "专家包",
+        "expert-*",
+        "team-lead"
+      ],
+      "b_id": 257250,
+      "b_label": "WorkBuddy 自动阅读官方文档并生成新手学习地图",
+      "b_aux": [
+        "WorkBuddy",
+        "官方文档阅读",
+        "学习地图生成",
+        "文档整理"
+      ],
+      "score": 0.8447245540335234
+    },
+    {
+      "a_id": 248988,
+      "a_label": "DeepSeek 开源 Super-agent 架构",
+      "a_aux": [
+        "DeepSeek",
+        "Super-agent",
+        "主动提交修复 PR",
+        "连续",
+        "高效"
+      ],
+      "b_id": 250788,
+      "b_label": "DeepSeek 在 Langgraph 流式输出排查中表现不佳",
+      "b_aux": [
+        "DeepSeek",
+        "LangGraph",
+        "代码生成",
+        "stream_mode"
+      ],
+      "score": 0.8432378106240176
+    },
+    {
+      "a_id": 263909,
+      "a_label": "Claude Opus 4.7 在机器人任务中表现优于人类工程师",
+      "a_aux": [
+        "Claude Opus 4.7",
+        "VLA 模型",
+        "Project Fetch",
+        "Gemini Robotics 2",
+        "End-to-End Training"
+      ],
+      "b_id": 267172,
+      "b_label": "Muse Ember 在自动化与编码任务上超越竞品",
+      "b_aux": [
+        "GPT-6 Astra",
+        "Terminal-Bench 4.0",
+        "AutomationBench",
+        "Claude Haiku 5.5",
+        "Muse Ember"
+      ],
+      "score": 0.8418291892759892
+    },
+    {
+      "a_id": 266725,
+      "a_label": "英伟达启动独立调查并维持黄仁勋职务",
+      "a_aux": [
+        "马斯克",
+        "英伟达",
+        "特朗普",
+        "立法机构",
+        "安全审查"
+      ],
+      "b_id": 267184,
+      "b_label": "郭嘉昆驳斥黄仁勋涉华间谍论",
+      "b_aux": [
+        "英伟达",
+        "郭嘉昆",
+        "情报机构",
+        "间谍指控",
+        "外交声明"
+      ],
+      "score": 0.8404780900126386
+    },
+    {
+      "a_id": 250668,
+      "a_label": "架构师回归确定性状态机以应对自主智能体级联误差",
+      "a_aux": [
+        "GPT-6",
+        "DeepSeek V4.1",
+        "Gemini 4 Pro",
+        "Claude 5.5",
+        "双轨仲裁机制"
+      ],
+      "b_id": 251465,
+      "b_label": "奥特曼自曝 OpenAI 新模型 GPT-7 解决 Navier-Stokes 方程并规划自我复制数据中心",
+      "b_aux": [
+        "GPT-6",
+        "Hold-my-beer",
+        "Navier-Stokes 方程",
+        "自我复制数据中心"
+      ],
+      "score": 0.8393295442056149
+    },
+    {
+      "a_id": 266523,
+      "a_label": "OpenAI 大规模封停 ChatGPT Pro 号",
+      "a_aux": [
+        "OpenAI",
+        "ChatGPT",
+        "Pro 号",
+        "账号封停"
+      ],
+      "b_id": 267633,
+      "b_label": "OpenAI 给 ChatGPT 全量推送 GPT-6 并引入 Intelligent UI 能力",
+      "b_aux": [
+        "OpenAI",
+        "GPT-6",
+        "Intelligent UI",
+        "全量推送"
+      ],
+      "score": 0.8381437938477663
+    },
+    {
+      "a_id": 255849,
+      "a_label": "HR 通过非工作问题识别 AI 辅助面试",
+      "a_aux": [
+        "Anthropic",
+        "React 编程任务",
+        "Claude 超越人类"
+      ],
+      "b_id": 257685,
+      "b_label": "两个月高强度使用 AI 开发项目体验",
+      "b_aux": [
+        "AI",
+        "开发",
+        "代码",
+        "项目管理"
+      ],
+      "score": 0.8372096904804656
+    },
+    {
+      "a_id": 261082,
+      "a_label": "OpenAI 推出 GPT Images 2.6 支持一键生成 GIF 动图",
+      "a_aux": [
+        "OpenAI",
+        "API",
+        "GPT Image 2.5",
+        "GIF",
+        "生图速度"
+      ],
+      "b_id": 267117,
+      "b_label": "火山引擎发布 Seedream 5.5 图像创作模型",
+      "b_aux": [
+        "自然语言",
+        "Seedream 5.5",
+        "火山引擎",
+        "两段计费"
+      ],
+      "score": 0.8361447051395524
+    },
+    {
+      "a_id": 232550,
+      "a_label": "AI 编程工具使用引发的开发者思维反思",
+      "a_aux": [
+        "Claude",
+        "AI 编程",
+        "GLM-5.3-Flash",
+        "代码掌控"
+      ],
+      "b_id": 255802,
+      "b_label": "用户利用 AI 助手开发电饭锅预约时间 APP",
+      "b_aux": [
+        "WorkBuddy",
+        "小米",
+        "DeepSeek V4.1 Flash",
+        "小爱同学",
+        "电饭锅"
+      ],
+      "score": 0.8351254153119795
+    },
+    {
+      "a_id": 249736,
+      "a_label": "OpenAI 削减 ChatGPT Pro 订阅额度",
+      "a_aux": [
+        "OpenAI",
+        "ChatGPT",
+        "Codex",
+        "服务配额",
+        "年度订阅"
+      ],
+      "b_id": 255413,
+      "b_label": "ChatGPT Plus 服务聊天功能中断需手动 checkpoint",
+      "b_aux": [
+        "ChatGPT",
+        "聊天中断",
+        "手动 checkpoint"
+      ],
+      "score": 0.8342806783175631
+    },
+    {
+      "a_id": 247371,
+      "a_label": "爱诗科技 PixVerse 与 OpenAI 宣布深度合作",
+      "a_aux": [
+        "OpenAI",
+        "视频生成器",
+        "PixVerse",
+        "PixVerse 插件"
+      ],
+      "b_id": 260099,
+      "b_label": "OpenAI 发布 GPT-Image-2.6 及 GPT-6.2-Astra 内测",
+      "b_aux": [
+        "OpenAI",
+        "Google",
+        "Sora",
+        "GPT-6 Astra",
+        "Gemini 4 Argon"
+      ],
+      "score": 0.8334416365394626
+    },
+    {
+      "a_id": 243638,
+      "a_label": "三款 AI 编码工具默认权限边界对比分析",
+      "a_aux": [
+        "Claude Code",
+        "MCP server",
+        "OpenAI Codex",
+        "沙箱",
+        "Google Antigravity",
+        "默认权限边界"
+      ],
+      "b_id": 259771,
+      "b_label": "Claude Code 模型性能显著提升",
+      "b_aux": [
+        "Claude Code",
+        "Opus 5.5",
+        "任务时长提升 41 倍"
+      ],
+      "score": 0.8326536289333375
+    },
+    {
+      "a_id": 243062,
+      "a_label": "AI 生成图像识别方法分析",
+      "a_aux": [
+        "AI 生图",
+        "AIGC",
+        "扩散模型",
+        "DiT"
+      ],
+      "b_id": 243260,
+      "b_label": "个人开发本地生图网站",
+      "b_aux": [
+        "WorkBuddy",
+        "生图",
+        "8G 显存配置",
+        "光照描述方法",
+        "代码编写与测试"
+      ],
+      "score": 0.831816954139115
+    },
+    {
+      "a_id": 255512,
+      "a_label": "DeepSeek Harness 团队发布 Super-agent 设计探索",
+      "a_aux": [
+        "DeepSeek Harness",
+        "Super-agent",
+        "Watchdog",
+        "Worker",
+        "LobeHub"
+      ],
+      "b_id": 262463,
+      "b_label": "Vercel Labs 发布 agent-desktop 1.2.0 版本",
+      "b_aux": [
+        "MCP",
+        "agent-desktop",
+        "系统快照",
+        "零截图",
+        "编号触发"
+      ],
+      "score": 0.830941073914932
+    },
+    {
+      "a_id": 263443,
+      "a_label": "OpenAI 拟收购代码托管工具 Pierre",
+      "a_aux": [
+        "GitHub",
+        "OpenAI",
+        "Anthropic",
+        "Cursor",
+        "Pierre"
+      ],
+      "b_id": 266293,
+      "b_label": "开发者使用 AI 生成 Git 可视化工具客户端",
+      "b_aux": [
+        "GitHub",
+        "V2EX",
+        "Git",
+        "AI 生成代码",
+        "Banyan"
+      ],
+      "score": 0.8301368945077879
+    },
+    {
+      "a_id": 249263,
+      "a_label": "Google Artemis 移动端 AI Agent 上手与实践",
+      "a_aux": [
+        "真机测试",
+        "多模态视觉理解",
+        "Artemis",
+        "自然语言操控",
+        "多 App 自动化"
+      ],
+      "b_id": 263909,
+      "b_label": "Claude Opus 4.7 在机器人任务中表现优于人类工程师",
+      "b_aux": [
+        "Claude Opus 4.7",
+        "VLA 模型",
+        "Project Fetch",
+        "Gemini Robotics 2",
+        "End-to-End Training"
+      ],
+      "score": 0.82931226428238
+    },
+    {
+      "a_id": 251046,
+      "a_label": "AI 编程助手技能体系对比分析",
+      "a_aux": [
+        "Codex",
+        "Claude Code",
+        "Skill",
+        "Pi-Bolt",
+        "Rules"
+      ],
+      "b_id": 266293,
+      "b_label": "开发者使用 AI 生成 Git 可视化工具客户端",
+      "b_aux": [
+        "GitHub",
+        "V2EX",
+        "Git",
+        "AI 生成代码",
+        "Banyan"
+      ],
+      "score": 0.8285202221608333
+    },
+    {
+      "a_id": 252351,
+      "a_label": "解决 Coding Agent 在项目中破坏架构与验证不足的问题",
+      "a_aux": [
+        "Coding Agent",
+        "架构约定",
+        "集成测试"
+      ],
+      "b_id": 259771,
+      "b_label": "Claude Code 模型性能显著提升",
+      "b_aux": [
+        "Claude Code",
+        "Opus 5.5",
+        "任务时长提升 41 倍"
+      ],
+      "score": 0.8278662366346152
+    },
+    {
+      "a_id": 251046,
+      "a_label": "AI 编程助手技能体系对比分析",
+      "a_aux": [
+        "Codex",
+        "Claude Code",
+        "Skill",
+        "Pi-Bolt",
+        "Rules"
+      ],
+      "b_id": 259707,
+      "b_label": "Anthropic 发布智能体系统架构详解",
+      "b_aux": [
+        "Anthropic",
+        "Agentic AI",
+        "Building Effective Agents",
+        "Augmented LLM",
+        "Agent workflows"
+      ],
+      "score": 0.827234247666136
+    },
+    {
+      "a_id": 260377,
+      "a_label": "Kimi K3 轻量化大模型引入 KDA 架构",
+      "a_aux": [
+        "Kimi-K3",
+        "MLA",
+        "AI Infra",
+        "Recurrent State",
+        "Prefix Cache"
+      ],
+      "b_id": 267784,
+      "b_label": "端侧大模型压缩路径复盘",
+      "b_aux": [
+        "端侧 AI 大模型",
+        "端侧 OCR",
+        "模型压缩",
+        "约束解码"
+      ],
+      "score": 0.8265600133836193
+    },
+    {
+      "a_id": 248697,
+      "a_label": "Agent Loop 实现自主智能体循环执行任务",
+      "a_aux": [
+        "React",
+        "AI Agent",
+        "Agent Loop",
+        "Tool Call",
+        "Observation"
+      ],
+      "b_id": 250184,
+      "b_label": "DeepSeek 发布全新 Agent 架构",
+      "b_aux": [
+        "DeepSeek",
+        "Agent 系统",
+        "Harness 团队",
+        "技术文章"
+      ],
+      "score": 0.8258930796362065
+    },
+    {
+      "a_id": 251325,
+      "a_label": "美股 AI 软件先驱指数下跌",
+      "a_aux": [
+        "美股",
+        "AI 软件",
+        "先驱指数",
+        "跌 4.62%"
+      ],
+      "b_id": 267339,
+      "b_label": "美股市场 AI 板块震荡反弹，英伟达逆势下跌",
+      "b_aux": [
+        "SpaceX",
+        "英伟达",
+        "AMD",
+        "Bloom Energy",
+        "Coherent"
+      ],
+      "score": 0.8253218295130168
+    },
+    {
+      "a_id": 248906,
+      "a_label": "CMU 博士后团队开源 Hermit 框架",
+      "a_aux": [
+        "CMU",
+        "Infini-AI-Lab",
+        "Hermit",
+        "训练循环",
+        "harness 适配器"
+      ],
+      "b_id": 255263,
+      "b_label": "Anthropic 14 万亿参数模型 Fable 5.5 在 Hugging Face 泄露",
+      "b_aux": [
+        "Anthropic",
+        "Hugging Face",
+        "Fable 5.5",
+        "代码生万物"
+      ],
+      "score": 0.8247187448508894
+    },
+    {
+      "a_id": 264289,
+      "a_label": "Coze 平台下线引发对低代码工作流模式的反思",
+      "a_aux": [
+        "Workflow",
+        "Autonomous Agent",
+        "Coze",
+        "Model Capability",
+        "工作流",
+        "自规划 Agent",
+        "Skill 调度"
+      ],
+      "b_id": 264352,
+      "b_label": "LobeHub 利用 Agent 实现自主任务管理与代码迭代",
+      "b_aux": [
+        "Agent 工作流",
+        "Super-agent",
+        "LobeHub",
+        "Task 机制",
+        "PR 协作"
+      ],
+      "score": 0.8242285667503783
+    },
+    {
+      "a_id": 251044,
+      "a_label": "Hermes 通过技能系统实现自我经验沉淀",
+      "a_aux": [
+        "Hermes Agent",
+        "技能文件",
+        "Reflexion 范式",
+        "agentskills.io"
+      ],
+      "b_id": 257245,
+      "b_label": "GitHub 上发布 8 个 Agent Skill 仓库",
+      "b_aux": [
+        "GitHub",
+        "Claude Code",
+        "Cursor",
+        "Agent Skills",
+        "Impeccable"
+      ],
+      "score": 0.8237246916127396
+    },
+    {
+      "a_id": 247794,
+      "a_label": "OpenAI 与 Anthropic 同日曝光新一代旗舰模型",
+      "a_aux": [
+        "OpenAI",
+        "Anthropic",
+        "GPT-6 Astra",
+        "Gemini 4 Pro",
+        "Claude Mythos 5"
+      ],
+      "b_id": 260120,
+      "b_label": "OpenAI Codex 源码深度剖析：执行引擎与内核沙箱设计",
+      "b_aux": [
+        "OpenAI Codex",
+        "Tool Call",
+        "Context Window",
+        "AST 锚点 apply-patch",
+        "内核沙箱"
+      ],
+      "score": 0.8231299994970925
+    },
+    {
+      "a_id": 246902,
+      "a_label": "Deep Principle 发布基于 GLM-5.3 后训练的 Hydrogen-1.0 科研模型",
+      "a_aux": [
+        "GLM-5.3",
+        "MIT 许可证",
+        "Deep Principle",
+        "Hydrogen-1.0",
+        "后训练"
+      ],
+      "b_id": 267908,
+      "b_label": "Deep Research",
+      "b_aux": [
+        "deep research",
+        "研究闭环",
+        "多步检索"
+      ],
+      "score": 0.8225758364227215
+    },
+    {
+      "a_id": 248988,
+      "a_label": "DeepSeek 开源 Super-agent 架构",
+      "a_aux": [
+        "DeepSeek",
+        "Super-agent",
+        "主动提交修复 PR",
+        "连续",
+        "高效"
+      ],
+      "b_id": 249063,
+      "b_label": "超长研究系统架构设计",
+      "b_aux": [
+        "Agent",
+        "上下文窗口",
+        "研究生命期"
+      ],
+      "score": 0.8219565457488344
+    },
+    {
+      "a_id": 243062,
+      "a_label": "AI 生成图像识别方法分析",
+      "a_aux": [
+        "AI 生图",
+        "AIGC",
+        "扩散模型",
+        "DiT"
+      ],
+      "b_id": 260099,
+      "b_label": "OpenAI 发布 GPT-Image-2.6 及 GPT-6.2-Astra 内测",
+      "b_aux": [
+        "OpenAI",
+        "Google",
+        "Sora",
+        "GPT-6 Astra",
+        "Gemini 4 Argon"
+      ],
+      "score": 0.8214481520321791
+    },
+    {
+      "a_id": 248481,
+      "a_label": "Claude Code 的 Plan 模式与 Auto 模式及会话管理技巧",
+      "a_aux": [
+        "Claude Code",
+        "会话状态管理",
+        "Plan 模式",
+        "Auto 模式",
+        "权限管理"
+      ],
+      "b_id": 263909,
+      "b_label": "Claude Opus 4.7 在机器人任务中表现优于人类工程师",
+      "b_aux": [
+        "Claude Opus 4.7",
+        "VLA 模型",
+        "Project Fetch",
+        "Gemini Robotics 2",
+        "End-to-End Training"
+      ],
+      "score": 0.8210001620946833
+    },
+    {
+      "a_id": 255536,
+      "a_label": "AI-SDLC 中 Claude Code 与 Codex 六种能力的实践应用",
+      "a_aux": [
+        "MCP",
+        "Harness",
+        "Agent",
+        "Subagent",
+        "AI-SDLC"
+      ],
+      "b_id": 267876,
+      "b_label": "MCP 工具",
+      "b_aux": [
+        "MCP 工具",
+        "资源库",
+        "统一分发"
+      ],
+      "score": 0.8205445824964395
+    }
+  ],
+  "near_threshold_pairs": [
+    {
+      "a_id": 248448,
+      "a_label": "字节扣子企业版分阶段下线",
+      "a_aux": [
+        "扣子 (Coze)",
+        "企业版下线",
+        "产品整合",
+        "平台谢幕",
+        "企业版",
+        "智能体平台"
+      ],
+      "b_id": 264289,
+      "b_label": "Coze 平台下线引发对低代码工作流模式的反思",
+      "b_aux": [
+        "Workflow",
+        "Autonomous Agent",
+        "Coze",
+        "Model Capability",
+        "工作流",
+        "自规划 Agent",
+        "Skill 调度"
+      ],
+      "score": 0.8199897127807712
+    },
+    {
+      "a_id": 249910,
+      "a_label": "Parameter Labs 发现并演示 ChatGPT 账号接管漏洞链",
+      "a_aux": [
+        "OpenAI",
+        "MathLive",
+        "Parameter Labs",
+        "YouTube",
+        "postMessage"
+      ],
+      "b_id": 260016,
+      "b_label": "OpenAI 公布 ChatGPT 语音输入模式周活跃用户达 2.5 亿",
+      "b_aux": [
+        "OpenAI",
+        "语音输入",
+        "GPT Live",
+        "周活跃用户"
+      ],
+      "score": 0.8199894261250432
+    },
+    {
+      "a_id": 225647,
+      "a_label": "Superpowers 插件通过工程纪律约束 Claude Code 的编程行为",
+      "a_aux": [
+        "GitHub",
+        "Claude Code",
+        "Superpowers",
+        "工程纪律",
+        "纯文本分发"
+      ],
+      "b_id": 249816,
+      "b_label": "Python 智能体开发实战：实现工具调用循环与护栏机制",
+      "b_aux": [
+        "LLM",
+        "Agent",
+        "Python",
+        "LangGraph",
+        "tool_call"
+      ],
+      "score": 0.8199874065536261
+    },
+    {
+      "a_id": 252111,
+      "a_label": "开源自部署 Agent 平台 Demi",
+      "a_aux": [
+        "Cursor",
+        "SSH",
+        "Demi",
+        "Web 技术栈"
+      ],
+      "b_id": 264612,
+      "b_label": "agent-hub 集成 WorkBuddy 实现微信派活",
+      "b_aux": [
+        "Codex",
+        "Claude Code",
+        "WorkBuddy",
+        "微信",
+        "agent-hub"
+      ],
+      "score": 0.8199849636436821
+    },
+    {
+      "a_id": 257735,
+      "a_label": "Claude 参与 FlashProve 系统开发与验证",
+      "a_aux": [
+        "Anthropic",
+        "Lean 4",
+        "Flashprove",
+        "zkSNARK"
+      ],
+      "b_id": 267211,
+      "b_label": "Cursor 赠送 Claude Fable5.2 独立额度",
+      "b_aux": [
+        "Claude",
+        "Cursor",
+        "V2EX",
+        "Fable 5.5"
+      ],
+      "score": 0.8199812946063856
+    },
+    {
+      "a_id": 248444,
+      "a_label": "国内智能体平台下架与功能下线",
+      "a_aux": [
+        "腾讯元器",
+        "百度文心智能体平台",
+        "智能体功能",
+        "工作流入口关闭"
+      ],
+      "b_id": 259707,
+      "b_label": "Anthropic 发布智能体系统架构详解",
+      "b_aux": [
+        "Anthropic",
+        "Agentic AI",
+        "Building Effective Agents",
+        "Augmented LLM",
+        "Agent workflows"
+      ],
+      "score": 0.8199812767914374
+    },
+    {
+      "a_id": 241794,
+      "a_label": "AI Agent 辅助运动训练数据分析与计划生成",
+      "a_aux": [
+        "AI Agent",
+        "数据分析",
+        "训练计划",
+        "健康数据",
+        "Skill 定制"
+      ],
+      "b_id": 255802,
+      "b_label": "用户利用 AI 助手开发电饭锅预约时间 APP",
+      "b_aux": [
+        "WorkBuddy",
+        "小米",
+        "DeepSeek V4.1 Flash",
+        "小爱同学",
+        "电饭锅"
+      ],
+      "score": 0.8199803744104885
+    },
+    {
+      "a_id": 259701,
+      "a_label": "Claude 模型后台自评估机制运行",
+      "a_aux": [
+        "Claude",
+        "Self-Assessment",
+        "暗中自查"
+      ],
+      "b_id": 264196,
+      "b_label": "Anthropic Model 4 研发效率提升 12 倍，内部员工自报实验时间缩短 80%",
+      "b_aux": [
+        "Anthropic",
+        "ASI",
+        "Model 4",
+        "AECI",
+        "研发提速"
+      ],
+      "score": 0.8199785378796268
+    },
+    {
+      "a_id": 255536,
+      "a_label": "AI-SDLC 中 Claude Code 与 Codex 六种能力的实践应用",
+      "a_aux": [
+        "MCP",
+        "Harness",
+        "Agent",
+        "Subagent",
+        "AI-SDLC"
+      ],
+      "b_id": 266397,
+      "b_label": "Anthropic 为 Claude 智能体记忆功能新增整理机制",
+      "b_aux": [
+        "Claude",
+        "Anthropic",
+        "agent 记忆",
+        "Dreams API"
+      ],
+      "score": 0.8199698880959106
+    },
+    {
+      "a_id": 243638,
+      "a_label": "三款 AI 编码工具默认权限边界对比分析",
+      "a_aux": [
+        "Claude Code",
+        "MCP server",
+        "OpenAI Codex",
+        "沙箱",
+        "Google Antigravity",
+        "默认权限边界"
+      ],
+      "b_id": 249267,
+      "b_label": "Agent 工具调用面临的安全与协议挑战",
+      "b_aux": [
+        "Agent",
+        "工具调用事件",
+        "提示词注入",
+        "ToolClad"
+      ],
+      "score": 0.8199684580764063
+    }
+  ],
+  "cache_writes": 0
+}

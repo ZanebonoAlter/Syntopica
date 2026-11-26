@@ -36,10 +36,12 @@ const (
 // aggregateMarkdownSummary builds a 4-column digest (intro + 3 body columns)
 // that the splitter reduces to 3 sections.
 func aggregateMarkdownSummary() string {
+	// 正文含 fixture 标签示例词的提及（PostgreSQL 等为打标 prompt few-shot 正例，
+	// 护栏要求可见输入有依据——guard-tag-exemplar-leakage）。
 	return "# 科技周刊第100期\n\n" +
 		"## 导读\n" + bodyOf("本期导读概述各栏目要点。", 350) + "\n\n" +
-		"## AI缓存专题\n" + bodyOf("AI缓存技术取得新突破。", 350) + "\n\n" +
-		"## 科技动态\n" + bodyOf("本周科技动态汇总。", 350) + "\n\n" +
+		"## AI缓存专题\n" + bodyOf("AI缓存技术取得新突破，落地 Kubernetes 集群。", 350) + "\n\n" +
+		"## 科技动态\n" + bodyOf("本周科技动态汇总：PostgreSQL 发布安全更新，Sam Altman 谈 Kubernetes 生态。", 350) + "\n\n" +
 		"## 言论\n" + bodyOf("开发者讨论提示词缓存。", 350)
 }
 
@@ -196,7 +198,7 @@ func TestTagArticleAggregateWithoutSectionsFallsBackToMono(t *testing.T) {
 	router.enqueue("tag_extraction_merged", fakeTagChatResponse{content: monoKeywordOnlyMergedResponse})
 	db := setupAggregateTaggerTest(t, router)
 	// No ## headings → splitter yields nothing → fall back to the mono path.
-	article := createAggregateArticle(t, db, bodyOf("本期没有栏目结构的纯文本摘要。", 400), "aggregate")
+	article := createAggregateArticle(t, db, bodyOf("本期没有栏目结构的纯文本摘要，含 PostgreSQL 动态。", 400), "aggregate")
 
 	require.NoError(t, TagArticle(context.Background(), article, "科技周刊", "科技"))
 
@@ -399,4 +401,35 @@ func TestTagArticleAggregatePartialSuccessNoFallback(t *testing.T) {
 
 	require.Equal(t, 7, router.callCount("tag_extraction_section"))
 	require.Equal(t, 0, router.callCount("tag_extraction_merged"), "partial aggregate output must NOT trigger mono fallback")
+}
+
+// add-event-story-heat：聚合路径 ExtractedTag.Fingerprint 拷贝到 TopicTag，
+// 持久化前的候选链路不断链（persistEventFingerprint 在 tagger 层接手）。
+// 指纹已摘除（2026-11-12）：聚合路径响应残留的指纹字段被解析层忽略。
+func TestTagAggregateArticleFingerprintIgnored(t *testing.T) {
+	router := &sectionAwareFakeRouter{responses: []fakeTagChatResponse{
+		{content: `{"tags":[{"label":"阳光电源股价因业绩预期上调而暴涨","category":"event","description":"阳光电源股价暴涨的市场事件","auxiliary_labels":[{"label":"阳光电源","description":"光伏逆变器公司"},{"label":"业绩预期","description":"市场对公司业绩的预测"},{"label":"股价暴涨","description":"股价大幅上涨"}],"subject":"阳光电源","subject_key":"company:sungrow","action":"暴涨","object":"股价","occurred_at":"2026-11-03"},{"label":"Kubernetes","category":"keyword","description":"开源容器编排系统"}]}`},
+		{content: aggregateSection1Response},
+		{content: aggregateSection2Response},
+	}}
+	extractor := &TagExtractor{router: router}
+	article := &models.Article{Title: "科技周刊第100期", AIContentSummary: aggregateMarkdownSummary(), ContentForm: "aggregate"}
+
+	tags, handled, err := tagAggregateArticle(context.Background(), article, ExtractionInput{
+		Title: "科技周刊第100期", FeedName: "科技周刊", CategoryName: "科技",
+	}, extractor)
+
+	require.NoError(t, err)
+	require.True(t, handled)
+
+	var eventTag *TopicTag
+	for i := range tags {
+		if tags[i].Category == "event" {
+			eventTag = &tags[i]
+		} else {
+			require.Nil(t, tags[i].Fingerprint, "non-event tags never carry a fingerprint")
+		}
+	}
+	require.NotNil(t, eventTag, "event tag must survive the aggregate path")
+	require.Nil(t, eventTag.Fingerprint, "指纹字段已被解析层忽略，恒为 nil")
 }

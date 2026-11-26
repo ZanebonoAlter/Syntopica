@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { DIALOG_SIZES, type DialogSize } from './layout-contract'
+import { computed, nextTick, ref, watch } from 'vue'
+import { DIALOG_SIZES, Z_INDEX, type DialogSize } from './layout-contract'
 
 interface Props {
   modelValue: boolean
@@ -12,7 +12,12 @@ interface Props {
   closeOnOverlay?: boolean
   closeOnEscape?: boolean
   showClose?: boolean
+  /** 遮罩层级：默认取基础档 Z_INDEX.dialog（1000）；高于基础档时显式传入（组件不得手写层级数字） */
   zIndex?: number
+  /** 可选语义/初始焦点（默认 false 保持旧行为；仅 matrix reader 等显式 opt-in）。 */
+  semanticDialog?: boolean
+  /** 语义 dialog 的可访问名称（仅 semanticDialog=true 时读取）。 */
+  dialogLabel?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -21,12 +26,16 @@ const props = withDefaults(defineProps<Props>(), {
   closeOnOverlay: true,
   closeOnEscape: true,
   showClose: true,
-  zIndex: 1000,
+  zIndex: Z_INDEX.dialog,
+  semanticDialog: false,
+  dialogLabel: '',
 })
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
 }>()
+
+const dialogRef = ref<HTMLElement | null>(null)
 
 /** size 优先：注入 --dialog-w 档位变量，宽度由 .is-sized 样式 min(var, 92vw) 统一约束；
  *  旧 width 保持原 maxWidth 行为（渲染兼容，新代码禁用） */
@@ -50,6 +59,9 @@ function onKeydown(e: KeyboardEvent) {
 watch(() => props.modelValue, (v) => {
   if (v) {
     document.addEventListener('keydown', onKeydown)
+    if (props.semanticDialog) {
+      void nextTick(() => dialogRef.value?.focus({ preventScroll: true }))
+    }
   } else {
     document.removeEventListener('keydown', onKeydown)
   }
@@ -64,7 +76,16 @@ onUnmounted(() => {
   <Teleport to="body">
     <Transition name="dialog">
       <div v-if="modelValue" class="app-dialog-overlay" :style="{ zIndex }" @click.self="onOverlayClick">
-        <div class="app-dialog" :class="{ 'is-sized': !!size }" :style="dialogStyle">
+        <div
+          ref="dialogRef"
+          class="app-dialog"
+          :class="{ 'is-sized': !!size }"
+          :style="dialogStyle"
+          :role="semanticDialog ? 'dialog' : undefined"
+          :aria-modal="semanticDialog ? 'true' : undefined"
+          :aria-label="semanticDialog ? (dialogLabel || title || undefined) : undefined"
+          :tabindex="semanticDialog ? -1 : undefined"
+        >
           <div v-if="title || $slots.header" class="app-dialog__header">
             <slot name="header">
               <h2 class="app-dialog__title">{{ title }}</h2>

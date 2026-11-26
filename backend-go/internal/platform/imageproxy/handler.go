@@ -67,7 +67,8 @@ type Handler struct {
 // newHandler 供测试注入缓存目录/客户端/超时；生产走 RegisterRoutes。
 func newHandler(cache *diskCache, client *http.Client, timeout time.Duration) *Handler {
 	if client == nil {
-		client = httpclient.New()
+		// 外链图片属外部内容抓取链路：跟随全局出站代理（含熔断回退）。
+		client = httpclient.New(httpclient.WithCrawlScope())
 	}
 	return &Handler{cache: cache, client: client, timeout: timeout}
 }

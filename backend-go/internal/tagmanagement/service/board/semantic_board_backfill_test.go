@@ -217,6 +217,10 @@ func TestSemanticBoardBackfillAllModeAppliesNewRules(t *testing.T) {
 	// tag identity embedding [1,0,0] vs board embedding [0,0,1] → cosine 0 < 0.5
 	pgVector := core.FloatsToPgVector(testutil.PadVector([]float64{1, 0, 0}, testutil.TestEmbeddingDim))
 	require.NoError(t, db.Create(&tagmodels.TopicTagEmbedding{TopicTagID: tagX.ID, EmbeddingType: "identity", EmbeddingVec: pgVector, Dimension: testutil.TestEmbeddingDim, Model: "test", TextHash: fmt.Sprintf("hash-%d", tagX.ID)}).Error)
+	// fix-board-ghost-false-positive：候选外真家 board（有 embedding 无
+	// composition，进全库参照系不进挂载）——否则 boardX 是 tagX 唯一挂载即全库
+	// 最优，会被豁免而非标记。
+	createMatchLabel(t, db, "Backfill Board True", "bf-board-true", "board", "active", []float64{1, 0, 0})
 	// 存量旧记录：旧语义 direct_hit score=1.0、无 direction_mismatch
 	require.NoError(t, db.Create(&tagmodels.TopicTagBoardLabel{TopicTagID: tagX.ID, SemanticBoardID: boardX.ID, Score: 1.0, MatchReason: "direct_hit"}).Error)
 

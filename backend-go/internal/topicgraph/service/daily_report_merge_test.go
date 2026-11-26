@@ -11,10 +11,14 @@ import (
 
 func topicPtr(id uint) *uint { return &id }
 
-// mergeSection builds a minimal section for MergeSimilarSections tests.
+// mergeSection builds a minimal section for the MergeSimilarSections tests.
+// Each section gets its own cluster_index (= id) so the sibling-bucket guard
+// (same cluster_index ⇒ never merge) does not reject the pairs these tests
+// exercise; the guard itself is covered by TestMergeRejectsSiblingBuckets.
 func mergeSection(id uint, label string, anchor *uint, lane string, embedding string) repository.DailyReportSection {
 	return repository.DailyReportSection{
 		ID:             id,
+		ClusterIndex:   int(id),
 		ClusterLabel:   label,
 		ClusterTagIDs:  []byte("[]"),
 		MatchedTopicID: anchor,
@@ -22,6 +26,21 @@ func mergeSection(id uint, label string, anchor *uint, lane string, embedding st
 		Embedding:      embedding,
 		ArticleCount:   1,
 	}
+}
+
+// TestMergeRejectsSiblingBuckets covers tasks 3.4 / Scenario 分桶产物不参与同日合并:
+// sections sharing a cluster_index are the sibling output of one intra-lane
+// split and must never be glued back together — even at distance 0.
+func TestMergeRejectsSiblingBuckets(t *testing.T) {
+	a := mergeSection(1, "Agent 工具链", topicPtr(7), "l1_direct", "[1,0,0]")
+	b := mergeSection(2, "Skill 生态", topicPtr(7), "l1_direct", "[1,0,0]")
+	a.ClusterIndex = 3
+	b.ClusterIndex = 3
+
+	got, _, err := MergeSimilarSections(context.Background(),
+		[]repository.DailyReportSection{a, b}, nil, nil, true)
+	require.NoError(t, err)
+	require.Len(t, got, 2, "sibling buckets of one cluster must stay separate")
 }
 
 // TestSameAnchorClass covers the anchor boundary predicate directly.

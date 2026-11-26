@@ -1,3 +1,5 @@
+<!-- domain: dev -->
+
 # Spec — public-read-only-demo
 
 ## Purpose

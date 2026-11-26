@@ -9,25 +9,38 @@
 | 方法 | 路径 | 说明 |
 | ------ | ------ | ------ |
 | POST | `/daily-reports/generate` | 手动触发日报生成（异步） |
+| GET | `/daily-reports/gaps?days=7` | 日报缺口清单：窗口内「该板块当天有候选内容、但没有报告」的格子（只读，不写库、不触发生成） |
+| POST | `/daily-reports/backfill-gaps` | 日报缺档异步补填：受理即返 `job_id`，服务端后台旧到新只补空（add-daily-report-gap-backfill） |
+| GET | `/daily-reports/today?date=YYYY-MM-DD` | 阅读台队列：指定日期已有日报的版块清单（每板一行轻量投影） |
 | GET | `/daily-reports/:id` | 查询单篇日报详情 |
+| POST | `/daily-reports/:id/rebucket` | 重新分桶：对某 section 所在的泳道内主题桶组重跑两阶段分桶 |
 | GET | `/semantic-boards/:id/daily-reports` | 查询板块日报列表 |
 | GET | `/semantic-boards/:id/section-timeline` | 板块 section 时间线 |
 | GET | `/semantic-boards/:id/topics` | 列出板块全部持久话题（含归档/孤儿）+ section 计数 |
-| GET | `/semantic-boards/:id/lane-dynamics?days=14` | 板块泳道动态聚合（活跃泳道卡+发展时间线+候选栏，单请求） |
+| GET | `/semantic-boards/:id/lane-dynamics?days=14` | 板块泳道动态聚合（活跃泳道卡+发展时间线+候选栏，单请求；事件线数/lane_heat 口径，add-event-story-heat） |
+| GET | `/semantic-boards/overview` | 今日雷达：全部活跃版块的事件线密度、story_heat 升温口径与最新日报摘要（单请求，5s 降级；add-event-story-heat 起关注度=lane_heat；surface-story-events-in-radar 起顶层 `stories` 段为跨版块事件线清单；matrix-clue-fallback-and-rail-merge 起收敛为单清单「今日该读」（≤8）+ 行内徽标） |
 | GET | `/daily-reports/sections/:id/lifecycle` | section 连通分量生命周期 |
 | GET | `/daily-reports/topics/:id/lifeline` | 持久话题全量 section |
+| GET | `/daily-reports/:id/thread-relations?days=7` | 该期日报每条线索的相关线索推荐（同话题、窗口内、thread 向量余弦 ≥0.75；单请求覆盖全期，replace-lane-lifeline-with-topic-events） |
 | PATCH | `/daily-reports/topics/:id` | 更新话题标题/状态 |
 | DELETE | `/daily-reports/topics/:id` | 硬删话题（解绑 section） |
 | POST | `/daily-reports/topics/:id/merge` | 合并源话题到目标 |
 | POST | `/daily-reports/topics/:id/split` | 拆分 section 为新话题 |
+| PATCH | `/daily-reports/topics/:id/anchor` | 人工重设泳道首义（选定节点范围；lane-manual-correction-loop） |
+| GET | `/daily-reports/topics/:id/anchor` | 读当前泳道首义状态（来源 + 节点集；纯读） |
+| GET | `/daily-reports/topics/:id/anchor/history` | 首义改写完整历史（append-only 留痕，按时间升序；纯读） |
+| PATCH | `/daily-reports/sections/:id/assignment` | 泳道节点归属变更（`topic_id` 为 null = 移除，为 id = 加回） |
+| GET | `/daily-reports/sections/:id/assignment/history` | 节点归属变更完整历史（append-only 留痕，按时间升序；纯读） |
+| POST | `/daily-reports/topics/:id/detach-date` | 批量移除某泳道某一天的全部归属 |
 | GET | `/daily-reports/:id/annotations` | 日报页边注批注列表（含问答轮） |
 | POST | `/daily-reports/:id/annotations` | 落锚批注 |
 | DELETE | `/annotations/:id` | 删除批注（连带问答） |
-| POST | `/annotations/:id/questions` | 批注提问/追问（SearXNG 联网补强） |
+| POST | `/annotations/:id/questions` | 批注提问/追问（网页搜索联网补强） |
 | GET | `/annotations` | 跨报告管理页列表（版块/关键词筛选） |
 | POST | `/daily-reports/backfill-embeddings` | 回填 section 向量 |
 | POST | `/daily-reports/backfill-relations` | 回填话题关系 |
 | POST | `/daily-reports/backfill-topics` | 历史重建持久话题 |
+| POST | `/daily-reports/recompute-topic-centroids` | 按当前公式重算话题质心 |
 | GET | `/semantic-boards/:id/persistent-topics/compose-candidates` | 手动编排候选 section |
 | POST | `/semantic-boards/:id/persistent-topics/embed-query` | 自然语言向量化 |
 | POST | `/semantic-boards/:id/topic-watches` | 新建话题盯盘 |
@@ -35,10 +48,23 @@
 | PATCH | `/topic-watches/:id` | 更新盯盘 label/status |
 | DELETE | `/topic-watches/:id` | 删除盯盘规则 |
 | GET | `/daily-reports/:id/watch-hits` | 查询日报命中盯盘 |
+| GET | `/daily-reports/:id/key-events` | 日报关键事件读端（推荐状态 + 全部注记行） |
+| GET | `/daily-reports/topics/:id/key-events` | 话题已确认关键事件（总览回看；仅 confirmed） |
+| PUT | `/daily-reports/topics/:id/key-events/threads/:thread_id` | thread 寻址人工动作（mark/dismiss） |
+| PATCH | `/daily-reports/topics/:id/key-events/:marker_id` | 注记寻址维护（mark/dismiss/unmark，含失效快照取消） |
 
 ## POST `/daily-reports/generate`
 
 手动异步触发日报生成。`board_id` 为空时生成所有当日有事件标签的板块。
+
+作用域参数二选一（add-radar-pipeline-status）：
+
+| 参数 | 语义 |
+| --- | --- |
+| `board_id` | 只生成该板块（既有语义） |
+| `board_ids` | 只生成该集合内的板块；缺省或空数组 = 全部板块 |
+
+`board_id` 与 `board_ids` **互斥**：同时给出返回 `400`，不启动管线、不取执行闸。`board_ids` 内重复 id 折叠（保留首次出现顺序，每板至多生成一次）；任一字段类型非法返回 `400`，**不得**降级为全量作用域。集合生成共享同一把执行闸，一次请求只占一个闸、只返回一个 `job_id`、只广播一次终态、只发一条终态通知；集合内单板失败不中断其余板块。
 
 Request：
 
@@ -46,11 +72,17 @@ Request：
 { "date": "2026-05-26", "board_id": 2849 }
 ```
 
+```json
+{ "date": "2026-05-26", "board_ids": [2849, 2850, 2851] }
+```
+
 Response `data`：
 
 ```json
 { "job_id": "...", "status": "processing" }
 ```
+
+终态消息（`daily_report_done`）携带**三态计数**：`total_saved`（产出日报的板块数）/ `failed_count`（真失败）/ `empty_count`（当日无内容），恒有 `total_saved + failed_count + empty_count == total_boards`（`total_boards` 含当日无内容的板块）。消费方 SHALL 直读 `failed_count` / `empty_count`，不得用 `total_boards - total_saved` 反推失败数（那会把当日无内容的板块错算成失败）。
 
 WebSocket 进度消息：
 
@@ -76,6 +108,228 @@ WebSocket 进度消息：
 ```
 
 调度侧同闸获取失败则记 skip（`skipped: "already_running"`，不标 failed、不发第二条终态通知）。窗口校验在闸检查之前：超窗日期不碰闸直接 4xx。
+
+## 日报缺口与异步补填（add-daily-report-gap-backfill）
+
+两个端点构成「缺口可见 → 缺口可补」闭环：缺口查询是只读的，补填是异步的（受理即返回，后台串行执行）。
+
+### GET `/daily-reports/gaps`
+
+窗口内「该板块当天有候选内容、但没有 `(board, period_date)` 报告」的格子清单。
+
+**判定口径**：与日报生成 Step1 的候选集谓词**逐条一致**（`topic_tags.status=active` 且 `category=event`、该板块挂载 `NOT direction_mismatch`、跨板排他 `NOT EXISTS`）——不使用宽松口径（后者不看 `direction_mismatch` 与排他分差，会把生成时必然被剔除的板块算成缺口，补填反复空跑烧 LLM）。已有报告的格子不算缺口。
+
+**纯读**：不写库、不触发任何生成。
+
+Query：
+
+- `days` 可选，正整数，默认 `7`。**只收窄不收宽**：实际窗口天数 = `min(days, tag_edge_retention_days)`；`days` 为 0、负数或非整数返回 `400`。
+
+窗口 = `[今天 - min(days, tag_edge_retention_days), 今天 - 1]`（本地日历日，**不含今天**——今天由当日生成与当日状态行负责）。
+
+Response `data`：
+
+```json
+{
+  "window_start": "2026-11-18",
+  "window_end": "2026-11-24",
+  "days": 7,
+  "retention_days": 7,
+  "gaps": [
+    { "date": "2026-11-18", "board_id": 2849, "board_label": "刚果（金）局势" },
+    { "date": "2026-11-21", "board_id": 2849, "board_label": "刚果（金）局势" }
+  ],
+  "missing_days": 2,
+  "total_missing": 2
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `window_start` | string | 窗口下界（`YYYY-MM-DD`，含） |
+| `window_end` | string | 窗口上界（`YYYY-MM-DD`，含）；= 昨天，**不含今天** |
+| `days` | int | 生效窗口天数（已按保留窗口收窄后的值） |
+| `retention_days` | int | `ai_settings.tag_edge_retention_days` 读到的保留窗口天数（默认 7） |
+| `gaps[]` | array | 缺口格子扁平列表，按日期升序、同日按 `board_id` 升序 |
+| `gaps[].date` | string | 报告日（`YYYY-MM-DD`） |
+| `gaps[].board_id` | int | 板块 id |
+| `gaps[].board_label` | string | 板块名称；标签行缺失时为空串（消费方回退显示 `Board #N`） |
+| `missing_days` | int | 有缺口的日期数 |
+| `total_missing` | int | 缺口格子总数 |
+| `last_run` | object? | 最近一次补填运行摘要；**无运行记录时该字段缺省** |
+
+`last_run` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `run_id` | string | 运行标识（与 WS 终态消息的 `run_id` 同一值） |
+| `status` | string | 终态：`running` / `success` / `partial` / `failed` / `budget_exhausted` |
+| `filled` | int | 本次补出篇数 |
+| `failed` | int | 失败格数 |
+| `remaining` | int | 未完成缺口数 |
+| `window_start` / `window_end` | string | 本次运行的补填窗口 |
+| `started_at` | string | 开始时间（RFC3339） |
+| `finished_at` | string? | 结束时间（RFC3339）；运行中尚未收尾时缺省 |
+
+错误：
+
+| 状态 | `reason` | 条件 |
+| ---- | -------- | ---- |
+| 400 | `invalid_days` | `days` 不是正整数（含 0、负数、非数字） |
+| 500 | — | 缺口扫描失败（`error` 为原始错误信息） |
+
+### POST `/daily-reports/backfill-gaps`
+
+异步补填：受理即返回 `job_id` / `run_id`，补填在**服务端后台**串行执行，HTTP 请求不等待补齐完成。
+
+Request body（字段均可选；整体可为空 = 按默认窗口补全部板块）：
+
+```json
+{ "date": "2026-11-20" }
+```
+
+```json
+{ "days": 3, "board_id": 2849 }
+```
+
+| 参数 | 类型 | 语义 |
+| ---- | ---- | --- |
+| `date` | string | 指定**单日**补填（`YYYY-MM-DD`） |
+| `days` | int | 按天数收窄窗口（默认 `7`，上限 `tag_edge_retention_days`），与缺口查询同口径 |
+| `board_id` | int | 只补该板块（缺省 = 全部板块） |
+
+`date` 与 `days` **互斥**：同时给出返回 `400 conflicting_scope`（一个指定单日，一个收窄窗口）。
+
+**三条前置先判后跑**（顺序固定）：
+
+| 序 | 前置 | 判定 | 不通过时 |
+| -- | ---- | ---- | -------- |
+| ① | 窗口守卫 | `date` 早于标签边保留窗口下界（`tag_edge_retention_days`，默认 7；恰好等于下界放行）→ 拒；`date` ≥ 今天（今天与未来）→ 拒 | `400` + `reason` |
+| ② | 双队列门槛 | `tag_jobs` 无 `pending`/`leased` **且** `embedding_queues` 无 `pending`/`processing`；队列计数查询失败按「未知」处理（**不当作已排空**） | `409` + `reason` |
+| ③ | 日报生成闸 | 与定时任务 / 手动生成共用同一把域闸，整轮持有、结束（含 panic）时释放 | `409 already_running` |
+
+队列未排空即拒绝：补出的候选不全，补了也是空跑。
+
+Response `data`（`200`）：
+
+```json
+{
+  "job_id": "b8e2...",
+  "run_id": "1c4a...",
+  "status": "processing",
+  "window_start": "2026-11-18",
+  "window_end": "2026-11-24"
+}
+```
+
+错误（`reason` 是机器可读枚举，`error` 是中文说明）：
+
+| 状态 | `reason` | 条件 |
+| ---- | -------- | ---- |
+| 400 | `invalid_days` | `days` 不是正整数 |
+| 400 | `conflicting_scope` | `date` 与 `days` 同时指定 |
+| 400 | `invalid_date` | `date` 不是 `YYYY-MM-DD` |
+| 400 | `out_of_retention_window` | `date` 早于标签边保留窗口下界（标签边已按窗口回收、候选不全） |
+| 400 | `out_of_backfill_window` | `date` ≥ 今天（今天由当日日报生成负责，补填窗口不含今天与未来） |
+| 409 | `queue_check_failed` | 队列积压计数查询失败（按「未知」处理，不当作已排空） |
+| 409 | `tag_queue_not_empty` | `tag_jobs` 仍有 `pending`/`leased` |
+| 409 | `embedding_queue_not_empty` | `embedding_queues` 仍有 `pending`/`processing` |
+| 409 | `already_running` | 日报生成闸被占（定时任务 / 手动生成在跑） |
+
+请求体字段**类型**非法（`date` 传数字、`days` 传字符串等）返回 `400`，`error` 说明期望类型，**无 `reason`**。
+
+**执行语义**（服务端后台）：只补空（旧到新）、只补仍缺的（幂等）、整轮 60 分钟预算（`ai_settings.daily_report_backfill_budget_minutes`，缺省 60）、终态留档 + 终态通知。详见 `flow/daily-report.md` §后端：缺口与补填。
+
+### 补填的 WebSocket 事件
+
+**逐格进度复用 `daily_report_progress`**（新增两个附加字段，既有字段一个不动、旧消费方忽略附加字段即可）：
+
+```json
+{
+  "type": "daily_report_progress",
+  "job_id": "b8e2...",
+  "status": "completed",
+  "board_id": 2849,
+  "board_name": "刚果（金）局势",
+  "saved": 1,
+  "progress": "1/3",
+  "date": "2026-11-20",
+  "run_scope": "backfill",
+  "timestamp": "2026-11-25T..."
+}
+```
+
+| 字段 | 说明 |
+| ---- | ---- |
+| `date` | 本次进度对应的**报告日**（`YYYY-MM-DD`）——补填是多天串行的，没有它无法把进度归到具体那一天 |
+| `run_scope` | 运行来源：`generate`（当日生成）/ `backfill`（缺档补填） |
+| `status` | 逐格状态：`completed`（补出）/ `failed`（生成失败）/ `empty`（当日无内容，未补出） |
+| `saved` | 截至本格的累计补出篇数 |
+| `progress` | `已补出/总格子数` |
+
+**终态用独立事件类型 `daily_report_backfill_done`**：
+
+```json
+{
+  "type": "daily_report_backfill_done",
+  "job_id": "b8e2...",
+  "run_id": "1c4a...",
+  "status": "success",
+  "filled": 3,
+  "failed": 0,
+  "remaining": 0,
+  "window_start": "2026-11-18",
+  "window_end": "2026-11-24",
+  "started_at": "2026-11-25T01:00:00Z",
+  "finished_at": "2026-11-25T01:03:20Z",
+  "timestamp": "2026-11-25T01:03:20Z"
+}
+```
+
+| 字段 | 说明 |
+| ---- | ---- |
+| `type` | 恒为 `daily_report_backfill_done` |
+| `job_id` / `run_id` | 本次运行的作业标识 / 运行标识（与留档表 `run_id` 同值） |
+| `status` | 终态四态：`success` / `partial` / `failed` / `budget_exhausted` |
+| `filled` / `failed` / `remaining` | 补出篇数 / 失败格数 / 未完成缺口数 |
+| `window_start` / `window_end` | 本次运行的补填窗口 |
+| `started_at` / `finished_at` | 开始 / 结束时间（RFC3339） |
+| `timestamp` | 消息发出时间（RFC3339） |
+
+> **为什么不复用 `daily_report_done`**：`daily_report_done` 被现有消费方（`useDailyReportProgress` / `useRadarPipelineStatus` 的 done 分支）**无 `job_id` 过滤**地消费——复用会让补填终态被误认成「本次今日生成」的结果，污染当日状态。故终态另开事件类型；逐格进度因携带 `date` + `run_scope` 足以区分，复用同一类型即可（旧消费方忽略附加字段）。
+
+## GET `/daily-reports/today`
+
+阅读台左栏队列：返回**指定日期已有日报的版块**清单，每板一行轻量投影（不含 sections / threads 载荷）。纯读、无副作用、不触发生成。
+
+**参数：**
+
+- `date`：`YYYY-MM-DD`，缺省取服务端本地日历当天；格式非法 → `400`（不回落默认日期）。
+
+Response `data`（按 `semantic_board_id` 升序）：
+
+```json
+{
+  "success": true,
+  "data": {
+    "date": "2026-11-03",
+    "reports": [
+      { "report_id": 1284, "semantic_board_id": 2849, "period_date": "2026-11-03", "title": "日报 2026-11-03", "status": "completed" }
+    ]
+  }
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `date` | 生效的查询日期（回显；未传时即服务端今天） |
+| `reports[].report_id` | 报告主键（可交给 `GET /daily-reports/:id` 取详情） |
+| `reports[].semantic_board_id` | 版块 ID |
+| `reports[].period_date` | 报告期日（`YYYY-MM-DD`，`period_date` 列投影） |
+| `reports[].title` | 报告标题（生成时写成 `日报 <日期>`） |
+| `reports[].status` | 报告行 `status` 列原值（生成成功落库的日报恒为 `completed`） |
+
+格式非法时 `400 { "success": false, "error": "invalid date" }`；查询失败 `500`。当天无任何日报时 `reports` 为 `[]`（不是 `null`，也不是 404）。`(semantic_board_id, period_date)` 唯一索引保证每板当日至多一行。
 
 ## GET `/semantic-boards/:id/section-timeline?days=30`
 
@@ -124,6 +378,32 @@ Response `data`：
 ## GET `/daily-reports/topics/:id/lifeline`
 
 按 `persistent_topic_id` 查询一个持久话题的全部 section 与内部关系，不受时间窗限制。
+
+Response 的 `sections[].topic_match_distance` = 该 section 到话题质心的归属距离（float，**恒下发**）：距离恰为 `0` 是合法结果（完美锚定），不得被省略（fix-lane-metric-provenance）——省略会让客户端把接近度读成「未知」而不是 `1 − 0 = 1.00`。
+
+## GET `/daily-reports/:id/thread-relations?days=7`
+
+给日报阅读台的**每条当日线索**返回「相关线索」推荐，用于线索行内的 chip（replace-lane-lifeline-with-topic-events）。一次请求覆盖整期日报全部线索，按 `thread_id` 分组——不要求前端逐条发请求。
+
+**参数**：`days` 只接受 `7` 与 `30`，其它值回落 `7` 并以响应字段回显实际生效值；窗口为 `[report_date - days, report_date - 1]`，**不含当前期**（当期线索已在同一屏可见，不推荐自己）。
+
+**候选与打分**：同 `persistent_topic_id`、窗口内、`embedding` 非空的其它 thread，按 `1 - (a <=> b)` 余弦相似度筛选，**只有 ≥ 0.75 进入列表**；`score` 就是余弦值本身，**不叠加时间衰减/篇数/confirmed 加权**；`level = score >= 0.85 ? "strong" : "related"`（两档）。排序 `score` desc → `period_date` desc → `thread_id` asc，**后端返回全量不截断**（前端只渲染前 3）。
+
+**为什么不用事件标签做匹配**：实测「事件标签 id 交集」有候选的线索仅 1.6%（标签 id 不跨天复用 + 孤儿清理硬删）；「事件标签向量」的 top-3 与 thread 向量**零重叠**，候选池只有 19%。选型实测见 change 的 `design.md` D3。
+
+**响应**（`data` 下）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `report_id` / `days` / `window_start` / `window_end` | 参数与实际窗口 |
+| `status` | `ready` / `partial`（有当期线索缺向量被跳过）/ `empty`（无任何推荐） |
+| `threads` | `{ "<threadId>": [ { thread_id, title, summary, period_date, score, level, confirmed, source_article } ] }`，无推荐时为空对象 `{}`（不是 `null`） |
+| `total` | 全部推荐条数 |
+| `skipped_no_embedding` | 当期缺 embedding 被跳过的线索数 |
+
+`source_article` 取候选 thread 的 `related_article_ids` **首篇**（`id` / `title` / `feed` / `published_at`），查不到时为 `null`（不编造标题）。`confirmed` 表示候选 thread 的 event 标签在本话题有 `state='confirmed'` 的关键事件注记。
+
+**只读**：不写任何表/缓存/索引、不调模型、不算 embedding。`reportId` 不存在返回 404。
 
 ## PATCH `/daily-reports/topics/:id`
 
@@ -188,6 +468,255 @@ Request：
 
 Response `data`：新建的话题对象（结构同 PATCH）。
 
+## 泳道人工修正（lane-manual-correction-loop）
+
+> 四个写 / 读端点 + 两个只读历史端点共同构成「人工修正闭环」：首义只由**选定节点范围**定义（不收自然语言描述），归属变更是双向的（移除 / 加回，不接受改挂），一切修正只写**事实层**，派生缓存（质心 / 吸尘器标记 / 泳道快照）由算法在**下一次日报生成**统一重算——不存在「立即重算」端点。
+
+### PATCH `/daily-reports/topics/:id/anchor`
+
+人工重设泳道首义（`board_persistent_topics.embedding`）：把用户选定的节点范围按 mean pooling 聚合（与手动建话题同口径）写成新首义。
+
+Request：
+
+```json
+{ "section_ids": [101, 105, 110] }
+```
+
+- `section_ids` 必填：选定的泳道节点（section）id 列表；空数组 → `400`。
+- **只接受节点 id 列表**：传自然语言描述字符串 → `400`（首义只有一种输入模式，不做向量化）。
+- 每个选中节点必须同时满足：属于同一 board、当前归属该话题、embedding 存在且维度一致；任一不满足 → **整体拒绝**（不静默跳过、不落库）。
+
+Response `data`：
+
+```json
+{
+  "topic_id": 7,
+  "source": "selected_sections",
+  "selected_sections": [101, 105, 110],
+  "override_count": 2,
+  "effective_from": "next_report"
+}
+```
+
+- `source` 恒为 `selected_sections`（首义的输入模式）。
+- `selected_sections` = 去重后的选定节点 id。
+- `override_count` = 该话题首义被人工改写的累计次数（`topic_anchor_overrides` 行数）。
+- `effective_from` 恒为 `next_report`：事实层立即改，匹配锚点（质心）由下一次日报生成重算。
+
+副作用（单事务）：写 `board_persistent_topics.embedding` + 追加一行 `topic_anchor_overrides` 留痕（改前向量 / 改后向量 / 输入模式 / 选定节点 id / 操作者 / 时间，只追加）+ 置 `centroid_pending_recompute=true`。**不改写质心**（`centroid` 列只由下一次日报生成刷新）。
+
+错误码：
+
+| 状态 | 条件 |
+| ---- | ---- |
+| 400 | body 不是 id 数组 / `section_ids` 缺失或为空 / 节点不存在 / 节点属其它版块 / 节点不属该话题 / 节点无可用向量 / 节点向量维度与其它节点不一致 |
+| 404 | 话题不存在 |
+| 409 | 话题已归档（archived 泳道不可改首义） |
+
+### GET `/daily-reports/topics/:id/anchor`
+
+读当前泳道首义状态。**纯读端点**：不产生任何写入、不重算任何派生值。
+
+Response `data`：
+
+```json
+{
+  "topic_id": 7,
+  "source": "manual",
+  "section_ids": [101, 109],
+  "override_count": 2,
+  "effective_from": "next_report",
+  "anchor_origin": {
+    "resolved": true,
+    "section_id": 101,
+    "title": "巴萨与皇马的分歧",
+    "period_date": "2026-11-10"
+  },
+  "centroid": {
+    "window_size": 30,
+    "anchor_weight": 0.5,
+    "section_ids": [101, 109, 112],
+    "section_count": 3,
+    "members": [
+      { "section_id": 101, "title": "巴萨与皇马的分歧", "period_date": "2026-11-10" },
+      { "section_id": 109, "title": "以黎冲突升级", "period_date": "2026-11-12" }
+    ],
+    "degraded": false
+  }
+}
+```
+
+- `source`：`auto` = 首义是创建话题时写入的（无节点集）/ `manual` = 首义由人工选定的节点范围定义，**或由手动建泳道在创建时留痕**（align-lane-correction-workface 起：建话题事务内追加一行留痕，故手动建的泳道读出来是 `manual` 且节点集可解）。
+- `section_ids`：当前首义节点集（取 `topic_anchor_overrides` 最新一行反解，可能含当前取数窗口之外的节点）；`source=auto` 时**恒为空数组**——自动首义只有一条向量，没有对应节点列表，接口不得虚构。
+- `override_count`：**该话题的首义留痕条数**（`topic_anchor_overrides` 行数，含手动建泳道时那一条）；0 行即 `auto`。
+- `effective_from`：`manual` 为 `next_report`；`auto` 为空串（已在用）。
+- `anchor_origin`：**首义来源节点**（只读）。`resolved=true` 时给出 `section_id` / `title` / `period_date`，取最新留痕行里第一个仍存在的节点；`resolved=false` 时三者**均为 `null`**（`source=auto` 且无留痕、或留痕节点已被删除）——**接口不得用「最早成员」等推测值顶替**。`source` 与 `anchor_origin.resolved` 是两件事：前者说「谁写的」，后者说「写的是哪条节点、现在还查得到吗」。
+- `centroid`：**当前质心的口径与输入**（只读）。`window_size` = 滚动窗口大小（`persistent_topic_centroid_window`，默认 30）、`anchor_weight` = 首义权重 α（`persistent_topic_centroid_anchor_weight`，默认 0.5）、`section_ids` / `members[]` = 参与滚动均值计算的 section（与质心计算**同一份取数实现**，谓词/排序/上限完全等价）、`degraded` = 当前质心是否处于退化口径（可解析向量 < 2 → 退回首义向量；首义不可用 → 退化为纯滚动均值）。**`degraded` 是单一布尔标记，两种退化分支的落点不同，消费方 MUST NOT 把它断言为「退回首义向量」。**
+- **纯读边界**：本端点 SHALL NOT 写表、SHALL NOT 触碰 `centroid` / `embedding`、SHALL NOT 置 `centroid_pending_recompute`、SHALL NOT 触发重算或回填快照。
+
+错误码：`404` 话题不存在；`500` 读取失败。
+
+### GET `/daily-reports/topics/:id/anchor/history`
+
+首义改写的**完整历史**（只读）。`GET .../anchor` 只回答「当前首义是什么」，本端点回答「这条泳道的定义面什么时候被谁改过」。
+
+留痕表 `topic_anchor_overrides` 是 append-only 的：每次人工改写追加一行，既有行既不改也不删。
+
+Response `data`：
+
+```json
+{
+  "topic_id": 7,
+  "overrides": [
+    {
+      "id": 1,
+      "topic_id": 7,
+      "source": "selected_sections",
+      "section_ids": [101, 105, 110],
+      "old_vector": { "dimension": 768, "head": [0.0123, -0.0456], "norm": 1.02 },
+      "new_vector": { "dimension": 768, "head": [0.0311, -0.0222], "norm": 1.04 },
+      "operator": "user",
+      "created_at": "2026-11-15T09:00:00Z"
+    }
+  ]
+}
+```
+
+- `overrides` 按**时间升序**返回（`created_at ASC, id ASC`——同毫秒追加的行靠 id 兜底排序）。
+- `old_vector` / `new_vector` 是向量**摘要**（维度 + 前 8 个分量 + 模长），不是整条向量；改前无向量时 `old_vector` 为 `null`。
+- `section_ids` = 该次改写选定的节点 id；摘要读不出来时为空数组（不虚构节点列表）。
+- `operator` = 操作者（单用户部署恒为 `user`）。
+- 留痕**不随话题硬删而消失**：话题已被硬删但留痕仍在时，本端点照常返回留痕。
+
+错误码：`404` 话题不存在且无留痕；`500` 读取失败。
+
+### PATCH `/daily-reports/sections/:id/assignment`
+
+泳道节点归属变更，双向共用一个端点。移除不指定去处（用户表达的是「它不该在这儿」），加回接受当前无归属的节点；**已归属的节点只在来源泳道为 candidate（动态）时允许改挂**（来源为 active 已转正泳道 → `409`，已转正泳道的素材不因人工编辑而流动）。
+
+Request（移除）：
+
+```json
+{ "topic_id": null }
+```
+
+Request（加回）：
+
+```json
+{ "topic_id": 7 }
+```
+
+- `topic_id` 必填且必须显式给出：`null` = 移除，正整数 = 加回到该话题；字段缺失 / 字符串 / 负数 / 0 → `400`。
+
+快照口径（两向都保留 `lane_tier`）：
+
+| 方向 | 写入列 |
+| ---- | ------ |
+| 移除（detach） | `persistent_topic_id` / `topic_match_distance` / `topic_match_confidence` / `topic_status_at_report` 四列置 NULL |
+| 加回（attach） | `persistent_topic_id` = 目标话题、`topic_match_confidence` = `manual`、`topic_match_distance` = 到目标锚点（centroid 优先、embedding 兜底）的实算距离（节点无可用向量时写 NULL）、`topic_status_at_report` = NULL |
+| 改挂（来源为 candidate 泳道） | 同「加回」，但 `manual_assignment_from_topic_id` = 来源泳道；留痕追加 `from=来源话题, to=目标话题`；来源与目标**两条泳道**均置 `centroid_pending_recompute=true` |
+
+两向都写留痕三列：`manual_assignment_at`（时间）/ `manual_assignment_from_topic_id`（变更前所属话题）/ `manual_assignment_action`（`detach` / `attach`）。这三列的语义是「**最近一次**人工归属变更的快照」——下一次人工变更会覆盖它们；**完整历史**在 append-only 的 `section_assignment_overrides` 表（见下方历史端点）。
+
+Response `data`：
+
+```json
+{
+  "section_id": 42,
+  "topic_id": 7,
+  "previous_topic_id": null,
+  "action": "attach",
+  "changed": true,
+  "topic_match_distance": 0.183,
+  "board_id": 3
+}
+```
+
+- `action`：`detach` / `attach`。
+- `changed`：是否真的写了行；「已属该话题」的幂等加回返回 `changed=false`（不写列、不追加留痕）。
+- `board_id`：被重建关系图的版块。
+
+副作用（单事务）：置受影响话题 `centroid_pending_recompute=true` + 调 `RebuildBoardRelations(tx, board_id)`；重建失败整体回滚（归属与留痕一并撤销）。**不动**话题的命中计数与状态（`hit_count` / `consecutive_hits` / `status` / `first_seen_date` / `last_seen_date` 均不变）。
+
+错误码：
+
+| 状态 | 条件 |
+| ---- | ---- |
+| 400 | body 非法（`topic_id` 缺失 / 非数字 / 非正数 / 字符串）/ 目标泳道属其它版块 |
+| 404 | section 不存在 / 目标话题不存在 |
+| 409 | 该节点无归属可移除 / 该节点已属其它泳道（改挂被拒）/ 目标泳道已归档 |
+| 500 | 其它失败（含关系重建失败 → 整体回滚） |
+
+### GET `/daily-reports/sections/:id/assignment/history`
+
+节点泳道归属变更的**完整历史**（只读）。「移除 → 加回」两步各留一行：加回不会把先前的 detach 痕迹抹掉。
+
+留痕表 `section_assignment_overrides` 是 append-only 的：每次人工归属变更追加一行，既有行既不改也不删。
+
+Response `data`：
+
+```json
+{
+  "section_id": 501,
+  "entries": [
+    {
+      "id": 1,
+      "section_id": 501,
+      "topic_id_from": 8,
+      "topic_id_to": null,
+      "action": "detach",
+      "operator": "user",
+      "created_at": "2026-11-15T09:00:00Z"
+    },
+    {
+      "id": 2,
+      "section_id": 501,
+      "topic_id_from": null,
+      "topic_id_to": 8,
+      "action": "attach",
+      "operator": "user",
+      "created_at": "2026-11-15T09:05:00Z"
+    }
+  ]
+}
+```
+
+- `entries` 按**时间升序**返回（`created_at ASC, id ASC`）。
+- `topic_id_from` = 变更前所属话题（`null` = 此前无归属）；`topic_id_to` = 变更后所属话题（`null` = 移除）。
+- `action` = `detach`（移除）/ `attach`（加回）。
+- 留痕**不随节点硬删而消失**：节点已被硬删但留痕仍在时，本端点照常返回留痕。
+
+错误码：`404` 节点不存在且无留痕；`500` 读取失败。
+
+### POST `/daily-reports/topics/:id/detach-date`
+
+批量移除某泳道某一天的全部归属（逐条同「移除」口径，事务末尾只重建一次整板关系）。
+
+Request：
+
+```json
+{ "period_date": "2026-11-10" }
+```
+
+- `period_date` 必填，`YYYY-MM-DD`；格式非法 → `400`。
+
+Response `data`：
+
+```json
+{
+  "topic_id": 7,
+  "period_date": "2026-11-10",
+  "detached": 3,
+  "section_ids": [42, 43, 44],
+  "board_id": 3
+}
+```
+
+- `detached` = 被释放的节点数；该日无归属节点时返回 `detached: 0` 与空 `section_ids`（不是错误）。
+- `section_ids` = 被释放的节点 id（升序）。
+
+错误码：`400` `period_date` 格式非法；`404` 话题不存在；`500` 其它失败（含关系重建失败 → 整体回滚）。
+
 ## GET `/semantic-boards/:id/topics`
 
 列出某板块下的全部持久话题（active / candidate / archived / 孤儿），并附带每个话题的 section 计数。与 `section-timeline` 不同，该接口不受时间窗限制，专门用于管理 UI 暴露 backfill 产生的异常话题；返回前会过滤掉 `hit_count < persistent_topic_upgrade_threshold` 的观测期 candidate。
@@ -220,6 +749,89 @@ Response `data`：
 
 `color` 由话题 id 稳定哈希得到；`can_activate` 表示 candidate 是否已达激活门禁。
 
+## GET `/semantic-boards/overview`
+
+今日雷达单次聚合（rework-workshop-into-radar-and-desk 8.2；retire-story-adopt-event-metrics 1.5/3.2 换当天线索口径）：只读，返回所有 `status=active` 版块的行。**关注度 `attention` = 该版块各泳道当天热度之和（含候选泳道按 `lane_heat_candidate_weight` 加权，保留一位小数）**——泳道当天热度 = 当天线索数按话题状态加权（`heat-v2-lane-clues-1d`：active × 1.0 + candidate × 权重），只表达当天、不衰减不跨天；不再是事件线热度（`heat-v1-48h-hl24h`）之和，也不是旧 section 数加权公式。分档阈值按新关注度真实分布标定（前端 14.5 / 2.3 = P80/P20，实测记录见 change design D9），不沿用旧 3.3/0.7 或 50/15。
+
+字段变更（相对事件线口径）：**移除** `today_sections` / `last3_sections` / `prev3_sections` / `days` / `today_stories` / `last3_stories` / `prev3_stories` / `today_heat` / `last3_heat` / `prev3_heat` / `heat_days` / `stories_backfilled` / `story_identity_state` / `heat_incomplete` / `heat_stale_feed_ids`；**新增** `today_clues` / `last3_clues` / `prev3_clues`（同轴窗口的当天线索合计）与 `clue_days`（14 天逐日线索合计，oldest → newest，未知不补 0）、`lanes[].clue_counts`（14 天逐日线索合计）；`heat_rule_version` 恒 `heat-v2-lane-clues-1d`。泳道移除 `counts` / `story_counts` / `section_count_14d`，保留 `thread_count_14d`（全窗线索合计，排序次键）。泳道与分区口径复用 `lane-dynamics`，最新日报取 `board_daily_reports`；无数据版块返回零值行（**真实 0**），单版块超时未完成或泳道动态计算失败则该行标 `data_unavailable=true` 且计数类字段落 `null`（**未知**，不造 0），不阻塞整屏。窗口锚定该版块最新日报日（无日报则无密度），`date` 为全部版块最新日报日的最大值（**全部版块都未取到时为空串**，不冒充今天）。
+
+```json
+{
+  "date": "2026-11-10",
+  "boards": [{
+    "board_id": 1974,
+    "label": "中东地缘政治与美伊关系",
+    "tag_count": 144,
+    "report_date": "2026-11-10",
+    "report_title": "伊朗警告打击海湾海底电缆",
+    "report_article_count": 14,
+    "report_event_count": 13,
+    "anchor_date": "2026-11-10",
+    "today_clues": 7,
+    "last3_clues": 13,
+    "prev3_clues": 10,
+    "attention": 7.5,
+    "heat_rule_version": "heat-v2-lane-clues-1d",
+    "clue_days": [0, 1, 2, 1, 0, 3, 1, 2, 0, 1, 2, 1, 0, 7],
+    "data_delayed": false,
+    "data_unavailable": false,
+    "lanes": [{
+      "topic_id": 1204,
+      "label": "美伊博弈升级：从经济威胁到全面孤立",
+      "thread_count_14d": 38,
+      "clue_counts": [0, 1, 1, 0, 0, 2, 1, 1, 0, 1, 1, 0, 0, 3]
+    }]
+  }],
+  "top_lanes": {
+    "anchor_date": "2026-11-10",
+    "lanes": [{
+      "board_id": 1974,
+      "board_label": "中东地缘政治与美伊关系",
+      "topic_id": 1204,
+      "topic_label": "美伊博弈升级：从经济威胁到全面孤立",
+      "clue_count": 3,
+      "anchor_date": "2026-11-10"
+    }],
+    "partial": false,
+    "degraded_board_ids": [],
+    "lagging_board_ids": []
+  }
+}
+```
+
+- `attention` 为 float（Σ 泳道当天热度，1 位小数）；行按 attention 降序（平手 board_id 升序）；`attention` 未知（未取到）的行沉到末尾。
+- `today_clues` / `last3_clues` / `prev3_clues` / `clue_days` / `lanes[].clue_counts` 缺省（旧后端）时归一为 `null`，前端标「线索数未知」，**不造 0、不拿分区数冒充**；`clue_count` 已排除综合稿（`scope=composite`）。
+- **`data_unavailable`**（fix-radar-overview-false-zero）：true = 该版块**这次没取到**（端点超时未完成，或该版块泳道动态计算失败）。此时 `attention` / `today_clues` / `last3_clues` / `prev3_clues` / `report_article_count` / `report_event_count` 均为 `null`（未知）。前端 SHALL 把这些行显示为「数据未取到」，SHALL NOT 当成「0」渲染成「今天没有热点 / 0 篇文章」；这些行也不参与关注度分档与「N 个板块值得关注」计数。**真实零值**（近 14 天无日报无泳道、取数成功）仍是 `data_unavailable=false` + 计数为 0。
+- `data_delayed` 保留原义（端点超时降级标记）；计算失败路径不标 `data_delayed`，只标 `data_unavailable`。
+- 滞后版块（自身锚点日 ≠ 全局 `date`）的计数照旧返回实数，但前端 SHALL 把它们排在主列表末尾（不进分档、不占前排名次）。
+- `heat_rule_version` 恒 `heat-v2-lane-clues-1d`（与 lane-dynamics 同源）；旧热度字段不再下发。
+
+### 顶层 `top_lanes` 段（当天线索最多的泳道，D10）
+
+响应新增**顶层 `top_lanes` 段**：雷达右栏清单的**条目单位是泳道**（版块 + 话题），不是事件线、也不是版块日报标题。跨版块归并、排序（泳道当天线索数降序 → 版块名 → 泳道名 → 泳道 id）、截断（**上限 8**，第 9 名不展示）全部在服务端完成，客户端不做二次合并或重排。**该段缺失** = 旧后端响应，客户端 SHALL 回退既有的版块级日报标题列表（不渲染成业务空态）。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `anchor_date` | string | 全局锚点日（= 响应 `date`），仅用于「N 个版块滞后」提示 |
+| `lanes[]` | array | 条目：`board_id` / `board_label` / `topic_id` / `topic_label` / `clue_count`（该泳道在**它自己版块锚点日**的线索合计）/ `anchor_date`（条目所属版块自己的锚点日） |
+| `partial` | bool | true = 部分版块超时或泳道数据计算失败，本次排序不完整 |
+| `degraded_board_ids` | array[int] | 降级版块 id（不产条目） |
+| `lagging_board_ids` | array[int] | 自身锚点日落后于全局锚点日的版块 id（仍照常出条目，按自己的日期计） |
+
+- 当天线索为 0 的泳道不进清单；清单为空时前端渲染空态（不得说成「今天没有事件」）。
+- 事件线清单段（`stories` / `unbackfilled_board_ids` / `warming_count` / `cross_day_story_count` 等）随事件线退役整体移除；条目不再提供 `?story=` 深链，点击进既有控制台 `?lane=`。
+
+### 消费方 ②：L1 版块态势页左轨（console-rails-live-signals，2026-11-19）
+
+同一份 overview 响应也是版块态势页（`/tags/:boardId`）**左轨版块栏**的数据源：每行 = 名称 + 14 格逐日线索条码，格值取 `boards[].clue_days`，色阶按行内峰值归一。
+
+> ⚠️ **共同轴对齐（消费方必须做，否则是假比较）**：本端点的 `clue_days` 由 `radarAxis(anchor)` 按**每个版块自己的锚点日**生成 14 天窗口（`backend-go/internal/topicgraph/repository/board_radar_repository.go:433,501-510`），因此不同版块的「最后一格」代表**不同日期**。消费方 MUST 按**全局锚点**（响应 `date`）重对齐再并列展示：
+> `offset = daysBetween(date, boards[i].anchor_date)`；`clue_days[j]` 在共同轴 `[date-13 … date]` 上的位置 = `j - offset`；位置越界 = **该位未取到**（MUST 画未取到占位，MUST NOT 补 0）。对齐后「停更」（末段未取到）与「安静」（真实 0）才可区分。
+>
+> `boards[].data_unavailable = true` 的行，其计数类字段为 `null`（未知），消费方 MUST 显示未取到，MUST NOT 当成 0。`boards[].anchor_date` 落后的行（滞后版块）按各板自己的日期表达，不得冒充全局锚点日。
+
+**口径不新增**：本端点的 `clue_days` / `today_clues` / `last3_clues` / `prev3_clues` 口径与 §字段变更处一致，本节只声明第二个消费点与共同轴对齐规则。
+
 ## GET `/semantic-boards/:id/lane-dynamics?days=14`
 
 板块泳道动态聚合：「板块内容」tab 首屏泳道动态视图的单请求数据源（活跃泳道卡 + 滚动态势 + 发展时间线 + 候选栏）。取代已退役的 topic-landscape 端点。
@@ -227,9 +839,11 @@ Response `data`：
 **参数：**
 
 - `id`：semantic_board_id。
-- `days`：时间线与统计窗口天数，默认 14；非正值或非法值回落 14。窗口锚定该板块最新一份已完成日报的 `period_date`（`[anchor-(days-1), anchor]` 双端闭区间，非 now()——避免日报未跑时窗口漂移）。
+- `days`：时间线与统计窗口天数，默认 14；非正值或非法值回落 14。窗口锚定该板块最新一份**已完成**日报的 `period_date`（`[anchor-(days-1), anchor]` 双端闭区间，非 now()——避免日报未跑时窗口漂移；未完成日报（`status != 'completed'`）不作锚点，其分区也不进窗口内容，与 compose-candidates 窗口同口径，fix-lane-metric-provenance）。
 
-**泳道集合与排序**：`lanes` = 该板块 active 泳道 ∪ watch 关联泳道（`board_topic_watches.persistent_topic_id` 非空且 watch active），按窗口内锚定 section 数降序；近窗口无 section 的 active（沉寂）不返回；candidate 不进 `lanes`（只在 `candidates`）。
+**泳道集合与排序**：`lanes` = 该板块 active 泳道 ∪ watch 关联泳道，按 **`lane_heat` 降序（平手依次全窗线索合计 `thread_count_14d` 降序、`topic_id` 升序）**；近窗口无 section 的 active（沉寂）不返回；candidate 不进 `lanes`（只在 `candidates`）。
+
+**量纲（retire-story-adopt-event-metrics 1.4）**：`lane_heat` = 当天线索数按话题状态加权（`heat-v2-lane-clues-1d`，active × 1.0 + candidate × `lane_heat_candidate_weight`）；逐日 `clue_count` = 该泳道该日各主题桶**非综合稿** thread 数之和（矩阵日格 / 演进节点 / 顶部曲线唯一量纲）。事件线量纲（`story_count` / `max_participant_count` / `hottest_story_id` / `hottest_story_title` / `unassigned_event_count` / `story_count_14d` / `stories_backfilled`）与热度元数据 `heat_incomplete` / `heat_stale_feed_ids` 整体移除。
 
 Response `data`：
 
@@ -237,24 +851,30 @@ Response `data`：
 {
   "window_days": 14,
   "has_reports": true,
+  "anchor_date": "2026-09-09",
+  "heat_rule_version": "heat-v2-lane-clues-1d",
   "lanes": [
     {
       "topic_id": 12,
       "label": "芯片战",
       "watch_linked": true,
       "section_count_14d": 9,
+      "thread_count_14d": 27,
+      "lane_heat": 6.8,
       "snapshot": {
         "summary": "近两周围绕出口管制升级与国产替代进展交替演进……",
-        "detail": "出口管制议题近两周持续升温：上周管制清单扩容带动备货，本周国产替代订单放量……",
         "as_of": "2026-09-09"
       },
       "timeline": [
         {
           "date": "2026-09-08",
+          "clue_count": 7,
           "sections": [
             {
               "section_id": 341,
               "label": "新规生效首日影响",
+              "thread_count": 2,
+              "composite_count": 0,
               "events": ["厂商A暂停部分订单", "替代供应商订单量抬升"],
               "folded_count": 0
             }
@@ -264,16 +884,33 @@ Response `data`：
     }
   ],
   "candidates": [
-    { "topic_id": 55, "label": "稀土出口博弈", "last_seen_date": "2026-09-08", "recent_hint": "稀土出口博弈：管制清单扩容传闻" }
+    {
+      "topic_id": 55,
+      "label": "稀土出口博弈",
+      "last_seen_date": "2026-09-08",
+      "recent_hint": "稀土出口博弈：管制清单扩容传闻",
+      "anchor_date": "2026-09-08",
+      "clue_count": 2,
+      "lane_heat": 1.0
+    }
+  ],
+  "other_topics": [
+    { "date": "2026-09-08", "sections": 2, "clues": 5 },
+    { "date": "2026-09-09", "sections": 0, "clues": 0 }
   ]
 }
 ```
 
-- `snapshot`：滚动 14 天态势（每日日报生成后异步结算，见 `flow/daily-report.md` §泳道态势结算）。`summary` 为 ≤100 字短版态势句（既有语义不变，板块内容卡片仍只渲染它）；`detail` 为 ≤500 字长版成段叙述（与短版同窗同素材、同一次结算生成，lane-trend-overview 新增）。
-- 两级缺失语义：`snapshot: null` = 快照整体缺失（新泳道或结算未跑），前端降级「待结算」占位、时间线照常渲染；`snapshot` 存在但 `detail` 缺失/空（omitempty，字段不出现）= 长版缺失——存量快照或该次生成解析失败降级，前端回退展示短版 `summary` 并提示长版随下次日报结算生成。
-- 月/年趋势档：日报阅读视图泳道趋势区的月/年归档摘要复用既有 `GET /persistent-topics/:topicId/enrichment/contexts?granularity=month|year`（周期归档上下文，详见 `dataenrichment.md`），本端点不新增月/年数据。
+- `heat_rule_version` 恒 `heat-v2-lane-clues-1d`（与 overview 同源）。
+- `lanes[].lane_heat`：该泳道当天线索数按话题状态加权（含候选权重；无线索为 0）——排序唯一热度输入，section/thread 计数不得参与。`lanes[].thread_count_14d`：全窗线索合计（排序次键）；`section_count_14d` 保留展示兼容。
+- `timeline[].clue_count`：当日线索合计（**已排除综合稿**）；矩阵日格/演进节点/曲线统一消费它；展示值 MUST NOT 用各桶 `thread_count` 合计替代（section 的 `thread_count` 未排除综合稿，只能作 aria 辅助/旧响应回退）。
 - `timeline[].sections[].events`：该 section 的 thread 标题，最多前 5 条；`folded_count` 为被截断数量（恒输出，0 也带）。`timeline` 按日期倒序（最新日在最前）。
-- `candidates`：达可见门槛（`FilterVisibleTopics`）的 candidate + 最新 section 标题 `recent_hint`；只读提示，转正走话题管理入口。
+- `timeline[].sections[].composite_count`（fix-lane-metric-provenance）：该桶**综合稿**条数（thread 的 event 标签数 ≥ 2）。桶级线索数 = `thread_count − composite_count`（客户端唯一公式；两者缺任一 → 该桶线索数未知，显示 `?`）。客户端 SHALL NOT 把 `thread_count` 当线索数——它是含综合稿的 thread 总数。
+- `other_topics`（lane-matrix-coverage-and-others-row）：窗口内每个 **completed** 日报日一条（`date` 升序，含无未入泳道分区的真实 `0/0`），`sections` = 该日未入泳道分区数、`clues` = 这些分区的**非综合稿** thread 数之和。「未入泳道」= `persistent_topic_id` 为空、或不属于该板块当前**非归档**的 active / watch 关联话题集合（candidate、archived、当次未归属计入）；未完成日报整天不参与。该字段只读、不参与 `lanes` / `candidates` / `lane_heat` 计算；缺省（旧后端）时前端矩阵不渲染「其他话题（未入泳道）」整行。
+- `anchor_date`：窗口锚点日 = 该板块最新**已完成**日报的 `period_date`（YYYY-MM-DD）；无已完成日报时为空串。前端矩阵轴末日与泳道工作面窗口末日统一取它（compose-candidates 的 `window.latest_completed_date` 同值）。
+- `candidates`：达可见门槛（`FilterVisibleTopics`）的 candidate + 最新 section 标题 `recent_hint`；新增 `anchor_date`（该版块最新日报日）、`clue_count`（锚点日当天线索合计）、`lane_heat`（= clue_count × 候选权重，已含在版块 `attention` 内，前端勿重复相加）；只读提示，转正走话题管理入口。
+- `snapshot`：滚动 14 天态势（每日日报生成后异步结算，见 `flow/daily-report.md` §泳道态势结算）。`detail` 不再产出（存量历史长版仅随下个日报日结算覆盖自愈）。
+- 缺失语义：`snapshot: null` = 快照整体缺失（新泳道或结算未跑），前端降级「待结算」占位、时间线照常渲染。
 - `has_reports: false` 表示板块无任何日报（前端空态引导生成日报）。
 
 ## GET `/semantic-boards/:id/daily-reports?days=7`
@@ -336,6 +973,9 @@ Response `data`：
           "can_activate": false
         },
         "topic_status_at_report": "active",
+        "lane_tier": "l1_direct",
+        "bucket_title": "工具调用与编排",
+        "bucket_index": 0,
         "threads": []
       }
     ]
@@ -345,6 +985,54 @@ Response `data`：
 
 当 section 已归属持久话题时，详情响应会附带轻量 `persistent_topic` 描述，供前端按
 `topic_status_at_report` 快照分区（`active` / `candidate` / `null`）。历史未归属 section 返回 `null`。
+
+> **threads 的 display_tier 读取口径（add-event-story-heat）**：thread 落库携带 `display_tier`（`body`=正文默认 / `flash`=快讯（跨期重述降级） / `hidden`=预留）；本端点的 threads 只返回 **`body`** 行——`flash`/`hidden` 本期丢弃不渲染（快讯 UI 是未来工作，列仍可查）。降级只影响展示：flash 行照常落库、signals 照常写、热度不变（详见 `flow/daily-report.md` 约束 44/45）。
+
+> **`related_article_ids` 的折叠语义（dedupe-thread-article-copies）**：本端点返回的每条 thread 的 `related_article_ids` 是**读路径投影**——同一篇内容被两个 feed 各抓一份（同 `link`）时只保留**首个出现**的一条，数组顺序不变；`link` 为空（或归一后为空）、以及库里查不到的 id **不参与折叠**、原样保留。归一口径 = `textutil.NormalizeArticleLink`（去 fragment、去 query、scheme/host 小写），只认「归一 link 相同」这一条信号——同标题不同 URL 的多源转载**不折叠**。落库值 `daily_report_threads.related_article_ids` 不变（仍是该 thread `tag_ids` 对应文章的并集），故响应数组长度可能短于落库值；折叠所需的 link 取不到时降级为原样返回（本端点仍 200）。详见 `flow/daily-report.md` 约束 45。
+
+> **线索文章的判定投影 `threads[].articles`（add-ai-generated-article-detection 4.6）**：每条 thread 额外带 `articles` 数组——`related_article_ids` 的只读投影，元素为 `{ "id", "title", "ai_detection_status", "ai_detection_score" }`。顺序与折叠后的 `related_article_ids` 完全一致，**不增删成员**（数组长度 = 「N 篇」计数，集合仍受红线 45 约束不变）；库里查不到的越界 id 仍保留投影项（`title` 空、`ai_detection_status=unknown`）不丢弃；成员查询失败时整条投影缺席（详情接口照常 200，前端不渲染标记），只有 `related_article_ids` 为空数组的 thread 不带该字段。`ai_detection_status` 取值 `unknown` / `suspect` / `not_ai`；本端点**不**给判定来源与判定时间（需要时走 `GET /api/articles/:article_id`）。疑似文章在数组末尾是本 change 服务端稳定分区（非疑似保序在前）的结果，前端按此顺序展开即可。
+
+### 消费方 ②：L1 版块态势页右轨「当日日报」（console-rails-live-signals，2026-11-19）
+
+本端点的 `report.highlights` / `report.sections[]` 也是版块态势页右轨「当日日报」块的数据源（**跟随矩阵选中日**，右轨不提供日期选择器）：
+
+- **点评层** = `report.highlights`（2–3 条，元素字段见 `highlights` 字段契约）。消费方 MUST NOT 同时展示 `report.title` / `report.summary`——二者由后端派生自**首条重点**（`title = highlights[0].Title`、`summary = highlights[0].Reason`，`repository/report_story_highlights.go:78-81`），并排即重复渲染同一条。`highlights[].article_count` 缺省时消费方 MUST NOT 显示「N 篇来源」，MUST NOT 补 0。
+- **泳道层** = `report.sections[]` 中 `topic_status_at_report = 'active'` 且有 `persistent_topic` 的分区；代表线索取该分区首条 thread 的 `title`（无 thread 则退回 `cluster_label`）。该层的**线索数 MUST 取 `lane-dynamics` 的逐日 `clue_count`**（与矩阵日格同源同值），MUST NOT 用本端点 sections 内的 thread 条数（含综合稿，另一套量纲）；按线索数降序展示，并列时保持本端点 sections 原序。`topic_status_at_report = 'candidate'` 的分区（其他动态）不进该块。
+
+**口径不新增**：本端点响应结构不变，消费方只是把此前被 normalizer 丢弃的 `title` / `summary` / `highlights` 字段接上（前端补字段，零后端改动、零新增请求）。
+
+## POST `/daily-reports/:id/rebucket`
+
+对「某个 section 所在的泳道内主题桶组」（同一 `report_id` + `cluster_index`）重跑两阶段分桶，整组替换 section 行。属于 add-intra-lane-theme-bucketing。
+
+Request body：
+
+```json
+{ "section_id": 7149 }
+```
+
+Response `data`：
+
+```json
+{
+  "buckets": 6,
+  "sections": [
+    { "id": 7149, "cluster_index": 3, "bucket_index": 0, "bucket_title": "工具调用与编排", "cluster_label": "...", "threads": [] }
+  ]
+}
+```
+
+状态码三态：
+
+| 状态 | 条件 | 语义 |
+| ------ | ------ | ------ |
+| 200 + `buckets ≥ 2` | 拆分成功 | 该组 section 已替换；组头 section 行 ID 保留（旧深链仍可用），其余桶可能新建/删除 |
+| 200 + `buckets = 1` | 未达分桶阈值（threads<6 且 tags<10，可经 `ai_settings` 调）或校验后收敛为 1 组 | 合法「拆不动」，**不改任何数据**、不调用分桶 LLM |
+| 409 | 报告 status 非 `completed`，或桶组在过程中被同日重跑替换（重试即可） | 不写库 |
+| 400 | 目标 section 的 `lane_tier` 为 `watch_keyword` / `watch_sentence` | 物化组由关注轨自管，不接受主题分桶 |
+| 404 | 报告不存在 / section 不属于该报告 | — |
+
+服务端保证：与同日重跑（`SaveReport`）取**同键** `(semantic_board_id, period_date)` 事务级 advisory lock 串行化；thread 行只迁移 `section_id` 不删除（关键事件注记、文章引用不丢），`topic_key_event_markers.source_section_id` 按 `source_thread_id` 重派生、`topic_watch_hits.section_id` 与 `report_annotations.section_id` 同步重派生、该组跨天关系双向重建；派生字段（`cluster_label`/`bucket_title`/`bucket_index`/`cluster_tag_ids`/`article_count`/`embedding`/`topic_match_distance`/`best_tier`/`avg_score`/`quality_breakdown`）按新桶重算（`article_count` = 桶内线索 `related_article_ids` 的去重并集；`best_tier`/`avg_score`/`quality_breakdown` 取自报告期冻结快照按桶内 tag 子集重算），`topic_status_at_report` 沿用报告期快照；失败整体回滚。
 
 ## POST `/daily-reports/backfill-embeddings`
 
@@ -390,13 +1078,29 @@ Response `data`：
 { "status": "processing" }
 ```
 
-## GET `/semantic-boards/:id/persistent-topics/compose-candidates`
+## POST `/daily-reports/recompute-topic-centroids`
 
-为手动编排 UI（`POST /semantic-boards/:id/persistent-topics/manual`）加载候选 section（带可用向量）及配置的 `match_threshold`，前端据此实时计算聚合锚点与离群距离。
+异步按当前公式与配置重算持久话题质心（`centroid = α·首义 embedding + (1-α)·滚动窗口均值`，anchor-topic-centroid-with-embedding）。用于公式/参数升级后的一次性存量纠正；幂等可重跑。
 
 Query：
 
-- `days` 可选，时间窗天数；不传或 `<=0` 取全部历史，`>90` 截断到 90。窗口以该板块最新 completed 日报为终点。
+- `board_id` 可选，限定单个板块；缺省全部板块的非 archived（active+candidate）话题。非法值（非数字/≤0）返回 `400 {"error": "invalid board_id"}`。
+
+无需请求体。行为：逐话题重算（首义不可用回退纯滚动均值+告警），单话题失败记日志不中断其余；完成写日志 `recompute topic centroids complete: N topics updated, M failed`。Response `data`：
+
+```json
+{ "status": "processing" }
+```
+
+## GET `/semantic-boards/:id/persistent-topics/compose-candidates`
+
+为手动编排 UI（`POST /semantic-boards/:id/persistent-topics/manual`）加载候选 section（带可用向量）、**窗口内原关系**、**服务端口径的候选链**及配置的 `match_threshold`，前端据此实时计算成员均值质心与补充推荐。
+
+Query：
+
+- `days` 可选，时间窗天数；不传或 `<=0` 取全部历史，`>90` 截断到 90。窗口以该板块最新 completed 日报为终点（含首末报告日）。
+- `all_members_topic_id`（可选，uint，修正模式专用）：传入时响应追加 `early_members` 数组——该话题成员中报告期早于窗口首日的 section（升序，与 `sections` 同形）；话题不属该版块 404；**不传时字段整个缺席**（编排画布行为不变）。来源 lane-manual-correction-loop 方案 A。**成员集合对称**（fix-lane-metric-provenance）：窗口内 `sections` 与窗口外 `early_members` 用**同一向量可用性判据**（都要求 `embedding IS NOT NULL` 且向量可解析）——因此「窗口内成员数 + 窗口外成员数 = 全部成员数」恒成立、窗口内集合恒是全部集合的真子集（无可用向量的成员两侧都不入集）。`early_members` = **窗口外**的本话题成员：档位窗口（`days`）下它们都在窗口首日之前；显式 `from`/`to` 且 `to` 早于最新 completed 日时，上界之后的成员也归入此集合（保证成员总数完整，不出现「两侧都不算」的成员）。
+- `from` / `to` 可选，自选起止日（`YYYY-MM-DD`，**闭区间**）；两者必须成对给出，给出时忽略 `days`。校验（任一不满足 → `400`）：只给单边 / `from > to` / 跨度 > 90 天（**不静默截断**）/ `from` 早于「最新 completed 日报 − 89 天」取数窗 / 日期格式非法。`to` 晚于最新 completed 日报**允许**（窗口内本无更晚数据）。
 
 Response `data`：
 
@@ -411,12 +1115,43 @@ Response `data`：
       "embedding": [0.0123, -0.0456],
       "persistent_topic_id": 9,
       "topic_match_confidence": "anchor_hit",
-      "persistent_topic": { "id": 9, "label": "美伊谈判", "status": "active", "color": "#60a5fa" }
+      "persistent_topic": { "id": 9, "label": "美伊谈判", "status": "active", "color": "#60a5fa" },
+      "clue_count": 3,
+      "confirmed_key_events": [
+        { "marker_id": 11, "thread_id": 1001, "title": "美伊谈判达成框架协议", "confirmed_at": "2026-11-20T10:00:00Z" }
+      ]
     }
   ],
-  "match_threshold": 0.6
+  "relations": [
+    { "from_id": 101, "to_id": 102, "distance": 0.0651, "relation_type": "identity" }
+  ],
+  "candidate_chains": [
+    {
+      "key": "1984:7345",
+      "topic_id": 1984,
+      "topic_label": "...",
+      "topic_status": "candidate",
+      "section_ids": [7345, 7409, 7514],
+      "first_date": "2026-10-27",
+      "last_date": "2026-10-30",
+      "span_days": 3
+    }
+  ],
+  "match_threshold": 0.3,
+  "window": {
+    "from": "2026-10-01",
+    "to": "2026-10-30",
+    "days": 30,
+    "latest_completed_date": "2026-10-30"
+  }
 }
 ```
+
+- `relations`：**窗口内两端都可见**的原关系全集（`identity` 与 `similarity` 都保留，`relation_type` 原样带出）。**只读、不新增边**。
+- `confirmed_key_events`：该 section 下 **state=confirmed** 的关键事件注记（编排态 ★ 只读投影）。**恒为数组**：无标记是 `[]`（不是 null / 缺字段）；`thread_id` / `confirmed_at` 为空时**该键省略**（`omitempty`；日报重建把来源指针置 NULL 的脱离快照）。只按 `source_section_id` 精确归属，指针为 NULL 的注记**不会**出现；客户端不得按标题/日期模糊补挂。不参与选入、接近度、质心、阈值或候选链资格。
+- `candidate_chains`：**服务端唯一实现**的候选链口径（见 `flow/daily-report.md` 业务约束）；前端只渲染不重算。
+- `window.days`：**生效**窗口天数（闭区间）。`days` 档：`>90` 回显 90、`<=0` 回显 0；`from`/`to` 档：回显 `to-from+1`。
+- `window.from` / `window.to`：**可能为 `null`**（无已完成日报、或 `days<=0` 全历史档），表示开边界；`window.latest_completed_date` 在该板块**没有已完成日报**时为 `null`。
 
 ## POST `/semantic-boards/:id/persistent-topics/embed-query`
 
@@ -435,6 +1170,61 @@ Response `data`：
 ```json
 { "embedding": [0.0123, -0.0456] }
 ```
+
+## 关键事件注记（Key Event Markers，add-topic-key-event-markers）
+
+人工主权的话题关键事件：AI 只产出 `suggested` 建议，`confirmed`/`dismissed` 仅由用户动作产生；展示文本全部服务端快照派生，客户端只能表达动作与读到的 revision（未知字段忽略，**不接受客户端伪造快照**）。
+
+### GET `/daily-reports/:id/key-events`
+
+日报读端（打开报告页面只读拉取；不触发推荐生成）。返回推荐任务状态与该报告来源的全部注记行（三种 state 都可能出现在读端，由前端区分展示）。
+
+Response `data`：
+
+```json
+{
+  "status": "running",
+  "markers": [ { "id": 11, "state": "suggested", "source_thread_id": 1001, "title_snapshot": "...", "recommendation_reason": "...", "revision": 1 } ]
+}
+```
+
+- `status`：`idle`（无任务行）/ `running`（本进程内存活任务）/ `done` / `failed`。持久化 `running` 行但进程内无任务=重启杀掉了任务，诚实降级读为 `failed`（不自动恢复付费调用）。
+- `markers[].state`：`suggested` / `confirmed` / `dismissed`；`recommendation_reason`/`recommendation_basis` 仅 AI 建议行携带。
+- 报告不存在 → 404；id 非法 → 400。
+
+### GET `/daily-reports/topics/:id/key-events?state=confirmed&days=14`
+
+话题读端（泳道/焦点总览回看）。**只返回 confirmed**——`state` 查询参数省略或必须等于 `confirmed`，传其他值 400（总览不承担待处理状态，建议不泄漏）。
+
+- `days`：默认 14；`0` = 不限窗；负数/非整数 → 400。
+- 话题不存在 → 404。
+- 窗口按 `source_period_date` 过滤；来源已失效（section/thread 被重建删除）的 confirmed 行仍返回（快照回看），前端以独立快照注记呈现、不伪造 section。
+
+### PUT `/daily-reports/topics/:id/key-events/threads/:thread_id`
+
+thread 寻址动作：确认建议 / 手动标记 / 不采纳。Body：
+
+```json
+{ "action": "mark", "expected_revision": 1 }
+```
+
+- `action`：`mark`（→confirmed）/ `dismiss`（→dismissed）；**不接受 unmark**（取消走 PATCH）。
+- `expected_revision`：可选乐观锁；仅在变更状态时校验，冲突返回 409 且 `data` 附服务端最新注记行。
+- 服务端从 thread 反解来源（board/topic/section/report/指纹快照），客户端无法指定快照内容。
+- 语义：同目标同状态重复提交幂等返回已保存行；无归属 topic 的线索 → 404；thread 的 section 已被删除（重建后孤儿）→ 404（此路径只服务在册线索，失效快照维护走 PATCH）。
+
+### PATCH `/daily-reports/topics/:id/key-events/:marker_id`
+
+注记寻址维护：取消确认（含来源失效快照）、失效后重新标记。
+
+```json
+{ "action": "unmark", "revision": 3 }
+```
+
+- `action`：`mark`（→confirmed，需来源仍有效）/ `dismiss`（→dismissed）/ `unmark`（取消确认 → dismissed）。
+- 状态机（DB CHECK 强制）：`suggested →(mark/dismiss)→ confirmed|dismissed`；`confirmed →(unmark)→ dismissed`；`dismissed →(mark)→ confirmed`（死来源拒绝）。
+- `unmark` 只适用于 confirmed/dismissed 行（对 suggested 行 400）；来源已脱离（detached 快照）时仍可用——这是失效快照取消纠错的唯一入口；来源已死且当前 dismissed 的行再 `mark` → 400。
+- `revision`：必填乐观锁（与 PUT 的 `expected_revision` 同义、字段名不同）；冲突 → 409 附最新行；marker 不存在或非该 topic → 404。
 
 ## 话题盯盘（Topic Watches）
 
@@ -544,7 +1334,7 @@ Response `data`：更新后的盯盘对象（结构同 POST）。
 ```
 
 - `thread_id=null` + `section_id=0` = 头条 lead 批注（PR-4 放行路径）。
-- `cited_web_sources` 为 D7 联网白名单来源（url 均在提问当次的 SearXNG 搜索结果集内），前端外链新窗口打开。
+- `cited_web_sources` 为 D7 联网白名单来源（url 均在提问当次的统一网页搜索合并结果池内），前端外链新窗口打开。
 
 ### POST `/daily-reports/:id/annotations`
 
@@ -560,7 +1350,7 @@ Response `data`：更新后的盯盘对象（结构同 POST）。
 
 提问/追问（同一端点，追加新问答轮）。Request：`{ "question": "…（必填，≤1000 字符）" }`。
 
-提问时先以划词（截 80 runes，空则回退问题）调本地 SearXNG（失败/未配置静默降级），原始结果作为参考并入同一次 LLM 调用（operation `daily_report.margin_note_qa`，capability `open_notebook`）。Response `data.qa` 形状同 GET 的 qas 条目，另带：
+提问时先经一次轻量 LLM 调用（operation `daily_report.margin_note_search_query`）依问题语义自由生成 1~3 条搜索词，失败/超时/输出空则回退划词文本（截 80 runes，空再回退问题）单 query；各 query 并行调统一网页搜索入口（`platform/websearch`，DeepSeek Search API；未配置/失败/超时静默降级），结果按 URL 去重后跨 query 按相关度分（`rerank_score`）稳定重排、每条摘要截 400 runes、取前 5 条作为参考并入同一次 LLM 调用（operation `daily_report.margin_note_qa`，capability `open_notebook`）。Response `data.qa` 形状同 GET 的 qas 条目，另带：
 
 ```json
 {
@@ -581,6 +1371,35 @@ Response `data`：更新后的盯盘对象（结构同 POST）。
 
 跨报告管理页列表，按日期倒序；`q` 命中划词/提问/术语；`board_id` 版块筛选。Response `data.rows` 每行含 `board_id`/`board_label`（join semantic_labels）、`terms`（跨轮去重后的术语对象数组）与 `qas`（同上形状）。`data.total` 供分页。
 
+## `highlights` 字段契约
+
+`highlights` 是**恒为数组**的字段：`GET /daily-reports/:id` 返回的 `report.highlights` SHALL 是 JSON 数组，空时返回 `[]`，**SHALL NOT** 返回 `null`。元素基础字段为 `{title: string, reason: string, tag_ids: number[]}`；聚簇模式条目（retire-story-adopt-event-metrics 2.3/3.3 起）追加聚簇身份与服务端快照字段（服务端计算、模型不填数字）：
+
+```json
+{
+  "title": "黄仁勋风波与英伟达调查",
+  "reason": "多家媒体报道指控、当事方回应与市场反应……",
+  "tag_ids": [267178, 267275, 267597],
+  "cluster_id": 267178,
+  "article_count": 3,
+  "cluster_mode": "向量聚簇",
+  "data_as_of": "2026-11-10",
+  "research_at": "2026-11-10T21:32:11+08:00"
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `cluster_id` | number \| null，可缺省 | 聚簇代表 event 标签 id（= 本期正文定位键：DOM 顺序第一条 `tag_ids` 含该 id 的 thread）；**标签回退模式为空/缺省**——缺省 = 无聚簇身份（无定位按钮），不得猜 tag→cluster |
+| `article_count` | number \| null，可缺省 | 服务端快照：簇内文章数（内容身份去重后的篇数）；真实 0 是合法值。缺省不显示，不得用 0 冒充 |
+| `cluster_mode` | string，可缺省 | 聚簇口径中文标签：`向量聚簇` / `语义向量兜底` / `主体近似`（降级链逐级如实标注，不混用） |
+| `data_as_of` | string，可缺省 | 数据截至日（YYYY-MM-DD） |
+| `research_at` | string，可缺省 | 研究时点（RFC3339，生成时刻） |
+
+快照字段保持生成时刻值；旧报告与标签回退条目缺省全部新字段（`omitempty`）——前端缺字段就省略对应文案（「N 篇来源 / 聚簇口径 / 数据截至日 / 研究时点」），不伪造 0。事件线字段（`story_id` / `participant_count` / `story_heat` / `heat_rule_version` / `heat_as_of` / `heat_incomplete` / `is_progress`）与线程 `story_id` 随事件线退役整体移除。选题/时序/回退口径见 `flow/daily-report.md` 红线 46-47。
+
+> 历史存量（2026-11-04 修复前落库的 14 行）曾因 LLM 把 JSON schema 原样回抄、解析层静默放过而落成 JSON `null` 标量。修复后读路径统一归一为 `[]`（`backend-go/internal/topicgraph/repository/daily_report_repository.go` 的 `normalizeHighlightsArray`），新生成日报落库时写 `[]` 而非 `null`。
+
 ## 前端消费约定
 
 日报阅读层不新增 API：列表和详情分别消费 `GET /semantic-boards/:id/daily-reports` 与 `GET /daily-reports/:id`，按 `topic_status_at_report` 快照分区：
@@ -589,6 +1408,8 @@ Response `data`：更新后的盯盘对象（结构同 POST）。
 - `"candidate"` / `null`（含旧数据缺失）→ "其他动态"
 
 前端不再读取 `persistent_topic.status` 做历史日报分区，避免 topic 后续状态变化改变历史归位。masthead 顶部使用板块标题，日报 `title` / `summary` 映射为头条；highlights 最多展示三项。
+
+`highlights` 为空（`[]` 或 `null`）时，刊头 SHALL 渲染**可见的空态占位**（「本期暂无重点」，`data-testid="highlights-empty"`），SHALL NOT 整块隐藏——空即消失会让「本期没有重点」与「接口出错」在界面上无法区分。占位为纯静态文本：无按钮、无跳转、无批注锚点；与正常态互斥渲染（`id="report-highlights"` 任一时刻只存在一个）。
 
 active 话题展开时按 `persistent_topic.id` 懒加载 `GET /daily-reports/topics/:id/lifeline`。前端只截取当前日报向前七个自然日，同日多个 section 聚合为一个带数量角标的节点；连线只消费 `relation_type=identity`，`similarity` 不进入 mini 泳道。节点点击按 `report_id` 复用日报详情缓存，在时间线模块内原位展示当日 section/thread。
 

@@ -1,0 +1,6 @@
+schema: syntopica-ui
+created: 2026-11-26
+# 22 个旧 tag capability 的 Requirement 全部迁入 3 个族级 capability（auxiliary-label 就地扩容故保留）。
+# 归档时这 22 个 capability 的主 spec 会因 Requirement 清空而整体退役删除——openspec 2.1.1 默认
+# 走「写入重建稿 → 校验」，空 spec 校验失败会整次中止，必须显式授权退役（R-1）。
+retire_capabilities: true

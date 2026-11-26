@@ -10,11 +10,18 @@ import (
 	otelCodes "go.opentelemetry.io/otel/codes"
 	"gorm.io/gorm"
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/htmltext"
 	"syntopica-backend/internal/platform/logging"
 	"syntopica-backend/internal/platform/tracing"
 	"syntopica-backend/internal/reader/repository"
 	tagging "syntopica-backend/internal/tagmanagement"
 )
+
+// descriptionSummaryMaxRunes bounds the stored article summary length
+// (spec article-description-sanitization: ≤300 字符). It shares the cleaning
+// implementation with the list lede (internal/platform/htmltext) — same
+// source, different cap: excerpt ≤200, summary ≤300.
+const descriptionSummaryMaxRunes = 300
 
 type FeedService struct {
 	rssParser *RSSParser
@@ -74,9 +81,30 @@ func (s *FeedService) RefreshFeed(ctx context.Context, feedID uint) (err error) 
 	}
 
 	articlesAdded := 0
+	// seenInDoc 管「本文档内是否处理过这个 link」，与 linkSet（库里有没有）职责
+	// 分开。同一 link 在文档内出现多次且内容不同时会每轮触发两次「变化→改写→
+	// 清标签→入队」（feed 31 的 167936 每小时被双写实证），因此每个 link 只处理
+	// 一个变体：pubDate 最新的那条。pubDate 缺失或相等时回退首现——不再依赖
+	// 「RSS 文档 newest-first」这条无法校验的惯例（review R-2：oldest-first 源会
+	// 把库内行永久钉在最旧变体上）。
+	//
+	// 遍历仍按文档顺序、在首现位置处理选中的变体，保持 MaxArticles「文档靠前
+	// 优先」的既有语义；标记在处理前落下——同一文档内的重复副本即使首次处理
+	// 失败也不该再走一遍。
+	variants := newestEntryByLink(parsed.Entries)
+	seenInDoc := make(map[string]bool, len(variants))
 	for _, entry := range parsed.Entries {
 		if entry.Link == "" {
 			continue
+		}
+
+		if seenInDoc[entry.Link] {
+			continue
+		}
+		seenInDoc[entry.Link] = true
+
+		if chosen, ok := variants[entry.Link]; ok {
+			entry = chosen
 		}
 
 		if linkSet[entry.Link] {
@@ -125,9 +153,37 @@ func (s *FeedService) RefreshFeed(ctx context.Context, feedID uint) (err error) 
 	return nil
 }
 
+// newestEntryByLink 按 link 分组选代表：同 link 多次出现时取 pubDate 最新的
+// 变体；pubDate 缺失或相等时保留首次出现的那个（稳定回退，不依赖条目顺序）。
+// 空 link 不参与（调用方直接跳过）。
+func newestEntryByLink(entries []ParsedEntry) map[string]ParsedEntry {
+	best := make(map[string]ParsedEntry, len(entries))
+	for _, entry := range entries {
+		if entry.Link == "" {
+			continue
+		}
+		current, seen := best[entry.Link]
+		if !seen {
+			best[entry.Link] = entry
+			continue
+		}
+		if entry.PubDate != nil && (current.PubDate == nil || entry.PubDate.After(*current.PubDate)) {
+			best[entry.Link] = entry
+		}
+	}
+	return best
+}
+
 func (s *FeedService) enqueueArticleProcessing(feed models.Feed, article models.Article) error {
 	if feed.FirecrawlEnabled {
 		return repository.NewFirecrawlJobQueue(repository.Repo.DB()).Enqueue(article)
+	}
+
+	// 疑似 AI 判定与打标/抓取相互独立（design D4 ③）：feed 未开全文抓取时，文章
+	// 入库（含内容刷新）即用 RSS 正文判定。入队失败只记日志——不得阻断文章入库或
+	// 打标（spec「判定失败不影响打标」）。
+	if err := EnqueueAIDetectionJob(repository.Repo.DB(), &feed, article.ID, AIDetectionReasonArticleIngested); err != nil {
+		logging.Warnf("Error enqueueing AI detection for article %d (feed %d): %v", article.ID, feed.ID, err)
 	}
 
 	if !feed.TaggingEnabled {
@@ -145,8 +201,8 @@ func (s *FeedService) enqueueArticleProcessing(feed models.Feed, article models.
 // refreshExistingArticle applies the update semantics for an RSS entry whose
 // link already exists in the feed (dedupe-rss-articles D2):
 //
-//   - title+description unchanged → no-op (zero processing-chain cost);
-//   - either changed → UPDATE content fields, reset the processing-chain
+//   - title+summary+body unchanged → no-op (zero processing-chain cost);
+//   - any of them changed → UPDATE content fields, reset the processing-chain
 //     state exactly like a fresh insert (buildArticleFromEntry rules), clear
 //     derived fields (crawl body / AI summary / completion bookkeeping), drop
 //     stale topic tags, and re-enqueue processing. Retagging then rides the
@@ -165,11 +221,40 @@ func (s *FeedService) refreshExistingArticle(feed models.Feed, entry ParsedEntry
 		return err
 	}
 
-	if existing.Title == entry.Title && existing.Description == entry.Description {
+	// 归档行是冻结快照（article-archive-instead-of-delete 语义的延伸）：不再跟进
+	// 上游标题/正文修订，不清标签、不重入队——全量历史型源每轮回放归档行时不再
+	// 产生写放大与无效作业。feed 元数据（title/last_refresh_at 等）照常更新，不受
+	// 影响。归档是单向的：全仓没有置回 archived=false 的入口（当前无解档功能），
+	// 若产品需要解档，届时再回到下面的正常比较路径。
+	if existing.Archived {
 		return nil
 	}
 
+	// The comparison must run against the CLEANED values on BOTH sides: the
+	// stored summary is the plain-text projection of the source description
+	// (≤300 runes), while the entry still carries the source document.
+	// Comparing the raw entry against the stored row would never match for a
+	// feed that ships the whole article as the item description (智源社区
+	// does), so every refresh would re-run the whole processing chain.
+	//
+	// The stored side can still carry markup when the cleaning contract moved
+	// after the row was written (the 62k-row backfill, or any future projection
+	// change): normalize it through the same PlainSummary projection instead of
+	// comparing across two different keys. Clean stored values short-circuit on
+	// HasMarkup and compare as plain strings at zero parsing cost.
+	//
+	// The body source must be compared too: the cleaned summary is capped at
+	// 300 runes, so a body change past that cap is invisible in the summary
+	// but still has to refresh the row.
+	storedDesc := existing.Description
+	if htmltext.HasMarkup(storedDesc) {
+		storedDesc = htmltext.PlainSummary(storedDesc, descriptionSummaryMaxRunes)
+	}
 	fresh := s.buildArticleFromEntry(feed, entry)
+	if existing.Title == fresh.Title && storedDesc == fresh.Description && existing.Content == fresh.Content {
+		return nil
+	}
+
 	updates := map[string]interface{}{
 		"title":                         fresh.Title,
 		"description":                   fresh.Description,
@@ -293,13 +378,10 @@ func (s *FeedService) CleanupOldArticles(feed *models.Feed) {
 			// time-window GC, not by archiving).
 			repository.Repo.DB().Where("article_id IN ?", toArchive).Delete(&models.ReadingBehavior{})
 
-			// Archive the rows. search_vector is Postgres-only (tsvector) —
-			// sqlite test DBs lack the column, so guard the NULL assignment.
-			updates := map[string]interface{}{"archived": true}
-			if repository.Repo.DB().Migrator().HasColumn(&models.Article{}, "search_vector") {
-				updates["search_vector"] = nil
-			}
-			repository.Repo.DB().Model(&models.Article{}).Where("id IN ?", toArchive).Updates(updates)
+			// Archive the rows (search_vector retired with add-article-search
+			// migration 20261013_0002 — nothing else to clear).
+			repository.Repo.DB().Model(&models.Article{}).Where("id IN ?", toArchive).
+				Updates(map[string]interface{}{"archived": true})
 		} else {
 			logging.Infof("[cleanup] feed %d: no articles to archive", feed.ID)
 		}
@@ -312,9 +394,13 @@ func (s *FeedService) FetchFeedPreview(feedURL string) (title, description strin
 
 func (s *FeedService) buildArticleFromEntry(feed models.Feed, entry ParsedEntry) models.Article {
 	article := models.Article{
-		FeedID:          feed.ID,
-		Title:           entry.Title,
-		Description:     entry.Description,
+		FeedID: feed.ID,
+		Title:  entry.Title,
+		// The summary is cleaned at the ingestion boundary: some feeds put the
+		// whole article HTML into the item description (智源社区 does), and the
+		// reader would then render a multi-kilobyte third-party document as
+		// the lede.
+		Description:     htmltext.PlainSummary(entry.Description, descriptionSummaryMaxRunes),
 		Content:         entry.Content,
 		Link:            entry.Link,
 		ImageURL:        entry.ImageURL,

@@ -7,8 +7,10 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"syntopica-backend/internal/dataenrichment/repository"
+	"syntopica-backend/internal/models"
 	"syntopica-backend/internal/platform/airouter"
 )
 
@@ -65,6 +67,8 @@ func sdSignal(signal string, score int, refs ...string) map[string]any {
 		"signal":            signal,
 		"why_it_matters":    "w:" + signal,
 		"research_question": "q:" + signal,
+		"unknown":           "u:" + signal,
+		"verification":      "v:" + signal,
 		"evidence_refs":     refs,
 		"score":             score,
 		"rationale":         "r:" + signal,
@@ -387,5 +391,36 @@ func TestSignalDetect_EmptyCapabilityKeepsLegacyPromptBytes(t *testing.T) {
 	}
 	if got := router.calls[0].Messages[0].Content; got != signalDetectSystemPrompt {
 		t.Fatalf("empty capability must keep the legacy prompt byte-identically\nwant: %q\ngot:  %q", signalDetectSystemPrompt, got)
+	}
+}
+
+// TestSignalDetect_KeyEventAttentionIsNotEvidence (add-topic-key-event-markers
+// 2.3)：人工关注线索进入 prompt 供模型优先关注，但证据白名单仍只认切片
+// section_id——引用 marker/其它 ID 的 evidence_refs 逐条剔除，剔空则整条
+// 信号丢弃（关注不绕过依据验证）。
+func TestSignalDetect_KeyEventAttentionIsNotEvidence(t *testing.T) {
+	material := sdFixtureMaterial()
+	material.Lanes[0].ConfirmedKeyEvents = []SignalKeyEventAttention{{
+		MarkerID: 9001, Title: "用户确认的关键事件", SourcePeriodDate: time.Date(2026, 8, 10, 0, 0, 0, 0, models.ShanghaiTZ),
+		ConfirmedAt: time.Date(2026, 8, 11, 0, 0, 0, 0, models.ShanghaiTZ), EvidenceVerified: true,
+	}}
+	router := newSDRouter(sdReply{content: sdResponse(t, []map[string]any{
+		sdSignal("引用关注ID的信号", 9, "9001"),
+		sdSignal("引用合法切片的信号", 8, "101"),
+	})})
+	detections, err := newSDDetector(router).Detect(t.Context(), material, "board_signal_discovery_5_abcd1234")
+	if err != nil {
+		t.Fatalf("detect: %v", err)
+	}
+	if len(detections) != 1 {
+		t.Fatalf("marker-id citation must drop the whole signal; want 1, got %d", len(detections))
+	}
+	if detections[0].Signal != "引用合法切片的信号" {
+		t.Fatalf("only the slice-backed signal survives: %+v", detections[0])
+	}
+	// The attention itself rides into the prompt (model sees it), never into
+	// the whitelist.
+	if !contains(router.calls[0].Messages[1].Content, "用户确认的关键事件") {
+		t.Fatalf("prompt must carry the confirmed attention for prioritized focus")
 	}
 }

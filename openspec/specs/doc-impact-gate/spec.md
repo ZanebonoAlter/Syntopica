@@ -1,3 +1,5 @@
+<!-- domain: harness, dev -->
+
 # doc-impact-gate Specification
 
 ## Purpose
@@ -136,14 +138,14 @@ TBD - created by archiving change docs-harness-consolidation. Update Purpose aft
 
 ### Requirement: 归档命令硬门禁（spec-gate）
 
-pi 扩展 `.pi/extensions/spec-gate.ts` SHALL 拦截 bash 工具中匹配 `openspec archive` 的命令，在放行前强制执行四项检查：① `scripts/harness/doc-impact.sh verify <change-dir>` 退出码为 0；② `scripts/harness/check-standards.sh --change <change>` 无失败；③ 该 change 的 tasks.md 含「测试/文档/验证」尾三节及 doc-impact 标记；④ `scripts/harness/scenario-trace.sh <change-dir>` 退出码为 0。`check-standards.sh --change <change>` SHALL 保留仓库级 A-E、G-H 标准检查，但 F 段只校验该目标 change 的 doc-impact，MUST NOT 因其他 active change 的 doc-impact 失败而失败。未传 `--change` 的手动 `check-standards.sh` SHALL 继续校验全部 active change。目标 change 不存在或自身 doc-impact 失败时，范围校验 MUST 失败并给出明确原因。任一失败 MUST block 并输出中文 reason（列失败项 + 修复指引）。豁免通道：命令显式带 `--force` 或环境变量 `SPEC_GATE_BYPASS=1`（MUST 记 warning，不得静默放行）。开关：`SPEC_GATE_ENABLE`（默认开启）。
+pi 扩展 `.pi/extensions/spec-gate.ts` SHALL 拦截 bash 工具中匹配 `openspec archive` 的命令，在放行前强制执行以下检查（并保留其他已启用门禁）：① `scripts/harness/doc-impact.sh verify <change-dir>` 退出码为 0；② `scripts/harness/check-standards.sh --change <change>` 无失败；③ 该 change 的 tasks.md 含「测试/文档/验证」尾三节及 doc-impact 标记。不执行 Scenario 映射对账。`check-standards.sh --change <change>` SHALL 保留仓库级 A-E、G-H 标准检查，但 F 段只校验该目标 change 的 doc-impact，MUST NOT 因其他 active change 的 doc-impact 失败而失败。未传 `--change` 的手动 `check-standards.sh` SHALL 继续校验全部 active change。目标 change 不存在或自身 doc-impact 失败时，范围校验 MUST 失败并给出明确原因。任一失败 MUST block 并输出中文 reason（列失败项 + 修复指引）。豁免通道：命令显式带 `--force` 或环境变量 `SPEC_GATE_BYPASS=1`（MUST 记 warning，不得静默放行）。开关：`SPEC_GATE_ENABLE`（默认开启）。
 
 #### Scenario: 门禁未过时归档被拦截
 - **WHEN** agent 执行 `openspec archive <change>` 且目标 change 的 doc-impact 对账失败
 - **THEN** 命令被 block，reason 列出目标 change 的失败项与修复指引
 
 #### Scenario: 三项全过时放行
-- **WHEN** 目标 change 的 doc-impact、任务结构、Scenario 映射以及 `check-standards.sh --change <change>` 的仓库级检查均通过
+- **WHEN** 目标 change 的 doc-impact、任务结构以及 `check-standards.sh --change <change>` 的仓库级检查均通过
 - **THEN** 归档命令正常执行
 
 #### Scenario: 无关 active change 不阻断目标归档

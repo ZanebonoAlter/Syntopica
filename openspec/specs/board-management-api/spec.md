@@ -1,3 +1,5 @@
+<!-- domain: semantic-board, api -->
+
 ## Purpose
 
 SemanticBoard 和辅助标签相关的所有 API 端点，包括 CRUD、升级建议、回填、匹配参数配置、辅助标签推荐和 composition 管理。

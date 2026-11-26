@@ -1,16 +1,28 @@
-import { describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { readFileSync } from 'node:fs'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import DailyReportTopicSection from './DailyReportTopicSection.vue'
 import type {
-  DailyReport,
   DailyReportSection,
   DailyReportThread,
+  ThreadRelationsResponse,
 } from '~/api/dailyReports'
 import type { QualityZone, RequestCacheEntry } from './dailyReportMagazine'
-import type { TopicLifelineData } from '~/features/tags/composables/useDailyReportReader'
 import type { LaneDynamicsResponse } from '~/api/laneDynamics'
+import { useConfirm } from '~/composables/useConfirm'
 import type { ContextRow } from '~/api/boardEnrichment'
+
+// 线索相关推荐走模块级单例缓存（useThreadRelatedEvents）→ 取数必须离线 mock，
+// 否则 happy-dom 会去连真后端。默认每个报告都「没有候选」（chip 行不渲染）。
+const relations = vi.hoisted(() => ({
+  byReport: new Map<number, ThreadRelationsResponse>(),
+  getThreadRelations: vi.fn(),
+}))
+
+vi.mock('~/api/dailyReports', () => ({
+  useDailyReportsApi: () => ({ getThreadRelations: relations.getThreadRelations }),
+}))
 
 // Icon stub — keeps the suite offline (no iconify CDN fetch in happy-dom).
 vi.mock('@iconify/vue', () => ({
@@ -20,15 +32,17 @@ vi.mock('@iconify/vue', () => ({
 // Child components are stubbed so the suite stays focused on THIS component's
 // thread-soft-degrade rendering (their internals are covered by their own specs).
 const stubs = {
-  DailyReportMiniLifeline: {
-    name: 'DailyReportMiniLifeline',
-    template: '<div class="lifeline-stub"><slot name="details" /></div>',
-  },
   SectionTierBadge: { name: 'SectionTierBadge', template: '<span class="tier-stub" />' },
   SectionAnchorBadge: { name: 'SectionAnchorBadge', template: '<span class="anchor-stub" />' },
   SectionQualityExplore: { name: 'SectionQualityExplore', template: '<span class="explore-stub" />' },
   // LaneTrendOverview 故意不 stub：本机环境 VTU stubs 不生效（域外预存），
   // 统一按真实子组件断言（findComponent + 真实 testid），对环境修复前后行为一致。
+  KeyEventMarkerActions: {
+    name: 'KeyEventMarkerActions',
+    props: ['mode', 'threadId', 'topicId', 'view'],
+    emits: ['mark', 'dismiss', 'unmark'],
+    template: `<div class="ke-stub" :data-thread-id="threadId" :data-ke-mode="mode" :data-ke-state="view?.marker?.state ?? 'none'" @click.stop="$emit('mark')" />`,
+  },
 }
 
 function makeThread(id: number, over: Partial<DailyReportThread> = {}): DailyReportThread {
@@ -80,30 +94,53 @@ function briefsZone(sections: DailyReportSection[]): QualityZone {
 
 function mountSection(over: {
   zone?: QualityZone
+  reportId?: number
   reportDate?: string
-  lifelineEntries?: Map<number, RequestCacheEntry<TopicLifelineData>>
-  articleEntries?: Map<number, { status: 'success'; data: { title: string } }>
-  reportDetails?: Map<number, DailyReport>
+  articleEntries?: Map<number, { status: 'success', data: { title: string, aiDetectionStatus?: 'unknown' | 'suspect' | 'not_ai' } }>
   laneDynamicsEntry?: RequestCacheEntry<LaneDynamicsResponse>
   contextEntries?: Map<string, RequestCacheEntry<ContextRow[]>>
   onEnsureLaneDynamics?: (retry?: boolean) => void
   onEnsureContext?: (topicId: number, granularity: 'month' | 'year', retry?: boolean) => void
+  rebucketSectionId?: number | null
+  sectionAliases?: Map<number, number>
 } = {}) {
   return mount(DailyReportTopicSection, {
     props: {
       zone: over.zone ?? activeZone([makeSection(100, [makeThread(1)])]),
+      reportId: over.reportId ?? 1,
       reportDate: over.reportDate ?? '2026-06-26T12:00:00Z',
-      lifelineEntries: over.lifelineEntries ?? new Map(),
       articleEntries: over.articleEntries ?? new Map(),
-      reportDetails: over.reportDetails ?? new Map(),
       laneDynamicsEntry: over.laneDynamicsEntry ?? { status: 'idle' },
       contextEntries: over.contextEntries ?? new Map(),
       ...(over.onEnsureLaneDynamics ? { onEnsureLaneDynamics: over.onEnsureLaneDynamics } : {}),
       ...(over.onEnsureContext ? { onEnsureContext: over.onEnsureContext } : {}),
+      ...(over.rebucketSectionId !== undefined ? { rebucketSectionId: over.rebucketSectionId } : {}),
+      ...(over.sectionAliases ? { sectionAliases: over.sectionAliases } : {}),
     },
     global: { stubs },
   })
 }
+
+// 每个用例默认「没有候选」：取数 mock 从这里拿空结果，测试内按报告 id 注册数据。
+beforeEach(() => {
+  relations.getThreadRelations.mockReset()
+  relations.getThreadRelations.mockImplementation(async (reportId: number) => {
+    const registered = relations.byReport.get(reportId)
+    return {
+      success: true,
+      data: registered ?? {
+        report_id: reportId,
+        days: 7,
+        window_start: '2026-06-19',
+        window_end: '2026-06-25',
+        status: 'empty',
+        threads: {},
+        total: 0,
+        skipped_no_embedding: 0,
+      },
+    }
+  })
+})
 
 describe('DailyReportTopicSection — watch section anchors', () => {
   it('adds a stable report-section anchor with scroll margin to each section article', () => {
@@ -332,80 +369,14 @@ describe('DailyReportTopicSection — candidate badge removal (two-zone model)',
         },
       })]),
     })
-    // briefs zone should not auto-expand topics (no lifeline stub visible)
-    expect(wrapper.find('.lifeline-stub').exists()).toBe(false)
-  })
-})
-
-describe('DailyReportTopicSection — thread-fit soft-degrade (history loop)', () => {
-  function historyFixtures(threads: DailyReportThread[]) {
-    const reportId = 60
-    const sectionId = 366
-    const dayKey = '2026-06-20'
-    const report: DailyReport = {
-      id: reportId,
-      semantic_board_id: 1974,
-      period_date: `${dayKey}T12:00:00Z`,
-      title: '历史日报',
-      summary: '',
-      status: 'done',
-      cluster_count: 1,
-      article_count: threads.reduce((n, t) => n + (t.related_article_ids?.length ?? 0), 0),
-      event_tag_count: 0,
-      highlights: [],
-      dynamics: '',
-      sections: [makeSection(sectionId, threads, { report_id: undefined } as never)],
-      created_at: `${dayKey}T12:00:00Z`,
-    }
-    const lifelineEntries = new Map<number, RequestCacheEntry<TopicLifelineData>>([
-      [5, {
-        status: 'success',
-        data: {
-          sections: [{ id: sectionId, report_id: reportId, period_date: `${dayKey}T12:00:00Z` }],
-          relations: [],
-        } as never,
-      }],
-    ])
-    const reportDetails = new Map<number, DailyReport>([[reportId, report]])
-    return { reportDetails, lifelineEntries, dayKey }
-  }
-
-  async function mountHistory(threads: DailyReportThread[]) {
-    const { reportDetails, lifelineEntries, dayKey } = historyFixtures(threads)
-    const wrapper = mountSection({ reportDetails, lifelineEntries })
-    // drive the mini-lifeline stub to select the day → reveals the history section
-    const lifeline = wrapper.findComponent({ name: 'DailyReportMiniLifeline' })
-    lifeline.vm.$emit('selectDay', dayKey)
-    await nextTick()
-    return wrapper
-  }
-
-  it('demotes a signalled off-topic history thread, keeps a signal-less one normal', async () => {
-    const wrapper = await mountHistory([
-      makeThread(10, { title: '历史跑题', fit_distance: 0.5 }),
-      makeThread(11, { title: '历史无信号' /* fit_distance undefined */ }),
-    ])
-    const threads = wrapper.findAll('.drm-history__section .drm-thread')
-    expect(threads).toHaveLength(2)
-    const demoted = threads.find(t => t.text().includes('历史跑题'))!
-    const signalless = threads.find(t => t.text().includes('历史无信号'))!
-    expect(demoted.classes()).toContain('drm-thread--demoted')
-    expect(signalless.classes()).not.toContain('drm-thread--demoted')
-  })
-
-  it('renders the history hint row counting demoted threads', async () => {
-    const wrapper = await mountHistory([
-      makeThread(10, { title: '历史跑题A', fit_distance: 0.33 }),
-      makeThread(11, { title: '历史跑题B', fit_distance: 0.6 }),
-    ])
-    const hint = wrapper.find('.drm-history__section .drm-thread__hint')
-    expect(hint.exists()).toBe(true)
-    expect(hint.text()).toContain('2')
+    // briefs zone 不自动展开话题：正文体整体不渲染
+    expect(wrapper.find('.drm-topic__body').exists()).toBe(false)
+    expect(wrapper.find('.drm-section-card').exists()).toBe(false)
   })
 })
 
 describe('DailyReportTopicSection — 泳道趋势区挂载（lane-trend-overview）', () => {
-  it('FD-16: active 话题泳道展开时，趋势区渲染于当日明细与节点图之前，props 传递正确', () => {
+  it('FD-16: active 话题泳道展开时，趋势区渲染于当日明细之前，props 传递正确', () => {
     const wrapper = mountSection()
     const body = wrapper.find('.drm-topic__body')
     expect(body.exists()).toBe(true)
@@ -414,14 +385,12 @@ describe('DailyReportTopicSection — 泳道趋势区挂载（lane-trend-overvie
     const trend = wrapper.find('[data-testid="lane-trend-overview"]')
     expect(trend.exists()).toBe(true)
 
-    // DOM 顺序：趋势区第 1 → 当日 section 明细第 2 → 节点图（MiniLifeline）第 3
+    // DOM 顺序：趋势区第 1 → 当日 section 明细第 2（折线/节点图已整体退役，正文是最后一块）
     const nodes = Array.from(body.element.children)
     expect(nodes[0]).toBe(trend.element)
     const sectionsIndex = nodes.findIndex(node => node.classList.contains('drm-topic__sections'))
-    const lifelineElement = wrapper.findComponent({ name: 'DailyReportMiniLifeline' }).element
-    const lifelineIndex = nodes.indexOf(lifelineElement)
     expect(sectionsIndex).toBeGreaterThan(0)
-    expect(lifelineIndex).toBeGreaterThan(sectionsIndex)
+    expect(sectionsIndex).toBe(nodes.length - 1)
 
     const trendComponent = wrapper.findComponent({ name: 'LaneTrendOverview' })
     expect(trendComponent.props('topicId')).toBe(5)
@@ -455,15 +424,499 @@ describe('DailyReportTopicSection — 泳道趋势区挂载（lane-trend-overvie
     expect(wrapper.find('.drm-section-card').exists()).toBe(true)
   })
 
-  it('FD-13: 无话题 id 的分组不渲染趋势区（也未挂节点图）', () => {
+  it('FD-13: 无话题 id 的分组不渲染趋势区', () => {
     const wrapper = mountSection({
       zone: activeZone([makeSection(100, [makeThread(1)], { persistent_topic: undefined })]),
     })
     // 首组自动展开，但无 topicId → 无趋势区
     expect(wrapper.find('.drm-topic__body').exists()).toBe(true)
     expect(wrapper.find('[data-testid="lane-trend-overview"]').exists()).toBe(false)
-    expect(wrapper.findComponent({ name: 'DailyReportMiniLifeline' }).exists()).toBe(false)
     // 当日明细照常
     expect(wrapper.find('.drm-section-card').exists()).toBe(true)
+  })
+})
+
+
+// ── 关键事件标记（add-topic-key-event-markers）───────────────────────────────
+// 集成红线：标记按钮是 thread header 的兄弟节点（零嵌套按钮）、点击标记不误
+// 展开文章列表、A/B 条目独立（只变被选者）、锚点 ID 稳定不受标记影响。
+describe('DailyReportTopicSection — key-event marker actions', () => {
+  it('renders review-mode actions for current-date threads and history-mode for historical ones', () => {
+    const wrapper = mountSection()
+    const keStubs = wrapper.findAll('.ke-stub')
+    expect(keStubs.length).toBeGreaterThan(0)
+    expect(keStubs.some(el => el.attributes('data-ke-mode') === 'review')).toBe(true)
+  })
+
+  it('keying a marker does NOT toggle the thread article expansion (点击标记只发动作)', async () => {
+    const wrapper = mountSection({ zone: activeZone([makeSection(100, [makeThread(1)])]) })
+    expect(wrapper.find('.drm-thread').exists()).toBe(true)
+    expect(wrapper.find('.drm-articles').exists()).toBe(false)
+
+    // 标记动作经由 stub 冒泡为 mark 事件（.stop 防扩散）。
+    const keStub = wrapper.find('.ke-stub')
+    await keStub.trigger('click')
+    expect(wrapper.find('.drm-articles').exists()).toBe(false) // 标记点击不得展开文章
+    expect(wrapper.emitted('open-article')).toBeUndefined()
+  })
+
+  it('thread anchors stay stable regardless of marker state (t:thread.id 锚不变)', () => {
+    const wrapper = mountSection({ zone: activeZone([makeSection(100, [makeThread(7, { summary: '摘要文本' })])]) })
+    // 页边注锚容器精确断言：t:thread.id 与标记状态互不影响。
+    expect(wrapper.find('[data-mn-anchor="t:7"]').exists()).toBe(true)
+  })
+
+  it('disabled-thread logic stays independent of marker presence (无文章不误禁标记)', () => {
+    const wrapper = mountSection({
+      zone: activeZone([makeSection(100, [makeThread(1, { related_article_ids: [] })])]),
+    })
+    const keStub = wrapper.find('.ke-stub')
+    expect(keStub.exists()).toBe(true)
+  })
+})
+
+describe('DailyReportTopicSection — 泳道内主题分桶（add-intra-lane-theme-bucketing）', () => {
+  function bucketedSection(id: number, over: Partial<DailyReportSection> = {}): DailyReportSection {
+    return makeSection(id, [makeThread(id * 10)], {
+      cluster_index: 3,
+      cluster_label: `章节-${id}`,
+      bucket_title: '工具调用',
+      bucket_index: 0,
+      lane_tier: 'l1_direct',
+      ...over,
+    })
+  }
+
+  it('bucket_title 非空时渲染方向徽标', () => {
+    const wrapper = mountSection({ zone: activeZone([bucketedSection(100)]) })
+    const badge = wrapper.find('.drm-section-bucket')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('工具调用')
+    expect(badge.attributes('title')).toBe('工具调用')
+  })
+
+  it('徽标宽度上限用 em（汉字宽）而非 ch——否则 ≤12 字的方向名会被整条截断', () => {
+    // 12ch 只够 6 个汉字（ch = 数字宽 ≈ 汉字一半），2026-10-24 真机实测 6/6 徽标全被截断。
+    const source = readFileSync(`${import.meta.dirname}/DailyReportTopicSection.vue`, 'utf8')
+    const start = source.indexOf('.drm-section-bucket {')
+    const block = source.slice(start, source.indexOf('.drm-section-card__rebucket {', start))
+    expect(block).toContain('max-width: 14em')
+    expect(block).not.toMatch(/max-width:\s*\d+ch/)
+  })
+
+  it('bucket_title 为空时不渲染徽标', () => {
+    const wrapper = mountSection({ zone: activeZone([bucketedSection(100, { bucket_title: null })]) })
+    expect(wrapper.find('.drm-section-bucket').exists()).toBe(false)
+  })
+
+  it('组内只有一条 section 但带桶名时仍渲染章节标题', () => {
+    const wrapper = mountSection({ zone: activeZone([bucketedSection(100)]) })
+    const title = wrapper.find('.drm-section-card__title')
+    expect(title.exists()).toBe(true)
+    expect(title.text()).toBe('章节-100')
+  })
+
+  it('单条未分桶 section 不渲染章节标题（历史行为不变）', () => {
+    const wrapper = mountSection({
+      zone: activeZone([bucketedSection(100, { bucket_title: null, bucket_index: 0 })]),
+    })
+    expect(wrapper.find('.drm-section-card__title').exists()).toBe(false)
+  })
+
+  it('算法桶显示重新分桶按钮，watch 物化组隐藏', () => {
+    const algo = mountSection({ zone: activeZone([bucketedSection(100)]) })
+    expect(algo.find('.drm-section-card__rebucket').exists()).toBe(true)
+
+    for (const tier of ['watch_keyword', 'watch_sentence']) {
+      const watch = mountSection({
+        zone: briefsZone([bucketedSection(100, { lane_tier: tier, bucket_title: null })]),
+      })
+      expect(watch.find('.drm-section-card__rebucket').exists()).toBe(false)
+    }
+  })
+
+  it('重分桶进行中按钮置灰且 aria-busy（重复提交保护）', () => {
+    const wrapper = mountSection({ zone: activeZone([bucketedSection(100)]), rebucketSectionId: 100 })
+    const button = wrapper.find('.drm-section-card__rebucket')
+    expect(button.attributes('disabled')).toBeDefined()
+    expect(button.attributes('aria-busy')).toBe('true')
+  })
+
+  it('点按钮先弹二次确认，确认后才 emit rebucket', async () => {
+    const wrapper = mountSection({ zone: activeZone([bucketedSection(100)]) })
+    await wrapper.find('.drm-section-card__rebucket').trigger('click')
+    await nextTick()
+
+    const { state, settle } = useConfirm()
+    expect(state.value?.open).toBe(true)
+    expect(state.value?.message).toContain('替换该天该泳道的主题分桶')
+    expect(wrapper.emitted('rebucket')).toBeUndefined()
+
+    settle(state.value!.id, false)
+    await nextTick()
+    expect(wrapper.emitted('rebucket')).toBeUndefined()
+
+    await wrapper.find('.drm-section-card__rebucket').trigger('click')
+    await nextTick()
+    settle(useConfirm().state.value!.id, true)
+    await flushPromises()
+    expect(wrapper.emitted('rebucket')).toEqual([[100]])
+  })
+
+  it('焦点锚点失效时回退到别名指向的组头 section', async () => {
+    const wrapper = mountSection({
+      zone: activeZone([bucketedSection(201)]),
+      sectionAliases: new Map([[100, 201]]),
+    })
+    // 组件用 document.getElementById 定位锚点 → 必须真正挂进 document。
+    document.body.appendChild(wrapper.element)
+    const scrollIntoView = vi.fn()
+    const target = wrapper.find('#report-section-201').element as HTMLElement
+    target.scrollIntoView = scrollIntoView
+
+    await wrapper.setProps({ focusSectionId: 100 })
+    await flushPromises()
+    expect(scrollIntoView).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
+
+// ── 线索相关推荐 chip 行（replace-lane-lifeline-with-topic-events 4.5/7.3）──
+// 插入位置红线：整宽一行，紧跟 .drm-thread-row 之后、文章列表之前（不塞进两列 grid）。
+describe('DailyReportTopicSection — 线索相关推荐 chip 行', () => {
+  function relatedResponse(reportId: number, threadId: number): ThreadRelationsResponse {
+    return {
+      report_id: reportId,
+      days: 7,
+      window_start: '2026-06-19',
+      window_end: '2026-06-25',
+      status: 'ready',
+      threads: {
+        [String(threadId)]: [{
+          thread_id: 9001,
+          title: '早前铺垫过的同一条线',
+          summary: '历史摘要',
+          period_date: '2026-06-20',
+          score: 0.91,
+          level: 'strong',
+          confirmed: true,
+          source_article: { id: 555, title: '来源文章', feed: 'feed', published_at: null },
+        }],
+      },
+      total: 1,
+      skipped_no_embedding: 0,
+    }
+  }
+
+  it('chip 行位于 .drm-thread-row 之后、文章列表之前，且全宽（不进两列 grid）', async () => {
+    relations.byReport.set(70, relatedResponse(70, 1))
+    const wrapper = mountSection({ reportId: 70, zone: activeZone([makeSection(100, [makeThread(1)])]) })
+    await flushPromises()
+
+    const thread = wrapper.find('.drm-thread')
+    const row = thread.find('.drm-thread-row')
+    const chipRow = thread.find('[data-testid="thread-related-1"]')
+    expect(row.exists()).toBe(true)
+    expect(chipRow.exists()).toBe(true)
+    // 兄弟关系：row 的 nextElementSibling 就是 chip 行 → 说明它在两列 grid 之外
+    expect(row.element.nextElementSibling).toBe(chipRow.element)
+    expect(row.element.contains(chipRow.element)).toBe(false)
+    expect(thread.element.contains(chipRow.element)).toBe(true)
+  })
+
+  it('无相关事件的线索不渲染 chip 行（不占位、不写空态文案）', async () => {
+    const wrapper = mountSection({ reportId: 71, zone: activeZone([makeSection(100, [makeThread(1)])]) })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="thread-related-1"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('暂无相关')
+    // 线索本体不受影响
+    expect(wrapper.find('.drm-thread__header').text()).toContain('线索1')
+  })
+
+  it('展开话题卡片即按 (reportId, days) 请求一次（覆盖整份日报）', async () => {
+    relations.getThreadRelations.mockClear()
+    mountSection({ reportId: 72, zone: activeZone([makeSection(100, [makeThread(1)])]) })
+    await flushPromises()
+    expect(relations.getThreadRelations).toHaveBeenCalledTimes(1)
+    expect(relations.getThreadRelations).toHaveBeenCalledWith(72, { days: 7 })
+  })
+})
+
+// ── 分区级档位工具条（review R-3）：档位不在线索行里，否则无候选的线索行会留下空行 ──
+describe('DailyReportTopicSection — 相关线索档位工具条', () => {
+  function emptyEntry(reportId: number, days: number) {
+    return {
+      success: true as const,
+      data: {
+        report_id: reportId,
+        days,
+        window_start: '2026-06-19',
+        window_end: '2026-06-25',
+        status: 'empty' as const,
+        threads: {},
+        total: 0,
+        skipped_no_embedding: 0,
+      },
+    }
+  }
+
+  it('分区标题行渲染 7/30 档位控件，位于话题卡片之外（每条分区一条，不是每条线索一条）', async () => {
+    const wrapper = mountSection({
+      reportId: 73,
+      zone: activeZone([makeSection(100, [makeThread(1), makeThread(2)])]),
+    })
+    await flushPromises()
+
+    const header = wrapper.find('.drm-zone__header')
+    const seven = header.find('[data-testid="zone-related-days-7"]')
+    const thirty = header.find('[data-testid="zone-related-days-30"]')
+    expect(seven.exists()).toBe(true)
+    expect(thirty.exists()).toBe(true)
+    expect(seven.attributes('aria-pressed')).toBe('true')
+    expect(thirty.attributes('aria-pressed')).toBe('false')
+    // 不在话题卡片/线索行里，且整分区只有一个控件
+    expect(wrapper.find('.drm-topic').element.contains(seven.element)).toBe(false)
+    expect(wrapper.findAll('[data-testid="zone-related-days-7"]')).toHaveLength(1)
+    // 线索行不再携带档位控件
+    expect(wrapper.find('[data-testid="thread-related-1"]').exists()).toBe(false)
+  })
+
+  it('切到 30 天按新档位重取；切回 7 天命中缓存不再请求', async () => {
+    relations.getThreadRelations.mockImplementation(async (reportId: number, params?: { days?: number }) =>
+      emptyEntry(reportId, params?.days ?? 7))
+    const wrapper = mountSection({ reportId: 74, zone: activeZone([makeSection(100, [makeThread(1)])]) })
+    await flushPromises()
+    expect(relations.getThreadRelations).toHaveBeenCalledTimes(1)
+
+    await wrapper.find('[data-testid="zone-related-days-30"]').trigger('click')
+    await flushPromises()
+    expect(relations.getThreadRelations).toHaveBeenCalledTimes(2)
+    expect(relations.getThreadRelations).toHaveBeenLastCalledWith(74, { days: 30 })
+    expect(wrapper.find('[data-testid="zone-related-days-30"]').attributes('aria-pressed')).toBe('true')
+
+    // 切回 7 天：该档已成功加载过 → 命中缓存（spec「7/30 档位切换与缓存」）
+    await wrapper.find('[data-testid="zone-related-days-7"]').trigger('click')
+    await flushPromises()
+    expect(relations.getThreadRelations).toHaveBeenCalledTimes(2)
+  })
+
+  it('失败档再切会强制重发（工具条常驻，切档是失败后的唯一重试入口）', async () => {
+    relations.getThreadRelations.mockImplementation(async (reportId: number, params?: { days?: number }) =>
+      params?.days === 30 ? { success: false as const, error: 'boom' } : emptyEntry(reportId, 7))
+    const wrapper = mountSection({ reportId: 75, zone: activeZone([makeSection(100, [makeThread(1)])]) })
+    await flushPromises()
+
+    await wrapper.find('[data-testid="zone-related-days-30"]').trigger('click')
+    await flushPromises()
+    expect(relations.getThreadRelations).toHaveBeenCalledTimes(2)
+
+    await wrapper.find('[data-testid="zone-related-days-7"]').trigger('click')
+    await flushPromises()
+    expect(relations.getThreadRelations).toHaveBeenCalledTimes(2) // 7 天成功档命中缓存
+
+    await wrapper.find('[data-testid="zone-related-days-30"]').trigger('click')
+    await flushPromises()
+    expect(relations.getThreadRelations).toHaveBeenCalledTimes(3) // 错误档重发
+  })
+
+  it('报告切换时清掉旧报告的推荐缓存（resetLocal 接到 reportId 变化）', async () => {
+    relations.getThreadRelations.mockImplementation(async (reportId: number, params?: { days?: number }) =>
+      emptyEntry(reportId, params?.days ?? 7))
+    const wrapper = mountSection({ reportId: 76, zone: activeZone([makeSection(100, [makeThread(1)])]) })
+    await flushPromises()
+    expect(relations.getThreadRelations).toHaveBeenCalledTimes(1)
+
+    // 同一组件实例换报告（reader 同时下发新 reportId + period_date）：缓存被清、重取新报告
+    await wrapper.setProps({ reportId: 77, reportDate: '2026-06-27T12:00:00Z' })
+    await flushPromises()
+    expect(relations.getThreadRelations).toHaveBeenCalledTimes(2)
+    expect(relations.getThreadRelations).toHaveBeenLastCalledWith(77, { days: 7 })
+  })
+})
+
+// ── retire-story-adopt-event-metrics 3.3：聚簇定位锚点 / 展开定位 / 2s 单高亮 ──
+
+describe('DailyReportTopicSection — 聚簇定位锚点与高亮（D14）', () => {
+  it('当前正文分支：thread 容器带稳定锚点 report-thread-{id} 与程序聚焦 tabindex；事件线标识已退役', async () => {
+    const wrapper = mountSection({ zone: activeZone([makeSection(100, [makeThread(1, { tag_ids: [55] })])]) })
+    await nextTick() // active 首组挂载即自动展开
+    const anchor = wrapper.find('#report-thread-1')
+    expect(anchor.exists()).toBe(true)
+    expect(anchor.classes()).toContain('drm-thread')
+    expect(anchor.attributes('tabindex')).toBe('-1')
+    // 事件线身份不再外透（D14）：thread 容器无 data-story-id
+    expect(anchor.attributes('data-story-id')).toBeUndefined()
+  })
+
+  it('locateThread：折叠组先展开，滚到/聚焦/点亮 DOM 首条属于该聚簇的线程（非最小 thread id）；2s 边界清理', async () => {
+    vi.useFakeTimers()
+    const scrollIntoView = vi.fn()
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus')
+    const originalScroll = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrollIntoView as never
+    let wrapper: ReturnType<typeof mountSection> | undefined
+    try {
+      // briefs 分区无自动展开；同簇两条线程 DOM 序 30 → 20，定位 30 而非最小 id 20
+      const zone = briefsZone([makeSection(100, [makeThread(30, { tag_ids: [55] }), makeThread(20, { tag_ids: [55] })])])
+      wrapper = mountSection({ zone })
+      // 组件用 document.getElementById 定位锚点 → 必须真正挂进 document（同 focusSectionId 用例）。
+      document.body.appendChild(wrapper.element)
+      expect(wrapper.find('#report-thread-30').exists()).toBe(false)
+
+      await wrapper.setProps({ locateThread: { clusterId: 55, nonce: 1 } })
+      await nextTick()
+      await nextTick()
+      expect(wrapper.find('#report-thread-30').exists()).toBe(true)
+      expect(scrollIntoView).toHaveBeenCalledTimes(1)
+      expect(focus).toHaveBeenCalledWith(expect.objectContaining({ preventScroll: true }))
+      expect(wrapper.find('#report-thread-30').classes()).toContain('drm-thread--lit')
+      expect(wrapper.find('#report-thread-20').classes()).not.toContain('drm-thread--lit')
+
+      vi.advanceTimersByTime(1999)
+      expect(wrapper.find('#report-thread-30').classes()).toContain('drm-thread--lit')
+      vi.advanceTimersByTime(1)
+      await nextTick()
+      expect(wrapper.find('#report-thread-30').classes()).not.toContain('drm-thread--lit')
+    } finally {
+      wrapper?.unmount()
+      if (originalScroll) Element.prototype.scrollIntoView = originalScroll
+      else delete (Element.prototype as never as Record<string, unknown>).scrollIntoView
+      focus.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('重复定位：后一次替换高亮，始终至多一个点亮目标', async () => {
+    const zone = briefsZone([makeSection(100, [makeThread(30, { tag_ids: [55] }), makeThread(31, { tag_ids: [66] })])])
+    const wrapper = mountSection({ zone })
+    document.body.appendChild(wrapper.element)
+    await wrapper.setProps({ locateThread: { clusterId: 55, nonce: 1 } })
+    await nextTick()
+    await nextTick()
+    expect(wrapper.find('#report-thread-30').classes()).toContain('drm-thread--lit')
+
+    await wrapper.setProps({ locateThread: { clusterId: 66, nonce: 2 } })
+    await nextTick()
+    await nextTick()
+    expect(wrapper.find('#report-thread-31').classes()).toContain('drm-thread--lit')
+    expect(wrapper.find('#report-thread-30').classes()).not.toContain('drm-thread--lit')
+    wrapper.unmount()
+  })
+
+  it('切 report：清理高亮与计时器（无旧报回跳）', async () => {
+    const zone = briefsZone([makeSection(100, [makeThread(30, { tag_ids: [55] })])])
+    const wrapper = mountSection({ zone })
+    document.body.appendChild(wrapper.element)
+    await wrapper.setProps({ locateThread: { clusterId: 55, nonce: 1 } })
+    await nextTick()
+    await nextTick()
+    expect(wrapper.find('#report-thread-30').classes()).toContain('drm-thread--lit')
+
+    await wrapper.setProps({ reportDate: '2026-06-27T12:00:00Z' })
+    await nextTick()
+    expect(wrapper.find('#report-thread-30').classes()).not.toContain('drm-thread--lit')
+    wrapper.unmount()
+  })
+
+  it('本分区无对应簇（目标在其它 zone）：静默不动作，不展开不滚动', async () => {
+    const scrollIntoView = vi.fn()
+    const originalScroll = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrollIntoView as never
+    try {
+      const zone = briefsZone([makeSection(100, [makeThread(30, { tag_ids: [55] })])])
+      const wrapper = mountSection({ zone })
+      await wrapper.setProps({ locateThread: { clusterId: 999, nonce: 1 } })
+      await nextTick()
+      await nextTick()
+      expect(wrapper.find('#report-thread-30').exists()).toBe(false) // 仍折叠
+      expect(scrollIntoView).not.toHaveBeenCalled()
+      expect(wrapper.findAll('.drm-thread--lit')).toHaveLength(0)
+    } finally {
+      if (originalScroll) Element.prototype.scrollIntoView = originalScroll
+      else delete (Element.prototype as never as Record<string, unknown>).scrollIntoView
+    }
+  })
+
+  it('卸载清理计时器（不留迟到高亮回调）', async () => {
+    vi.useFakeTimers()
+    try {
+      const zone = briefsZone([makeSection(100, [makeThread(30, { tag_ids: [55] })])])
+      const wrapper = mountSection({ zone })
+      await wrapper.setProps({ locateThread: { clusterId: 55, nonce: 1 } })
+      await nextTick()
+      await nextTick()
+      wrapper.unmount()
+      expect(() => vi.advanceTimersByTime(3000)).not.toThrow()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('DailyReportTopicSection — 疑似 AI 生成标记与排序后置', () => {
+  /** 后端投影形态的线索文章（顺序 = related_article_ids 顺序，已由后端排疑似末）。 */
+  function projected(
+    ids: number[],
+    statuses: Record<number, 'suspect' | 'not_ai' | 'unknown'> = {},
+  ): NonNullable<DailyReportThread['articles']> {
+    return ids.map(id => ({
+      id,
+      title: `文章${id}`,
+      ai_detection_status: statuses[id] ?? 'unknown',
+      ai_detection_score: statuses[id] === 'suspect' ? 0.9 : 0.1,
+    }))
+  }
+
+  /** 一条线索 + 后端投影（标题与判定一次到位，前端不再逐篇请求）。 */
+  function expandWith(ids: number[], statuses: Record<number, 'suspect' | 'not_ai' | 'unknown'> = {}) {
+    const zone = activeZone([makeSection(100, [makeThread(1, {
+      related_article_ids: ids,
+      articles: projected(ids, statuses),
+    })])])
+    return mountSection({ zone })
+  }
+
+  /** 旧响应：无 articles 投影，只有标题缓存（回退路径）。 */
+  function expandLegacy(ids: number[], statuses: Record<number, 'suspect' | 'not_ai' | 'unknown'> = {}) {
+    const zone = activeZone([makeSection(100, [makeThread(1, { related_article_ids: ids })])])
+    const articleEntries = new Map(ids.map(id => [id, {
+      status: 'success' as const,
+      data: { title: `文章${id}`, aiDetectionStatus: statuses[id] ?? 'unknown' },
+    }]))
+    return mountSection({ zone, articleEntries })
+  }
+
+  it('疑似文章带标记；未判定与已确认非 AI 不渲染标记、不写占位文案', async () => {
+    const wrapper = expandWith([101, 102, 103], { 101: 'suspect', 102: 'not_ai', 103: 'unknown' })
+    await wrapper.find('.drm-thread__header').trigger('click')
+    expect(wrapper.find('[data-testid="report-article-suspect-101"]').text()).toBe('疑似 AI 生成')
+    expect(wrapper.find('[data-testid="report-article-suspect-102"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="report-article-suspect-103"]').exists()).toBe(false)
+    // 不占位、不写「未检测」类文案
+    expect(wrapper.find('.drm-articles').text()).not.toContain('未检测')
+  })
+
+  it('顺序跟随后端投影（已排疑似末），前端不再二次重排、不再逐篇取详情、成员与「N 篇」计数不变', async () => {
+    // 后端已给顺序：[101, 103, 105, 102(疑似), 104(疑似)]
+    const order = [101, 103, 105, 102, 104]
+    const wrapper = expandWith(order, { 102: 'suspect', 104: 'suspect' })
+    await wrapper.find('.drm-thread__header').trigger('click')
+    const rendered = wrapper.findAll('.drm-article').map(row => row.text().replace(/^文章(\d+).*/, '$1'))
+    expect(rendered).toEqual(['101', '103', '105', '102', '104'])
+    // 后端投影自带标题：不再发 ensureArticles（N+1 消失）
+    expect(wrapper.emitted('ensureArticles')).toBeUndefined()
+    // 集合是标签对应文章的并集，不因标记剔除任何文章；计数仍取 related_article_ids.length
+    expect(wrapper.findAll('.drm-article')).toHaveLength(5)
+    expect(wrapper.find('.drm-thread__count').text()).toContain('5 篇')
+  })
+
+  it('旧响应无 articles 投影：回退标题缓存渲染、不做前端重排（保持旧行为）', async () => {
+    const wrapper = expandLegacy([101, 102, 103], { 102: 'suspect' })
+    await wrapper.find('.drm-thread__header').trigger('click')
+    const rendered = wrapper.findAll('.drm-article').map(row => row.text().replace(/^文章(\d+).*/, '$1'))
+    expect(rendered).toEqual(['101', '102', '103'])
+    expect(wrapper.find('[data-testid="report-article-suspect-102"]').exists()).toBe(true)
+    expect(wrapper.emitted('ensureArticles')?.[0]).toEqual([[101, 102, 103]])
   })
 })

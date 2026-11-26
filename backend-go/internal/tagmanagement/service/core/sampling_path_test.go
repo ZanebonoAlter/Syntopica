@@ -15,8 +15,9 @@ import (
 	"syntopica-backend/internal/platform/database"
 )
 
-// capturingRouter 实现 tagChatRouter：捕获每次 Chat 调用全部消息内容后恒返错，
-// 让 tagArticle 走 heuristic fallback 并把标签 persist 进测试 DB。
+// capturingRouter 实现 tagChatRouter：捕获每次 Chat 调用全部消息内容后恒返错。
+// retire-heuristic-tag-fallback 起提取失败不再兜底：编排层直接上抛错误，文章
+// 保持无标签（不写任何标签行）——用例据此断言「失败即失败」。
 type capturingRouter struct {
 	mu      sync.Mutex
 	prompts []string
@@ -56,6 +57,7 @@ func setupSamplingPathTest(t *testing.T, router *capturingRouter) *gorm.DB {
 // 4700 runes 叙事文按头[0:2000)/中[2350:3350)/尾[3700:4700) 采样，两个"洞"区
 // 被跳过——若实现退化回旧掐头 4000 行为，洞甲必然进入 prompt，下面两条
 // NotContains 就是本测试的关键证伪断言（long-form-sampled-tagging 2.4）。
+// 提取调用恒失败 → 编排层上抛错误且文章不写任何标签行（retire-heuristic-tag-fallback）。
 func TestTagArticleLegacyMonoPathSamplesHeadMidTail(t *testing.T) {
 	router := &capturingRouter{}
 	db := setupSamplingPathTest(t, router)
@@ -76,7 +78,13 @@ func TestTagArticleLegacyMonoPathSamplesHeadMidTail(t *testing.T) {
 	}
 	require.NoError(t, db.Create(&article).Error)
 
-	require.NoError(t, TagArticle(context.Background(), &article, "测试Feed", ""))
+	// 提取恒失败：不再兜底，错误上抛（打标任务失败 → 队列退避重试）。
+	err := TagArticle(context.Background(), &article, "测试Feed", "")
+	require.Error(t, err, "extraction failure must be surfaced, not swallowed by a fallback")
+
+	var tagRows int64
+	require.NoError(t, db.Model(&models.ArticleTopicTag{}).Where("article_id = ?", article.ID).Count(&tagRows).Error)
+	require.Zero(t, tagRows, "failed extraction must leave the article untagged")
 
 	require.NotEmpty(t, router.prompts)
 	headMark := strings.Repeat("头", 50)

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -17,15 +18,26 @@ import (
 	"gorm.io/gorm/clause"
 
 	"syntopica-backend/internal/models"
-	"syntopica-backend/internal/platform/airouter"
+	"syntopica-backend/internal/platform/aisettings"
 	"syntopica-backend/internal/platform/logging"
 	tagmodels "syntopica-backend/internal/tagmanagement/models"
 	"syntopica-backend/internal/tagmanagement/repository"
 	"syntopica-backend/internal/tagmanagement/service"
+	"syntopica-backend/internal/tagmanagement/service/related"
 )
 
 var semanticBoardLabelEmbedder service.AuxiliaryLabelEmbedder = service.DefaultAuxiliaryLabelEmbedder
 var semanticBoardUpgradeLLMFactory = service.NewDefaultSemanticBoardUpgradeLLM
+
+// invalidateMatchCache invalidates the semantic-board match cache (board
+// auxiliaries / composites / embeddings). The board embeddings cache has NO
+// TTL, so a board whose label/description changed keeps serving its old
+// vector until the cache is invalidated — the direction gate would then judge
+// against a stale embedding (board-match-cache 红线).
+//
+// It is a package-level var (same seam pattern as semanticBoardLabelEmbedder)
+// so tests can observe the invalidation without reaching into the cache.
+var invalidateMatchCache = service.InvalidateMatchCache
 
 // auxLabelServiceEmbedder allows tests to swap the embedder backing the
 // auxiliary-label service constructed in RegisterSemanticBoardRoutes
@@ -147,9 +159,15 @@ func RegisterSemanticBoardRoutes(rg *gin.RouterGroup) {
 		boards.DELETE("/:id", handler.deleteSemanticBoard)
 		boards.GET("/:id/suggest-auxiliaries", handler.suggestAuxiliariesForBoard)
 		boards.GET("/:id/articles", handler.getBoardArticles)
+		// 按日计数（archive-time-chart-range）：版块命中文章按自然日的只读聚合，供归档
+		// 时间曲线与导航条使用；口径与 /articles 主查询逐字一致。
+		boards.GET("/:id/article-daily-counts", handler.getBoardArticleDailyCounts)
 		boards.GET("/:id/source-breakdown", handler.getBoardSourceBreakdown)
 		boards.GET("/:id/health-checkup", handler.getBoardHealthCheckup)
 		boards.GET("/:id/match-detail/:tagId", handler.getTagMatchDetail)
+		// 相关事件（enable-story-cross-day-continuation）：event 标签卡按需展开时
+		// 读派生向量索引；只读、同版块、不调模型。
+		boards.GET("/:id/tags/:tagId/related-events", handler.getRelatedEvents)
 		boards.GET("/:id/composition", handler.getBoardComposition)
 		boards.POST("/:id/composition", handler.addBoardComposition)
 		boards.DELETE("/:id/composition/:auxiliary_label_id", handler.removeBoardComposition)
@@ -279,7 +297,9 @@ func (h *semanticBoardHandler) updateSemanticBoard(c *gin.Context) {
 	if desc := strings.TrimSpace(req.Description); desc != board.Description {
 		board.Description = desc
 	}
-	if board.Label != boardOrigLabel || board.Description != boardOrigDesc {
+	// 版块向量由 label + description 重算：两者任一变化都意味着旧向量作废。
+	boardVectorChanged := board.Label != boardOrigLabel || board.Description != boardOrigDesc
+	if boardVectorChanged {
 		input := semanticBoardEmbeddingInput(board.Label, board.Description)
 		pgVector, _, err := semanticBoardLabelEmbedder(c.Request.Context(), input, service.AuxiliaryLabelEmbeddingModeStorage)
 		if err != nil {
@@ -318,6 +338,12 @@ func (h *semanticBoardHandler) updateSemanticBoard(c *gin.Context) {
 	if err := h.db.WithContext(c.Request.Context()).Save(&board).Error; err != nil {
 		respondError(c, http.StatusBadRequest, err)
 		return
+	}
+	if boardVectorChanged {
+		// 匹配输入缓存（board embeddings）无 TTL —— 改完版块名/描述必须失效，
+		// 否则方向校验继续用旧向量。不自动重跑匹配（topic_tag_board_labels
+		// 保持旧结果，回填是用户的显式动作）。
+		invalidateMatchCache()
 	}
 	respondOK(c, gin.H{"id": board.ID})
 }
@@ -978,20 +1004,29 @@ func auxiliaryToDTO(label models.SemanticLabel) semanticBoardAuxiliaryDTO {
 func (h *semanticBoardHandler) getAllConfigs(c *gin.Context) gin.H {
 	matchConfig := semanticBoardMatchConfigToMap(service.NewSemanticBoardMatchingService(h.db).LoadConfig(c.Request.Context()))
 	upgradeConfig := semanticBoardUpgradeConfigToMap(service.NewSemanticBoardUpgradeService(h.db, nil, nil).LoadUpgradeConfig(c.Request.Context()))
-	merged := make(gin.H, len(matchConfig)+len(upgradeConfig))
+	merged := make(gin.H, len(matchConfig)+len(upgradeConfig)+1)
 	for k, v := range matchConfig {
 		merged[k] = v
 	}
 	for k, v := range upgradeConfig {
 		merged[k] = v
 	}
+	// 相关事件阈值与入板匹配参数相互独立（design D6）：缺项回退默认，坏存量
+	// 值告警后回退，GET 始终返回实际生效值。
+	merged[related.ThresholdKey] = related.LoadThreshold(h.db)
+	// 候选泳道权重（lane-heat-metric D8）：缺项 0.5、坏存量值告警回退，GET 返回实际生效值。
+	merged[aisettings.LaneHeatCandidateWeightKey] = aisettings.LoadLaneHeatCandidateWeight(h.db)
 	return merged
 }
 
 func isSemanticBoardConfigKey(key string) bool {
 	switch key {
 	case "semantic_board_match_sim_threshold", "semantic_board_match_direct_hit_rate", "semantic_board_match_direct_max_sim", "semantic_board_match_direct_max_sim_min_hits", "semantic_board_match_direct_max_sim_min_hit_rate", "semantic_board_match_min_effective_sample", "semantic_board_match_hit_rate_sim_blend", "semantic_board_match_weight_sim", "semantic_board_match_weight_density", "semantic_board_match_weighted_threshold", "semantic_board_match_max_boards", "semantic_board_match_direct_hit_min_overlap", "semantic_board_match_direct_hit_min_ratio", "semantic_board_match_direction_sim_threshold",
-		"semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cluster_distance_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_dedupe_sim_threshold", "semantic_board_upgrade_cotag_hard_limit", "semantic_board_upgrade_cluster_method":
+		"semantic_board_upgrade_ref_count_threshold", "semantic_board_upgrade_cluster_distance_threshold", "semantic_board_upgrade_cotag_window_days", "semantic_board_upgrade_cotag_top_n", "semantic_board_upgrade_cotag_dedupe_sim_threshold", "semantic_board_upgrade_cotag_hard_limit", "semantic_board_upgrade_cluster_method",
+		related.ThresholdKey,
+		// 候选泳道权重（lane-heat-metric D8）：只进当天线索热度，不参与话题生命周期；
+		// 取值校验走默认分支（有限数 [0,1]，NaN/Inf 显式拒绝）。
+		aisettings.LaneHeatCandidateWeightKey:
 		return true
 	default:
 		return false
@@ -1013,8 +1048,10 @@ func validateSemanticBoardConfigValue(key string, value string) error {
 		return nil
 	default:
 		parsed, err := strconv.ParseFloat(value, 64)
-		if err != nil || parsed < 0 || parsed > 1 {
-			return fmt.Errorf("%s must be a number between 0 and 1", key)
+		// NaN/Inf 会通过 < 0 / > 1 的比较（两者恒 false），必须显式判为非法——
+		// 相关事件阈值明确要求「有限数」，存量坏值同样不得进入生效路径。
+		if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 || parsed > 1 {
+			return fmt.Errorf("%s must be a finite number between 0 and 1", key)
 		}
 		return nil
 	}
@@ -1129,75 +1166,80 @@ func (h *semanticBoardHandler) addBoardComposition(c *gin.Context) {
 	respondOK(c, gin.H{"board_id": boardID, "auxiliary_label_id": req.AuxiliaryLabelID})
 }
 
-type scoredAuxiliary struct {
-	label      models.SemanticLabel
-	similarity float64
-}
-
+// computeAuxiliarySuggestions ranks active auxiliary labels by cosine similarity
+// to the query vector. The vector math is pushed into PostgreSQL (embedding is
+// a native pgvector column; <=> is cosine distance, same style as
+// core.FindSimilarTags) so only the requested page crosses the wire. The
+// historical Go-side full scan pulled every label's embedding as text
+// (~24KB × 16k+ rows, twice with merge_embedding) and recomputed cosine per
+// request — multi-second latency for suggest-auxiliaries on the Pi, repeated
+// on every page flip.
 func (h *semanticBoardHandler) computeAuxiliarySuggestions(ctx context.Context, queryVector []float64, search string, excludeBoardID uint, page, pageSize int) (*suggestAuxiliariesResponse, error) {
-	query := h.db.WithContext(ctx).Where("label_type = ? AND status = ?", "auxiliary", "active")
-	if s := strings.TrimSpace(search); s != "" {
-		query = query.Where("LOWER(label) LIKE ? OR LOWER(slug) LIKE ?", "%"+strings.ToLower(s)+"%", "%"+strings.ToLower(service.Slugify(s))+"%")
+	queryVec := service.FloatsToPgVector(queryVector)
+
+	applyFilters := func(q *gorm.DB) *gorm.DB {
+		q = q.Model(&models.SemanticLabel{}).
+			Where("label_type = ? AND status = ? AND embedding IS NOT NULL", "auxiliary", "active")
+		if s := strings.TrimSpace(search); s != "" {
+			q = q.Where("LOWER(label) LIKE ? OR LOWER(slug) LIKE ?", "%"+strings.ToLower(s)+"%", "%"+strings.ToLower(service.Slugify(s))+"%")
+		}
+		// Exclude labels already in the board's composition
+		if excludeBoardID > 0 {
+			q = q.Where("id NOT IN (?)", h.db.Table("board_composition").Select("auxiliary_label_id").Where("board_id = ?", excludeBoardID))
+		}
+		return q
 	}
 
-	// Exclude labels already in the board's composition
-	if excludeBoardID > 0 {
-		query = query.Where("id NOT IN (?)", h.db.Table("board_composition").Select("auxiliary_label_id").Where("board_id = ?", excludeBoardID))
-	}
-
-	var labels []models.SemanticLabel
-	if err := query.Find(&labels).Error; err != nil {
+	var total int64
+	if err := applyFilters(h.db.WithContext(ctx)).Count(&total).Error; err != nil {
 		return nil, err
 	}
 
-	scored := make([]scoredAuxiliary, 0, len(labels))
-	for _, label := range labels {
-		if label.Embedding == nil || *label.Embedding == "" {
-			continue
-		}
-		vec, err := service.ParsePgVector(*label.Embedding)
-		if err != nil {
-			continue
-		}
-		sim, err := airouter.CosineSimilarity(queryVector, vec)
-		if err != nil {
-			continue
-		}
-		scored = append(scored, scoredAuxiliary{label: label, similarity: sim})
+	var rows []auxSuggestionRow
+	if err := applyFilters(h.db.WithContext(ctx)).
+		Select("id, label, slug, aliases, ref_count, 1 - (embedding <=> ?::vector) AS similarity", queryVec).
+		Order("similarity DESC, id ASC").
+		Limit(pageSize).Offset((page - 1) * pageSize).
+		Scan(&rows).Error; err != nil {
+		return nil, err
 	}
 
-	// Sort by similarity descending
-	sort.Slice(scored, func(i, j int) bool {
-		if scored[i].similarity == scored[j].similarity {
-			return scored[i].label.ID < scored[j].label.ID
-		}
-		return scored[i].similarity > scored[j].similarity
-	})
-
-	total := len(scored)
-	start := (page - 1) * pageSize
-	if start > total {
-		start = total
-	}
-	end := start + pageSize
-	if end > total {
-		end = total
-	}
-
-	items := make([]suggestedAuxiliaryDTO, 0, end-start)
-	for i := start; i < end; i++ {
-		s := scored[i]
+	items := make([]suggestedAuxiliaryDTO, 0, len(rows))
+	for _, row := range rows {
 		items = append(items, suggestedAuxiliaryDTO{
-			ID:         s.label.ID,
-			Label:      s.label.Label,
-			Slug:       s.label.Slug,
-			Aliases:    s.label.Aliases,
-			RefCount:   s.label.RefCount,
-			Similarity: roundSimilarity(s.similarity),
+			ID:         row.ID,
+			Label:      row.Label,
+			Slug:       row.Slug,
+			Aliases:    parseAuxAliases(row.Aliases),
+			RefCount:   row.RefCount,
+			Similarity: roundSimilarity(row.Similarity),
 		})
 	}
 
-	return &suggestAuxiliariesResponse{Items: items, Total: total, Page: page, PageSize: pageSize}, nil
+	return &suggestAuxiliariesResponse{Items: items, Total: int(total), Page: page, PageSize: pageSize}, nil
+}
+
+// auxSuggestionRow scans one suggestion row produced by computeAuxiliarySuggestions.
+// Aliases is scanned raw (jsonb) and decoded defensively — a malformed value
+// degrades to an empty list instead of failing the whole request.
+type auxSuggestionRow struct {
+	ID         uint    `gorm:"column:id"`
+	Label      string  `gorm:"column:label"`
+	Slug       string  `gorm:"column:slug"`
+	Aliases    []byte  `gorm:"column:aliases"`
+	RefCount   int     `gorm:"column:ref_count"`
+	Similarity float64 `gorm:"column:similarity"`
+}
+
+func parseAuxAliases(raw []byte) []string {
+	if len(raw) == 0 {
+		return []string{}
+	}
+	var out []string
+	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
+		return []string{}
+	}
+	return out
 }
 
 func parsePaginationParams(c *gin.Context) (page, pageSize int) {

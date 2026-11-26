@@ -47,6 +47,10 @@ func setupMarginNoteHandlerTest(t *testing.T) *gin.Engine {
 		&repository.ReportAnnotation{},
 		&repository.AnnotationQA{},
 		&repository.TermNote{},
+		// GetReportByID 解析重点 story 身份需要 board_stories（surface-story-
+		// heat-in-report-top 读路径新增依赖）；注解创建前的 report 存在性检查
+		// 走同一条读路径。
+		&repository.BoardStory{},
 	))
 	// Install (never restore) the repository singleton, mirroring the other
 	// handler tests. database.DB is what airouter.NewStore falls back to for
@@ -202,7 +206,7 @@ func TestListReportAnnotations_WebSearchStatusContract(t *testing.T) {
 		AnnotationID: annotationID, Question: "新问题", Answer: "新回答",
 		CitedArticleIDs: repository.JSON("[]"), ExtractedTerms: repository.JSON("[]"),
 		WebSearchStatus: &empty,
-		Operation: "daily_report.margin_note_qa",
+		Operation:       "daily_report.margin_note_qa",
 	}))
 
 	code, body := doJSON(engine, http.MethodGet, fmt.Sprintf("/api/daily-reports/%d/annotations", reportID), nil)

@@ -53,10 +53,11 @@ func cosineDistance(a, b []float64) float64 {
 }
 
 // topicAnchor pairs a topic id with its parsed matching anchor vector: the
-// Centroid (mean of recent sections) when present, degrading to the Embedding
-// first-section 首义向量 otherwise. This is the lane-driven matching anchor
-// (supersedes the old first-section-only embedding). Topics with neither a
-// parseable centroid nor embedding are dropped.
+// Centroid (首义锚定+滚动均值混合，见 ComputeTopicCentroid) when present,
+// degrading to the Embedding first-section 首义向量 otherwise. This is the
+// lane-driven matching anchor (supersedes the old first-section-only
+// embedding). Topics with neither a parseable centroid nor embedding are
+// dropped.
 type topicAnchor struct {
 	ID     uint
 	Anchor []float64

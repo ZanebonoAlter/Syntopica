@@ -24,7 +24,8 @@ type RSSParser struct {
 
 func NewRSSParser() *RSSParser {
 	return &RSSParser{
-		client: httpclient.New(httpclient.WithTimeout(20 * time.Second)),
+		// feed 拉取属外部内容抓取链路（narrow-outbound-proxy-scope）：跟随全局出站代理。
+		client: httpclient.New(httpclient.WithTimeout(20*time.Second), httpclient.WithCrawlScope()),
 	}
 }
 
@@ -38,8 +39,12 @@ type ParsedFeed struct {
 }
 
 type ParsedEntry struct {
-	Title       string
-	Link        string
+	Title string
+	Link  string
+	// Description is the raw source description, NOT cleaned: some feeds put
+	// the whole article HTML into it. Cleaning happens at the ingestion
+	// boundary (feed_service.buildArticleFromEntry), so every caller of the
+	// parser sees the source document verbatim.
 	Description string
 	Content     string
 	PubDate     *time.Time

@@ -168,6 +168,71 @@ func (s *LifelineContextService) HealMissing(ctx context.Context, granularity st
 	return nil
 }
 
+// HealMissingTolerant is the fault-tolerant variant of HealMissing used by the
+// daily-report tail step (daily-report-lifeline-heal 决策②): per-(topic,
+// period) failures are counted and skipped instead of aborting the whole
+// sweep, so one bad topic cannot defer every other topic's backfill to the
+// next day. A lister failure still aborts (no topics known → nothing to
+// heal). Returns the number of (topic, period) units healed and failed.
+func (s *LifelineContextService) HealMissingTolerant(ctx context.Context, granularity string, now time.Time, lister TopicLister) (healed int, failed int, err error) {
+	ctx, span := otel.Tracer(tracing.ServiceName).Start(ctx, "LifelineContextService.HealMissingTolerant")
+	defer span.End()
+	topicIDs, err := lister.ListActiveTopicIDs(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("heal missing tolerant: list topics: %w", err)
+	}
+
+	currentPeriod := PeriodForGranularity(now, granularity)
+
+	for _, topicID := range topicIDs {
+		// Which periods have section data? Read failures only cost this topic.
+		dates, err := s.sectionReader.SectionDates(ctx, topicID)
+		if err != nil {
+			failed++
+			continue
+		}
+		dataPeriods := make(map[string]bool)
+		for _, d := range dates {
+			dataPeriods[PeriodForGranularity(d, granularity)] = true
+		}
+
+		// Which periods already have context rows? Same per-topic tolerance.
+		existing, err := s.repo.ListTopicLifelineContextsByGranularity(ctx, topicID, granularity)
+		if err != nil {
+			failed++
+			continue
+		}
+		have := make(map[string]bool, len(existing))
+		for _, e := range existing {
+			have[e.Period] = true
+		}
+
+		// Collect missing periods (have data, no context yet, not after current).
+		var missing []string
+		for p := range dataPeriods {
+			if have[p] {
+				continue
+			}
+			if ComparePeriods(p, currentPeriod) > 0 {
+				continue
+			}
+			missing = append(missing, p)
+		}
+
+		// Stable order for deterministic backfill; one failed period must not
+		// stop the remaining periods of this topic (and later topics).
+		sort.Strings(missing)
+		for _, p := range missing {
+			if err := s.refreshArchive(ctx, topicID, granularity, p, now); err != nil {
+				failed++
+				continue
+			}
+			healed++
+		}
+	}
+	return healed, failed, nil
+}
+
 // ArchivePrune deletes rows older than the retention policy:
 //
 //	week: keep last 8 weeks

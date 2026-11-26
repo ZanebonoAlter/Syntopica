@@ -35,7 +35,6 @@ type ExtractionResult struct {
 	Tags    []TopicTag
 	Skipped []string // Tags that were skipped during validation
 	Errors  []string
-	Source  string // "llm" or "heuristic"
 }
 
 const defaultTagExtractionScore = 0.7
@@ -48,13 +47,28 @@ func (te *TagExtractor) ExtractTags(ctx context.Context, input ExtractionInput) 
 
 	eventPersonTags, keywordTags, err := te.extractMergedCandidates(ctx, input)
 	if err != nil {
-		return te.extractWithHeuristic(input, err)
+		// 提取失败不降级（retire-heuristic-tag-fallback）：规则词兜底路径已整体
+		// 退役，错误直接上抛编排层 → 打标任务失败 → 队列退避重试。绝不产出
+		// 任何兜底候选，避免失败被伪装成成功、文章永不再重打。
+		return nil, err
 	}
 
 	// 空 keyword / 空 event-person 数组是「宁缺毋滥」提示词下的合法结论：
-	// 只记观察信息，不再用 heuristicKeywordCandidates 回填规则词候选
+	// 只记观察信息，不做任何规则词回填
 	// （fix-tagging-pollution：旧回填把分类名「新闻」等泛词顶进 llm 来源结果）。
 	branchErrors := make([]string, 0, 2)
+
+	// 示例词泄漏护栏（guard-tag-exemplar-leakage）：本地小模型会照抄 prompt 的
+	// few-shot 正例——命中示例词集合且模型可见输入（Title+摘要采样）无依据的
+	// 候选在解析出口丢弃，丢弃记入 errors 供观测。
+	visibleInput := input.Title + "\n" + input.Summary
+	var droppedExemplars []string
+	eventPersonTags, droppedEP := guardExemplarLeakage(eventPersonTags, visibleInput, mergedExemplarSlugs)
+	keywordTags, droppedKW := guardExemplarLeakage(keywordTags, visibleInput, mergedExemplarSlugs)
+	droppedExemplars = append(append(droppedExemplars, droppedEP...), droppedKW...)
+	for _, d := range droppedExemplars {
+		branchErrors = append(branchErrors, fmt.Sprintf("exemplar leakage guard dropped %q (no evidence in visible input)", d))
+	}
 	if len(eventPersonTags) == 0 {
 		branchErrors = append(branchErrors, "event/person extraction: empty event/person array (accepted as-is)")
 	}
@@ -65,12 +79,11 @@ func (te *TagExtractor) ExtractTags(ctx context.Context, input ExtractionInput) 
 	candidates := mergeExtractedTags(eventPersonTags, keywordTags)
 
 	if len(candidates) == 0 {
-		// 零候选同样原样返回（Source=llm）：不降级 heuristic——旧降级会让
+		// 零候选同样原样返回：不降级规则词——旧降级会让
 		// 空结果文章顶上规则词标签，使 tagger 层兜底收窄形同虚设。
 		return &ExtractionResult{
 			Tags:   []TopicTag{},
 			Errors: branchErrors,
-			Source: "llm",
 		}, nil
 	}
 
@@ -96,7 +109,6 @@ func (te *TagExtractor) ExtractTags(ctx context.Context, input ExtractionInput) 
 		Tags:    tags,
 		Skipped: skipped,
 		Errors:  errs,
-		Source:  "llm",
 	}, nil
 }
 
@@ -105,7 +117,7 @@ func (te *TagExtractor) ExtractTags(ctx context.Context, input ExtractionInput) 
 func (te *TagExtractor) extractMergedCandidates(ctx context.Context, input ExtractionInput) ([]ExtractedTag, []ExtractedTag, error) {
 	userPrompt := buildExtractionUserPrompt(input)
 
-	maxTokens := 2048
+	maxTokens := extractionMaxOutputTokens
 	temperature := 0.2
 	metadata := map[string]any{
 		"operation": "tag_extraction_merged",
@@ -122,20 +134,28 @@ func (te *TagExtractor) extractMergedCandidates(ctx context.Context, input Extra
 	}
 
 	const maxRetries = 3
+	// 影子模式（normalize-event-subject-entities D2）：同一次调用额外请求
+	// subject_desc；off 态 prompt/schema 逐字不变、零新增字段。
+	systemPrompt := buildMergedExtractionPrompt()
+	schema := mergedTagExtractionSchema()
+	if EntitySubjectShadowEnabled() {
+		systemPrompt = buildMergedExtractionPromptShadow()
+		schema = mergedTagExtractionSchemaShadow()
+	}
 	var lastErr error
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		result, err := te.router.Chat(ctx, airouter.ChatRequest{
 			Operation:  "tagmanagement.extractor_enhanced",
 			Capability: airouter.CapabilityTopicTagging,
 			Messages: []airouter.Message{
-				{Role: "system", Content: buildMergedExtractionPrompt()},
+				{Role: "system", Content: systemPrompt},
 				{Role: "user", Content: userPrompt},
 			},
 			Temperature: &temperature,
 			MaxTokens:   &maxTokens,
 			Metadata:    metadata,
 			JSONMode:    true,
-			JSONSchema:  mergedTagExtractionSchema(),
+			JSONSchema:  schema,
 		})
 		if err != nil {
 			lastErr = fmt.Errorf("AI extraction failed (attempt %d/%d): %w", attempt, maxRetries, err)
@@ -228,56 +248,36 @@ func (te *TagExtractor) resolveCandidate(ctx context.Context, candidate Extracte
 		Score:           defaultTagExtractionScore,
 		Description:     strings.TrimSpace(candidate.Description),
 		AuxiliaryLabels: candidate.AuxiliaryLabels,
+		Fingerprint:     candidate.Fingerprint,
+		SubjectDesc:     candidate.SubjectDesc,
 	}, false, nil
-}
-
-// extractWithHeuristic falls back to rule-based extraction
-func (te *TagExtractor) extractWithHeuristic(input ExtractionInput, originalErr error) (*ExtractionResult, error) {
-	tags := ExtractTopics(input)
-	result := make([]TopicTag, len(tags))
-	for i, t := range tags {
-		// Map old 'kind' to new 'category'
-		category := "keyword"
-		if t.Kind == "entity" {
-			// Entities default to keyword category (organizations, products go here)
-			// Future: could add heuristics to detect person/event
-			category = "keyword"
-		}
-		result[i] = TopicTag{
-			Label:    t.Label,
-			Slug:     t.Slug,
-			Category: category,
-			Score:    t.Score,
-			IsNew:    true,
-		}
-	}
-	return &ExtractionResult{
-		Tags:   result,
-		Source: "heuristic",
-		Errors: []string{originalErr.Error()},
-	}, nil
 }
 
 // Helper functions
 
 // buildMergedExtractionPrompt returns the single system prompt for the merged
-// extraction call: event/person rules (auxiliary label requirements) and
-// keyword rules (description requirements) share the common rule block. It
-// replaces the former two per-branch prompts; tests cap it at 1500 runes.
+// extraction call: event rules (auxiliary label requirements) and keyword rules
+// (description requirements) share the common rule block. It replaces the
+// former two per-branch prompts; tests cap it at 1500 runes.
+//
+// person（人物）类不再要求提取（retire-person-extraction）：辅助标签体系已覆盖
+// 人物叫法（存量 person 中 Top10 全部有同名 auxiliary），而双类别同一数组会把
+// 模型注意力拆散（2026-11-25 实测 article 184183 连续 3 次把 event_person_tags
+// 返回为 object 而整篇解析失败）。字段名 event_person_tags 故意保留——改名会
+// 牵动解析契约、fixture 与前端类型。
 func buildMergedExtractionPrompt() string {
-	return `你是新闻分析助手，一次性从新闻摘要提取 event/person 与 keyword 标签，同时输出两个数组。
+	return `你是新闻分析助手，一次性从新闻摘要提取 event 与 keyword 标签，同时输出两个数组。
 
-【event/person 数组】
+【event 数组】
 event（事件）：语义完整的事件名词短语，如"央行禁止比特币交易"；拒绝裸日期、无主体动作短语、裸地名、泛化活动名。
-person（人物）：具体个人姓名，如"Sam Altman"；拒绝泛称（"CEO"）与非姓名（"某公司创始人"）。
 
 辅助标签要求：
-- 每个 event/person 标签必须输出 auxiliary_labels，数量 3-5 个
+- 每个 event 标签必须输出 auxiliary_labels，数量 3-5 个
 - auxiliary_labels 是对象数组，每项含 label 和 description，如 {"label":"央行","description":"货币当局"}
 - 辅助标签须与事件核心直接相关，是具体语义锚点（实体、人物、地点、动作）；背景提及、移除后事件仍成立的实体不要输出
 - description 简短具体，不能为空，不能只重复 label；拒绝"事件"、"技术"、"发展"、"市场"等泛词
 - 反例：{"label":"技术","description":"技术"}、"决策机构"（字符串而非对象）
-- event description 中文1句话不超50字、不重复标签名；person 可留空
+- event description 中文1句话不超50字、不重复标签名
 
 【keyword 数组】
 keyword（关键词）：有持久辨识度的专业术语、技术概念、产品、组织机构，如"Transformer架构"、"PostgreSQL"；拒绝时间词（"2026"）、泛称（"公司"）、空泛词（"发展"）。
@@ -285,7 +285,7 @@ keyword（关键词）：有持久辨识度的专业术语、技术概念、产�
 description 要求：每个 keyword 必须输出 description，中文1句话不超50字、不重复标签名，如 "PostgreSQL" → "开源关系型数据库"。
 
 【共同规则】
-- event/person 数组只放 event/person，keyword 数组只放 keyword，不要串放
+- event 数组只放 event，keyword 数组只放 keyword，不要串放
 - 最多返回 3 个 keyword；宁缺毋滥，不需要每篇都凑数量
 - keyword 不输出 auxiliary_labels 字段，将用标签自身 label + description 直接进入辅助标签池
 - 拒绝日期/时间词、过于宽泛的通用词、未展开讨论的附带提及词
@@ -295,7 +295,7 @@ description 要求：每个 keyword 必须输出 description，中文1句话不�
 正例：
 {"event_person_tags":[{"label":"某国央行上调基准利率","category":"event","description":"某国央行上调基准利率的政策事件","auxiliary_labels":[{"label":"央行","description":"货币当局"},{"label":"基准利率","description":"货币政策利率"},{"label":"利率上调","description":"提高利率的举措"}]}],"keyword_tags":[{"label":"PostgreSQL","category":"keyword","description":"开源关系型数据库"}]}
 反例：
-- keyword 标签放进 event/person 数组（串放）
+- keyword 标签放进 event 数组（串放）
 - auxiliary_labels 写成字符串数组（必须是含 label/description 的对象数组）
 - {"label":"技术","category":"keyword","description":"技术"}（标签与描述都过于泛化）`
 }
@@ -315,7 +315,7 @@ func buildExtractionUserPrompt(input ExtractionInput) string {
 摘要内容:
 %s
 
-请返回JSON对象格式: {"tags": [标签列表]}。`, input.Summary)
+请返回 JSON 对象，包含 event_person_tags 与 keyword_tags 两个数组（格式见系统提示【输出格式】正例）。`, input.Summary)
 	return b.String()
 }
 
@@ -325,10 +325,16 @@ type rawExtractedTag struct {
 	Aliases         []string        `json:"aliases"`
 	Description     string          `json:"description"`
 	AuxiliaryLabels json.RawMessage `json:"auxiliary_labels"`
+	// 主体稳定短身份说明（normalize-event-subject-entities D2）：仅影子态
+	// 第一轮同次调用产出；off 响应无此字段（零值）。不进 event_fingerprint。
+	SubjectDesc string `json:"subject_desc"`
 }
 
 func parseRawTagObjects(content string) ([]rawExtractedTag, error) {
 	content = jsonutil.SanitizeLLMJSON(content)
+	// Schema envelope (single "tags" array nested under "properties" for the
+	// section path) — unwrap before the bare-array / wrapper probes.
+	content = unwrapSchemaEnvelope(content)
 
 	var raw []rawExtractedTag
 
@@ -361,12 +367,18 @@ func parseEventPersonTagObjects(raw []rawExtractedTag) ([]ExtractedTag, error) {
 			logging.Warnf("event/person extraction: dropping invalid auxiliary labels for %q (category=%s): %v", t.Label, cat, err)
 			auxiliaryLabels = nil
 		}
+		// 主体稳定短身份说明（仅影子态产出；仅 event 携带，off 响应无此字段）。
+		subjectDesc := ""
+		if cat == "event" {
+			subjectDesc = strings.TrimSpace(t.SubjectDesc)
+		}
 		result = append(result, ExtractedTag{
 			Label:           strings.TrimSpace(t.Label),
 			Category:        cat,
 			Aliases:         t.Aliases,
 			Description:     truncateDescription(strings.TrimSpace(t.Description), maxTagDescriptionRunes),
 			AuxiliaryLabels: auxiliaryLabels,
+			SubjectDesc:     subjectDesc,
 		})
 	}
 
@@ -426,7 +438,48 @@ func parseMergedExtractionTags(content string) ([]ExtractedTag, []ExtractedTag, 
 	return eventPersonTags, keywordTags, nil
 }
 
+// unwrapSchemaEnvelope strips the JSON-Schema envelope some models emit when
+// decoding against a schema: the schema skeleton itself comes back as the
+// answer, with the real arrays nested under "properties", e.g.
+// {"type":"object","properties":{"event_person_tags":[...],"keyword_tags":[...]},"required":[...]}.
+//
+// An envelope is recognised only when all three hold: the top level is an
+// object, it carries a "properties" key whose value is an object, and it
+// carries a schema keyword ("type" or "required"). Anything else — including
+// a plain response that merely happens to have a "properties" field — is
+// returned unchanged so the regular parse path reports it as before.
+//
+// Idempotent: once unwrapped the top level no longer carries the schema
+// keywords, so a second call returns the content unchanged.
+func unwrapSchemaEnvelope(content string) string {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(content), &probe); err != nil {
+		return content
+	}
+	if len(probe) == 0 {
+		return content
+	}
+	rawProps, ok := probe["properties"]
+	if !ok {
+		return content
+	}
+	var props map[string]json.RawMessage
+	if err := json.Unmarshal(rawProps, &props); err != nil {
+		return content
+	}
+	_, hasType := probe["type"]
+	_, hasRequired := probe["required"]
+	if !hasType && !hasRequired {
+		return content
+	}
+	return string(rawProps)
+}
+
 func unmarshalMergedExtraction(content string) (*rawMergedExtraction, error) {
+	// Schema envelope: the model returned the schema skeleton with the real
+	// arrays nested under "properties" — unwrap before the shape probes.
+	content = unwrapSchemaEnvelope(content)
+
 	// {"tags": ...} wrapper: either the double arrays again or a legacy array.
 	var wrapped struct {
 		Tags json.RawMessage `json:"tags"`
@@ -593,9 +646,9 @@ func mergedTagExtractionSchema() *airouter.JSONSchema {
 					Type: "object",
 					Properties: map[string]airouter.SchemaProperty{
 						"label":       {Type: "string", Description: "标签名称"},
-						"category":    {Type: "string", Description: "event 或 person"},
+						"category":    {Type: "string", Description: "必须为 event"},
 						"aliases":     {Type: "array", Items: &airouter.SchemaProperty{Type: "string"}},
-						"description": {Type: "string", Description: "event 标签的简短描述；person 可留空"},
+						"description": {Type: "string", Description: "event 标签的简短描述"},
 						"auxiliary_labels": {
 							Type: "array",
 							Items: &airouter.SchemaProperty{
@@ -608,6 +661,9 @@ func mergedTagExtractionSchema() *airouter.JSONSchema {
 							},
 							Description: "3-5个带description的具体语义锚点",
 						},
+						// 事件指纹五字段（subject/subject_key/action/object/occurred_at）
+						// 已于 2026-11-12 摘除：融合任务过重致 4B 模型 JSON 输出大面积
+						// 发散（parse_error 潮），恢复纯标签提取单一任务。
 					},
 					Required: []string{"label", "category", "auxiliary_labels"},
 				},
@@ -628,4 +684,29 @@ func mergedTagExtractionSchema() *airouter.JSONSchema {
 		},
 		Required: []string{"event_person_tags", "keyword_tags"},
 	}
+}
+
+// mergedTagExtractionSchemaShadow is the SHADOW-mode schema for the merged
+// mono-path extraction: legacy schema plus one optional subject_desc property
+// on event_person tags. EventFingerprintSchema() is NOT touched — subject_desc
+// never enters event_fingerprint (normalize-event-subject-entities D2).
+func mergedTagExtractionSchemaShadow() *airouter.JSONSchema {
+	schema := mergedTagExtractionSchema()
+	schema.Properties["event_person_tags"].Items.Properties["subject_desc"] = airouter.SchemaProperty{
+		Type:        "string",
+		Description: "主体稳定短身份说明（仅 event 额外输出）：只描述主体自身身份（类别/国别/角色/所属组织），不含当次事件、动作、对象或时间",
+	}
+	return schema
+}
+
+// buildMergedExtractionPromptShadow appends the shadow-mode subject_desc
+// block to the legacy merged prompt; the legacy prefix stays byte-identical
+// (off mode keeps calling buildMergedExtractionPrompt directly).
+func buildMergedExtractionPromptShadow() string {
+	return buildMergedExtractionPrompt() + `
+
+【主体稳定短身份说明】仅影子模式、仅 event 标签额外输出 subject_desc，keyword 不输出：
+- 只描述主体自身的稳定身份：类别、国别、角色、所属组织等（如"美国第45任总统"、"美国芯片设计公司"）
+- 不得包含当次事件、动作、对象或时间（说明随事件漂移会退化成事件检索）
+- 不确定时留空，不要编造`
 }

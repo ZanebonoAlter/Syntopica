@@ -61,34 +61,39 @@ function mountTrend(over: {
   })
 }
 
-describe('LaneTrendOverview — 14 天档内容与降级', () => {
-  it('FD-1: 默认 14 天档选中，展示长版全文 + 汇总截止日（全文无截断）', () => {
+describe('LaneTrendOverview — 14 天档内容', () => {
+  it('FD-1: 默认 14 天档选中，展示单版态势句全文 + 汇总截止日（全文无截断）', () => {
     const wrapper = mountTrend()
     expect(wrapper.find('[data-testid="trend-tab-14d"]').classes()).toContain('active')
     expect(wrapper.find('[data-testid="trend-panel-14d"]').exists()).toBe(true)
 
-    const detail = wrapper.find('[data-testid="trend-detail"]')
-    expect(detail.exists()).toBe(true)
+    const summary = wrapper.find('[data-testid="trend-summary"]')
+    expect(summary.exists()).toBe(true)
     // 全文渲染：textContent 与源文本完全一致（无省略号截断）
-    expect(detail.text()).toBe('长版全文叙述，完整成段。')
+    expect(summary.text()).toBe('短版态势句')
     expect(wrapper.find('[data-testid="trend-asof"]').text()).toContain('2026-06-21')
     // 无截断类样式（line-clamp/ellipsis 不存在于该元素类上）
-    expect(detail.classes()).not.toContain('lto__status')
+    expect(summary.classes()).not.toContain('lto__status')
+    // 超长文本变体：满额 200 rune 全文 pre-line 渲染不截断。
+    const long = '态'.repeat(200)
+    const w2 = mountTrend({ lane: makeLane({ snapshot: { summary: long, detail: null, as_of: '2026-06-21' } }) })
+    expect(w2.find('[data-testid="trend-summary"]').text()).toBe(long)
   })
 
-  it('FD-2: detail 缺失但 summary 有值 → 短版 + 「长版随下次日报结算生成」提示', () => {
-    const wrapper = mountTrend({ lane: makeLane({ snapshot: { summary: '短版态势句', detail: null, as_of: '2026-06-21' } }) })
+  it('FD-2: 存量 detail 非空也不消费 → 仅渲染 summary，无任何长版提示', () => {
+    const wrapper = mountTrend({ lane: makeLane({ snapshot: { summary: '新演进叙事态势句', detail: '存量历史长版。', as_of: '2026-06-21' } }) })
+    expect(wrapper.find('[data-testid="trend-summary"]').text()).toBe('新演进叙事态势句')
+    // trend-detail testid 已废；不得再出现「长版待生成」提示。
     expect(wrapper.find('[data-testid="trend-detail"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="trend-summary"]').text()).toBe('短版态势句')
-    expect(wrapper.find('[data-testid="trend-detail-hint"]').text()).toContain('长版随下次日报结算生成')
-    expect(wrapper.find('[data-testid="trend-asof"]').text()).toContain('2026-06-21')
+    expect(wrapper.find('[data-testid="trend-detail-hint"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('长版')
   })
 
   it('FD-3: snapshot=null → 「态势待结算」占位，三档切换仍可用', async () => {
     const onEnsureContext = vi.fn()
     const wrapper = mountTrend({ lane: makeLane({ snapshot: null }), onEnsureContext })
     expect(wrapper.find('[data-testid="trend-pending"]').text()).toContain('态势待结算')
-    expect(wrapper.find('[data-testid="trend-detail"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="trend-summary"]').exists()).toBe(false)
 
     await wrapper.find('[data-testid="trend-tab-year"]').trigger('click')
     expect(onEnsureContext).toHaveBeenCalledTimes(1)
@@ -116,7 +121,7 @@ describe('LaneTrendOverview — 14 天档内容与降级', () => {
   it('D6: 14 天档加载中 → 加载提示，不显示旧档内容', () => {
     const wrapper = mountTrend({ laneEntry: { status: 'loading' } })
     expect(wrapper.find('[data-testid="trend-loading"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="trend-detail"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="trend-summary"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="trend-events-toggle"]').exists()).toBe(false)
   })
 })

@@ -1,0 +1,531 @@
+package repository
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/testutil"
+)
+
+func TestBoardRadarAxisEndsAtAnchor(t *testing.T) {
+	axis := radarAxis("2026-10-24")
+	if len(axis) != LaneDynamicsDefaultDays {
+		t.Fatalf("axis len=%d", len(axis))
+	}
+	if axis[len(axis)-1] != "2026-10-24" {
+		t.Fatalf("axis end=%q", axis[len(axis)-1])
+	}
+	if axis[0] != "2026-10-11" {
+		t.Fatalf("axis start=%q", axis[0])
+	}
+}
+
+func TestBoardRadarSortsByAttentionAndKeepsZeroRows(t *testing.T) {
+	out := finalizeRadar(&RadarOverview{Boards: []RadarBoardRow{
+		{BoardID: 3, Attention: radarFloatPtr(0), ReportDate: "2026-10-24"},
+		{BoardID: 1, Attention: radarFloatPtr(30), ReportDate: "2026-10-24"},
+		{BoardID: 2, Attention: radarFloatPtr(12), ReportDate: "2026-10-23"},
+	}})
+	if out.Date != "2026-10-24" {
+		t.Fatalf("date=%q", out.Date)
+	}
+	got := []uint{out.Boards[0].BoardID, out.Boards[1].BoardID, out.Boards[2].BoardID}
+	want := []uint{1, 2, 3}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order=%v want=%v", got, want)
+		}
+	}
+}
+
+// TestBoardRadarUnknownAttentionSinksToBottom：关注度未知（没取到）的行沉到
+// 末尾，不得靠「假装 0」占排名位次；已知行仍按关注度降序 + board_id 升序。
+func TestBoardRadarUnknownAttentionSinksToBottom(t *testing.T) {
+	out := finalizeRadar(&RadarOverview{Boards: []RadarBoardRow{
+		{BoardID: 1, Attention: radarFloatPtr(5)},
+		{BoardID: 2, DataUnavailable: true},
+		{BoardID: 3, Attention: radarFloatPtr(9)},
+		{BoardID: 4, DataUnavailable: true},
+	}})
+	got := []uint{out.Boards[0].BoardID, out.Boards[1].BoardID, out.Boards[2].BoardID, out.Boards[3].BoardID}
+	assert.Equal(t, []uint{3, 1, 2, 4}, got, "未知关注度沉底，已知行按关注度降序")
+}
+
+// tasks 9.4：所有版块均无日报时顶层 date 回退今天（不冒空串），
+// 雷达报头不会拿到空日期。取数成功但确实没日报 ≠ 没取到。
+func TestBoardRadarDateFallsBackToToday(t *testing.T) {
+	out := finalizeRadar(&RadarOverview{Boards: []RadarBoardRow{
+		{BoardID: 1, Attention: radarFloatPtr(0)},
+	}})
+	today := NormalizeReportDate(time.Now()).Format("2006-01-02")
+	if out.Date != today {
+		t.Fatalf("date=%q want=%q", out.Date, today)
+	}
+}
+
+// TestBoardRadarDateUnknownWhenAllRowsUnavailable：全部行都没取到时全局 date
+// 不得回退成今天（那是「冒充全局锚点日」）——保持未知（空串）。
+func TestBoardRadarDateUnknownWhenAllRowsUnavailable(t *testing.T) {
+	out := finalizeRadar(&RadarOverview{Boards: []RadarBoardRow{
+		{BoardID: 1, DataUnavailable: true},
+		{BoardID: 2, DataUnavailable: true},
+	}})
+	assert.Empty(t, out.Date, "全部未取到 → date 保持未知（空串），不冒充今天")
+}
+
+// TestBoardRadarAttentionFollowsLaneHeat（task 1.5 / spec「关注度不因
+// 分区数虚高」）：A 8 个 section 但只 2 条线索，B 2 个 section 但有 6 条线索 →
+// B 的关注度（泳道当天热度之和）必须高于 A，雷达排序 B 前 A 后；候选泳道按
+// lane_heat_candidate_weight 计入关注度。
+func TestBoardRadarAttentionFollowsLaneHeat(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	now := time.Now()
+
+	// Board A：8 sections，其中只有 2 条线索（4 条 section 无 thread）。
+	boardA := seedTestBoardNamed(t, db, "radar-clue-a")
+	reportA := seedTestReport(t, db, boardA, now)
+	topicA := seedLaneDynamicsTopic(t, db, boardA, "A泳道", TopicStatusActive, 9, now)
+	for i := 0; i < 8; i++ {
+		sec := seedTestSection(t, db, reportA, "a-sec")
+		assignSection(t, db, sec, topicA.ID)
+		if i < 2 {
+			seedLaneThread(t, db, reportA, sec, "A线索")
+		}
+	}
+	// 候选泳道 A：当天 4 条线索 → 关注度 +4×0.5 = 2.0。
+	topicACand := seedLaneDynamicsTopic(t, db, boardA, "A候选", TopicStatusCandidate, 3, now)
+	candSec := seedTestSection(t, db, reportA, "a-cand-sec")
+	assignSection(t, db, candSec, topicACand.ID)
+	for i := 0; i < 4; i++ {
+		seedLaneThread(t, db, reportA, candSec, "候选线索")
+	}
+
+	// Board B：2 sections，各 3 条线索 = 6。
+	boardB := seedTestBoardNamed(t, db, "radar-clue-b")
+	reportB := seedTestReport(t, db, boardB, now)
+	topicB := seedLaneDynamicsTopic(t, db, boardB, "B泳道", TopicStatusActive, 9, now)
+	for i := 0; i < 2; i++ {
+		sec := seedTestSection(t, db, reportB, "b-sec")
+		assignSection(t, db, sec, topicB.ID)
+		for j := 0; j < 3; j++ {
+			seedLaneThread(t, db, reportB, sec, "B线索")
+		}
+	}
+
+	overview, err := repo.GetBoardRadarOverview(context.Background())
+	require.NoError(t, err)
+	require.Len(t, overview.Boards, 2)
+
+	rowB, rowA := overview.Boards[0], overview.Boards[1]
+	assert.Equal(t, boardB, rowB.BoardID, "B 关注度更高必须排前，不因 A 的 8 个 section 反转")
+	assert.Equal(t, boardA, rowA.BoardID)
+	require.NotNil(t, rowB.Attention)
+	assert.InDelta(t, 6.0, *rowB.Attention, 1e-9)
+	require.NotNil(t, rowA.Attention)
+	assert.InDelta(t, 4.0, *rowA.Attention, 1e-9, "活跃 2 条线索 + 候选 4×0.5 = 4.0")
+	assert.Equal(t, LaneHeatRuleVersion, rowA.HeatRuleVersion)
+
+	// 当天 / 近 3 日 / 前三日线索窗与 14 天轴。
+	require.NotNil(t, rowB.TodayClues)
+	assert.Equal(t, 6, *rowB.TodayClues)
+	require.NotNil(t, rowA.TodayClues)
+	assert.Equal(t, 2, *rowA.TodayClues, "候选泳道不计入版块线索窗（只有活跃泳道进 lane 轴）")
+	require.NotNil(t, rowA.Last3Clues)
+	assert.Equal(t, 2, *rowA.Last3Clues, "近 3 日窗含当天")
+	require.NotNil(t, rowA.Prev3Clues)
+	assert.Zero(t, *rowA.Prev3Clues)
+	require.Len(t, rowA.ClueDays, LaneDynamicsDefaultDays)
+	assert.Equal(t, 2, rowA.ClueDays[LaneDynamicsDefaultDays-1])
+
+	// RadarLane 逐日线索密度与 14 天轴对齐。
+	require.Len(t, rowB.Lanes, 1)
+	require.Len(t, rowB.Lanes[0].ClueCounts, LaneDynamicsDefaultDays)
+	assert.Equal(t, 6, rowB.Lanes[0].ClueCounts[LaneDynamicsDefaultDays-1])
+	assert.Equal(t, 6, rowB.Lanes[0].ThreadCount14d)
+
+	// 顶层清单：只有活跃泳道条目，带各自版块锚点日与当天线索数。
+	require.NotNil(t, overview.TopLanes)
+	require.Len(t, overview.TopLanes.Lanes, 2)
+	assert.Equal(t, boardB, overview.TopLanes.Lanes[0].BoardID, "线索多的泳道排前")
+	assert.Equal(t, 6, overview.TopLanes.Lanes[0].ClueCount)
+	assert.Equal(t, 2, overview.TopLanes.Lanes[1].ClueCount)
+	assert.Equal(t, dateStr(now), overview.TopLanes.Lanes[0].AnchorDate)
+	assert.False(t, overview.TopLanes.Partial)
+
+	// 权重在线调整立即生效：候选 4 × 0.2 = 0.8 → A 关注度 2.8。
+	require.NoError(t, db.Create(&models.AISettings{Key: LaneHeatCandidateWeightKey, Value: "0.2"}).Error)
+	overview, err = repo.GetBoardRadarOverview(context.Background())
+	require.NoError(t, err)
+	require.Len(t, overview.Boards, 2)
+	require.NotNil(t, overview.Boards[1].Attention)
+	assert.InDelta(t, 2.8, *overview.Boards[1].Attention, 1e-9)
+}
+
+// TestBoardRadarClueWindowsAndHeatRule（task 1.5 口径）：三窗线索数来自逐日线索
+// 合计（不掺事件线数），14 天轴与泳道密度同源；事件线热度字段整体退役。
+func TestBoardRadarClueWindowsAndHeatRule(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	now := time.Now()
+
+	board := seedTestBoardNamed(t, db, "radar-clue-window")
+	reportToday := seedTestReport(t, db, board, now)
+	report1d := seedTestReport(t, db, board, now.AddDate(0, 0, -1))
+	report2d := seedTestReport(t, db, board, now.AddDate(0, 0, -2))
+
+	topic := seedLaneDynamicsTopic(t, db, board, "轴泳道", TopicStatusActive, 9, now)
+	seedClues := func(reportID uint, label string, clues int) {
+		sec := seedTestSection(t, db, reportID, label)
+		assignSection(t, db, sec, topic.ID)
+		for i := 0; i < clues; i++ {
+			seedLaneThread(t, db, reportID, sec, "线索")
+		}
+	}
+	seedClues(reportToday, "today-sec", 5)
+	seedClues(report1d, "d1-sec", 3)
+	seedClues(report2d, "d2-sec", 2)
+
+	result := repo.buildRadarRow(board)
+	require.False(t, result.degraded)
+	row := result.row
+	assert.Equal(t, dateStr(now), row.AnchorDate)
+	require.NotNil(t, row.TodayClues)
+	assert.Equal(t, 5, *row.TodayClues)
+	require.NotNil(t, row.Last3Clues)
+	assert.Equal(t, 10, *row.Last3Clues, "5+3+2")
+	require.NotNil(t, row.Prev3Clues)
+	assert.Zero(t, *row.Prev3Clues)
+	assert.Equal(t, LaneHeatRuleVersion, row.HeatRuleVersion)
+	require.NotNil(t, row.Attention)
+	assert.InDelta(t, 5.0, *row.Attention, 1e-9, "关注度 = 泳道当天热度（5 条线索）")
+
+	require.Len(t, row.Lanes, 1)
+	counts := row.Lanes[0].ClueCounts
+	assert.Equal(t, 5, counts[13])
+	assert.Equal(t, 3, counts[12])
+	assert.Equal(t, 2, counts[11])
+	assert.Zero(t, counts[10])
+	assert.Equal(t, 10, row.Lanes[0].ThreadCount14d)
+
+	// 退役字段不再出现在雷达响应里。
+	overview, err := repo.GetBoardRadarOverview(context.Background())
+	require.NoError(t, err)
+	data, err := json.Marshal(overview)
+	require.NoError(t, err)
+	payload := string(data)
+	for _, retired := range []string{"today_stories", "last3_stories", "prev3_stories", "today_heat", "last3_heat", "prev3_heat", "heat_days", "story_counts", "stories_backfilled", "story_identity_state", "heat_incomplete", "top_stories", "warming_count", "cross_day_story_count", "\"stories\""} {
+		assert.NotContains(t, payload, retired, "退役字段不得再下发：%s", retired)
+	}
+}
+
+// TestBoardRadarTopLanesFilterByClueCount（task 1.5 / specs/workshop-radar 行构成）：
+// 前 3 条泳道按 14 天线索合计筛选（与 lane-dynamics 次键同口径），section 数
+// 不参与——section 多但线索少的泳道不得挤掉线索多的泳道。
+func TestBoardRadarTopLanesFilterByClueCount(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	now := time.Now()
+	board := seedTestBoardNamed(t, db, "radar-toplane")
+	report := seedTestReport(t, db, board, now)
+
+	seedTopLane := func(label string, sections, threadsPerSection int) BoardPersistentTopic {
+		topic := seedLaneDynamicsTopic(t, db, board, label, TopicStatusActive, 9, now)
+		for i := 0; i < sections; i++ {
+			sec := seedTestSection(t, db, report, label+"-sec")
+			assignSection(t, db, sec, topic.ID)
+			for j := 0; j < threadsPerSection; j++ {
+				seedLaneThread(t, db, report, sec, "线索")
+			}
+		}
+		return topic
+	}
+
+	topicA := seedTopLane("A泳道", 4, 1) // 4 线索 / 4 section
+	topicB := seedTopLane("B泳道", 2, 3) // 6 线索 / 2 section
+	topicC := seedTopLane("C泳道", 3, 1) // 3 线索
+	topicD := seedTopLane("D泳道", 1, 2) // 2 线索
+
+	result := repo.buildRadarRow(board)
+	require.False(t, result.degraded)
+	require.Len(t, result.row.Lanes, 3, "4 条泳道截前 3")
+	assert.Equal(t, topicB.ID, result.row.Lanes[0].TopicID, "线索最多的泳道居首")
+	assert.Equal(t, topicA.ID, result.row.Lanes[1].TopicID)
+	assert.Equal(t, topicC.ID, result.row.Lanes[2].TopicID)
+	inLane := func(topicID uint) bool {
+		for _, lane := range result.row.Lanes {
+			if lane.TopicID == topicID {
+				return true
+			}
+		}
+		return false
+	}
+	assert.False(t, inLane(topicD.ID), "线索最少的泳道被截")
+}
+
+// TestBoardRadarTopLanesSortLimitAndDegradation 覆盖清单段的纯函数规则：
+// 锚点日新鲜度优先（今日条目整体先于滞后条目）→ 线索数降序 → 稳定键（版块名 →
+// 泳道名 → 泳道 id）→ 上限 8；滞后版块保留自己的锚点日并沉底（2026-11-11 看版后
+// 修订，tasks 3.6）；延迟 / 计算失败的版块缺席并把清单标记为不完整。
+func TestBoardRadarTopLanesSortLimitAndDegradation(t *testing.T) {
+	rows := []RadarBoardRow{
+		{BoardID: 1, Label: "乙版块", ReportDate: "2026-11-06", AnchorDate: "2026-11-06"},
+		{BoardID: 2, Label: "甲版块", ReportDate: "2026-11-05", AnchorDate: "2026-11-05"}, // 滞后
+		{BoardID: 3, Label: "丙版块", ReportDate: "2026-11-06", DataDelayed: true},
+		{BoardID: 4, Label: "丁版块", ReportDate: "2026-11-06"},
+	}
+	results := map[uint]radarBoardLanes{
+		1: {anchorDate: "2026-11-06", lanes: []RadarLane{
+			{TopicID: 11, Label: "乙一", ClueCounts: append(make([]int, 13), 8)},
+			{TopicID: 12, Label: "乙二", ClueCounts: append(make([]int, 13), 8)},
+		}},
+		2: {anchorDate: "2026-11-05", lanes: []RadarLane{
+			{TopicID: 21, Label: "甲一", ClueCounts: append(make([]int, 13), 12)},
+		}},
+		3: {degraded: true},
+		4: {anchorDate: "2026-11-06", degraded: true},
+	}
+	out := finalizeRadar(&RadarOverview{Boards: rows})
+	out.Boards = rows
+	finalizeRadarTopLanes(out, results)
+
+	require.NotNil(t, out.TopLanes)
+	assert.True(t, out.TopLanes.Partial, "延迟 / 计算失败的版块让清单不完整")
+	assert.Equal(t, []uint{3, 4}, out.TopLanes.DegradedBoardIDs)
+	assert.Equal(t, []uint{2}, out.TopLanes.LaggingBoardIDs)
+
+	require.Len(t, out.TopLanes.Lanes, 3)
+	// 一级：锚点日新鲜度——滞后条目即使线索更多也沉底（12 > 8 仍排最后）。
+	assert.Equal(t, uint(11), out.TopLanes.Lanes[0].TopicID, "今日条目整体先于滞后条目")
+	assert.Equal(t, "乙版块", out.TopLanes.Lanes[0].BoardLabel)
+	assert.Equal(t, "2026-11-06", out.TopLanes.Lanes[0].AnchorDate)
+	// 同为 8 条线索：稳定键按版块名（同为乙版块）→ 泳道名升序（乙一 < 乙二）。
+	assert.Equal(t, uint(12), out.TopLanes.Lanes[1].TopicID)
+	assert.Equal(t, uint(21), out.TopLanes.Lanes[2].TopicID, "滞后条目沉底但仍进清单")
+	assert.Equal(t, "甲版块", out.TopLanes.Lanes[2].BoardLabel)
+	assert.Equal(t, 12, out.TopLanes.Lanes[2].ClueCount, "沉底不是折扣：线索数原值参与次级排序")
+	assert.Equal(t, "2026-11-05", out.TopLanes.Lanes[2].AnchorDate, "滞后版块显示自己的锚点日")
+
+	// 上限 8：第 9 名不展示。
+	many := make([]RadarLane, 0, 9)
+	for i := 1; i <= 9; i++ {
+		clues := make([]int, 14)
+		clues[13] = 20 - i
+		many = append(many, RadarLane{TopicID: uint(i), Label: "泳道", ClueCounts: clues})
+	}
+	out = finalizeRadar(&RadarOverview{Boards: []RadarBoardRow{{BoardID: 9, Label: "版块", ReportDate: "2026-11-06"}}})
+	out.Boards = []RadarBoardRow{{BoardID: 9, Label: "版块", ReportDate: "2026-11-06"}}
+	finalizeRadarTopLanes(out, map[uint]radarBoardLanes{9: {anchorDate: "2026-11-06", lanes: many}})
+	require.Len(t, out.TopLanes.Lanes, radarTopLaneLimit)
+	assert.Equal(t, uint(1), out.TopLanes.Lanes[0].TopicID)
+	assert.Equal(t, 19, out.TopLanes.Lanes[0].ClueCount)
+	assert.False(t, out.TopLanes.Partial)
+}
+
+// TestBoardRadarTopLanesLaggingSinks covers the two-level ordering the 2026-11-11
+// user report asked for (tasks 3.6): a board that stopped updating 4 days ago must
+// not outrank today's data, but it still appears (data stays honest) and keeps its
+// raw clue count as the secondary key (sinking ≠ discount, no time decay).
+func TestBoardRadarTopLanesLaggingSinks(t *testing.T) {
+	day := func(clues int) []int { return append(make([]int, 13), clues) }
+
+	// 一级：今日条目整体先于滞后条目；次级：滞后内部仍按 clue_count 降序。
+	out := finalizeRadar(&RadarOverview{Boards: []RadarBoardRow{
+		{BoardID: 1, Label: "今日版块", ReportDate: "2026-11-11"},
+		{BoardID: 2, Label: "滞后版块", ReportDate: "2026-11-07"},
+	}})
+	finalizeRadarTopLanes(out, map[uint]radarBoardLanes{
+		1: {anchorDate: "2026-11-11", lanes: []RadarLane{
+			{TopicID: 11, Label: "今日泳道", ClueCounts: day(3)},
+		}},
+		2: {anchorDate: "2026-11-07", lanes: []RadarLane{
+			{TopicID: 21, Label: "滞后大", ClueCounts: day(20)},
+			{TopicID: 22, Label: "滞后小", ClueCounts: day(9)},
+		}},
+	})
+	require.Len(t, out.TopLanes.Lanes, 3)
+	assert.Equal(t, uint(11), out.TopLanes.Lanes[0].TopicID, "今日 3 条也排在滞后 20 条之前")
+	assert.Equal(t, uint(21), out.TopLanes.Lanes[1].TopicID, "滞后内部仍按线索数降序")
+	assert.Equal(t, uint(22), out.TopLanes.Lanes[2].TopicID)
+	assert.Equal(t, []uint{2}, out.TopLanes.LaggingBoardIDs)
+	assert.False(t, out.TopLanes.Partial, "滞后是口径偏差，不是数据缺失")
+
+	// 全滞后退化：没有任何条目锚定在全局锚点日时仍正常排序、不清空、不 panic。
+	out = finalizeRadar(&RadarOverview{Boards: []RadarBoardRow{
+		{BoardID: 1, Label: "无泳道版块", ReportDate: "2026-11-11"},
+	}})
+	finalizeRadarTopLanes(out, map[uint]radarBoardLanes{
+		1: {anchorDate: "2026-11-11"},
+	})
+	assert.Empty(t, out.TopLanes.Lanes, "无条目时给空清单（前端渲染空态）")
+
+	out = finalizeRadar(&RadarOverview{Boards: []RadarBoardRow{
+		{BoardID: 1, Label: "今日版块", ReportDate: "2026-11-11"},
+		{BoardID: 2, Label: "全部滞后", ReportDate: "2026-11-07"},
+	}})
+	finalizeRadarTopLanes(out, map[uint]radarBoardLanes{
+		2: {anchorDate: "2026-11-07", lanes: []RadarLane{
+			{TopicID: 21, Label: "滞后小", ClueCounts: day(4)},
+			{TopicID: 22, Label: "滞后大", ClueCounts: day(7)},
+		}},
+	})
+	require.Len(t, out.TopLanes.Lanes, 2)
+	assert.Equal(t, uint(22), out.TopLanes.Lanes[0].TopicID)
+	assert.Equal(t, uint(21), out.TopLanes.Lanes[1].TopicID)
+}
+
+// TestBoardRadarTimeoutRowIsUnknownNotZero（fix-radar-overview-false-zero）：
+// 端点预算耗尽时没算完的版块行必须标 data_unavailable=true 且计数类字段是
+// null（未知），不是 0——「没取到」不等于「今天 0 关注 / 0 条线索」。
+func TestBoardRadarTimeoutRowIsUnknownNotZero(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	seedTestBoardNamed(t, db, "radar-timeout")
+
+	// 预算注入为 0 → 未完成的版块立刻走超时降级（真实慢查询无法稳定复现）。
+	restore := RadarOverviewBudget
+	RadarOverviewBudget = 0
+	t.Cleanup(func() { RadarOverviewBudget = restore })
+
+	overview, err := repo.GetBoardRadarOverview(context.Background())
+	require.NoError(t, err)
+	require.Len(t, overview.Boards, 1)
+	row := overview.Boards[0]
+	assert.True(t, row.DataDelayed, "超时的版块标 data_delayed")
+	assert.True(t, row.DataUnavailable, "超时的版块标 data_unavailable")
+	assert.Nil(t, row.Attention, "关注度未知（null），不是 0")
+	assert.Nil(t, row.TodayClues)
+	assert.Nil(t, row.Last3Clues)
+	assert.Nil(t, row.Prev3Clues)
+	assert.Nil(t, row.ReportArticle)
+	assert.Nil(t, row.ReportEvent)
+	assert.Empty(t, row.ClueDays, "未取到的行没有 14 天轴")
+	assert.Empty(t, row.Lanes)
+	assert.Empty(t, overview.Date, "全部未取到时全局 date 不得冒充今天")
+
+	// JSON 层面必须是 null，不是 0。
+	data, err := json.Marshal(overview)
+	require.NoError(t, err)
+	payload := string(data)
+	for _, field := range []string{
+		"attention", "today_clues", "last3_clues", "prev3_clues",
+		"report_article_count", "report_event_count",
+	} {
+		assert.Contains(t, payload, `"`+field+`":null`, "%s 未取到必须是 null", field)
+	}
+	assert.NotContains(t, payload, `"attention":0`, "未取到不得写成 0")
+	assert.Contains(t, payload, `"data_unavailable":true`)
+}
+
+// TestBoardRadarDegradedRowIsUnknownNotZero（fix-radar-overview-false-zero）：
+// 泳道动态计算失败（而非端点超时）的版块行此前完全没有降级标记，前端会把
+// 「0 关注度」当成业务结论——这条路径与超时同标 data_unavailable。
+func TestBoardRadarDegradedRowIsUnknownNotZero(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	board := seedTestBoardNamed(t, db, "radar-degraded")
+	now := time.Now()
+	seedTestReport(t, db, board, now)
+
+	repo.laneDynamics = func(boardID uint, days int) (*LaneDynamicsResponse, error) {
+		return nil, errors.New("lane dynamics boom")
+	}
+
+	result := repo.buildRadarRow(board)
+	require.True(t, result.degraded)
+	row := result.row
+	assert.True(t, row.DataUnavailable, "计算失败也要标 data_unavailable")
+	assert.False(t, row.DataDelayed, "计算失败不是超时降级")
+	assert.Nil(t, row.Attention, "关注度未知（null），不是 0")
+	assert.Nil(t, row.TodayClues)
+	assert.Nil(t, row.Last3Clues)
+	assert.Nil(t, row.Prev3Clues)
+	assert.Nil(t, row.ReportArticle)
+	assert.Nil(t, row.ReportEvent)
+	assert.Empty(t, row.ClueDays)
+	assert.Empty(t, row.Lanes)
+	assert.Equal(t, dateStr(now), row.ReportDate, "日报 brief 取到了 → 日期照填")
+
+	// 端点层：计算失败的版块不产出泳道条目，跨版块清单整体标不完整。
+	overview, err := repo.GetBoardRadarOverview(context.Background())
+	require.NoError(t, err)
+	require.Len(t, overview.Boards, 1)
+	assert.True(t, overview.Boards[0].DataUnavailable)
+	require.NotNil(t, overview.TopLanes)
+	assert.True(t, overview.TopLanes.Partial, "计算失败的版块让泳道清单不完整")
+	assert.Equal(t, []uint{board}, overview.TopLanes.DegradedBoardIDs)
+}
+
+// TestBoardRadarCluesDegradedRowIsUnknownNotZero（fix-radar-overview-false-zero / review R-2）：
+// 当日线索聚合失败时，泳道热度是「算不出来的 0」。单版块端点可降级为 0 热，
+// 但雷达把 0 当结论就是假 0 → 必须标 data_unavailable 且计数落 null。
+func TestBoardRadarCluesDegradedRowIsUnknownNotZero(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	board := seedTestBoardNamed(t, db, "radar-clues-degraded")
+	now := time.Now()
+	seedTestReport(t, db, board, now)
+
+	repo.laneDynamics = func(boardID uint, days int) (*LaneDynamicsResponse, error) {
+		// 只标线索降级：泳道动态本身算成功（真实形态：CountLaneCluesByDate 报错、
+		// 其余查询正常）。
+		return &LaneDynamicsResponse{
+			HasReports:    true,
+			AnchorDate:    dateStr(now),
+			CluesDegraded: true,
+			Lanes: []LaneDynamicsLane{{
+				TopicID: 1, Label: "clue-degraded-lane", LaneHeat: 0,
+			}},
+		}, nil
+	}
+
+	result := repo.buildRadarRow(board)
+	require.True(t, result.degraded)
+	assert.True(t, result.row.DataUnavailable, "线索聚合失败不能当成「今天 0 热」")
+	assert.Nil(t, result.row.Attention, "关注度未知（null），不是 0.0")
+	assert.Nil(t, result.row.TodayClues)
+	assert.Empty(t, result.row.Lanes, "算不出来的泳道不入行")
+}
+
+// TestBoardRadarRealZeroRowKeepsZeroCounts：取数成功但近 14 天确实没有日报 /
+// 泳道的版块仍是**完整零值行**——计数是 0（不是 null），且不标 data_unavailable。
+func TestBoardRadarRealZeroRowKeepsZeroCounts(t *testing.T) {
+	db := testutil.SetupTestDB(t)
+	repo := NewTopicGraphRepository(db)
+	seedTestBoardNamed(t, db, "radar-real-zero")
+
+	overview, err := repo.GetBoardRadarOverview(context.Background())
+	require.NoError(t, err)
+	require.Len(t, overview.Boards, 1)
+	row := overview.Boards[0]
+	assert.False(t, row.DataUnavailable, "真实空态不是没取到")
+	assert.False(t, row.DataDelayed)
+	require.NotNil(t, row.Attention)
+	assert.Zero(t, *row.Attention)
+	require.NotNil(t, row.TodayClues)
+	assert.Zero(t, *row.TodayClues)
+	require.NotNil(t, row.Last3Clues)
+	assert.Zero(t, *row.Last3Clues)
+	require.NotNil(t, row.Prev3Clues)
+	assert.Zero(t, *row.Prev3Clues)
+	require.NotNil(t, row.ReportArticle)
+	assert.Zero(t, *row.ReportArticle, "没有日报 → 0 篇文章是真实零值")
+	require.NotNil(t, row.ReportEvent)
+	assert.Zero(t, *row.ReportEvent)
+	assert.Len(t, row.ClueDays, LaneDynamicsDefaultDays, "完整零值行的 14 天轴仍是 14 档 0")
+
+	// JSON 层面是 0，不是 null。
+	data, err := json.Marshal(overview)
+	require.NoError(t, err)
+	payload := string(data)
+	assert.Contains(t, payload, `"attention":0`)
+	assert.Contains(t, payload, `"today_clues":0`)
+	assert.Contains(t, payload, `"data_unavailable":false`)
+}

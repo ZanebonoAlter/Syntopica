@@ -4,76 +4,70 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 
 	"syntopica-backend/internal/platform/airouter"
 	"syntopica-backend/internal/platform/jsonutil"
 	"syntopica-backend/internal/platform/logging"
-	"syntopica-backend/internal/platform/searxng"
+	"syntopica-backend/internal/platform/websearch"
 )
 
 // ── 页边注问答联网后端（daily-report-margin-notes design D7；margin-note-
 // llm-search-query 翻案 D7 搜索策略：query 由 LLM 自由生成，替代锚文本机械截
-// 断）──
+// 断；switch-margin-note-search-to-deepseek 换后端：统一网页搜索入口
+// platform/websearch，数据源 DeepSeek Search API）──
 //
 // 触发策略：每次必搜 + 失败静默降级——搜索失败/超时/未配置只影响是否携带联网
 // 参考块，绝不阻断问答（对齐 D6 失败隔离精神）。客户端在
-// internal/platform/searxng（独立通用包，避免 topicgraph → dataenrichment
-// 循环引用）；配置 searxng_config 对齐 bocha_config 语义：
-// DB(界面) > env(SEARXNG_URL，config 加载时折入 AppConfig) > config.yaml >
-// 空 = 禁用；每次提问现读，界面改即时生效。
+// internal/platform/websearch（独立通用包，避免 topicgraph → dataenrichment
+// 循环引用）；凭据复用 AI 供应商注册表里已登记的 DeepSeek vendor（每次提问现
+// 读，AI 路由里改配置即时生效，无独立配置键）。
 //
-// 搜索词来源（本 change）：前置一次轻量 LLM 调用（marginNoteQueryGenFn，
+// 搜索词来源：前置一次轻量 LLM 调用（marginNoteQueryGenFn，
 // operation daily_report.margin_note_search_query）自由生成 1~3 条中文搜索
 // 词；生成失败/超时/输出空 → 静默回退锚文本 query（MarginNoteSearchQuery 现状
 // 规则）单 query 搜索。
 
-// errMarginNoteSearchDisabled signals "SearXNG disabled/unconfigured" — the
-// QA flow treats it as the silent-degrade path (Warn log, no web context).
-var errMarginNoteSearchDisabled = errors.New("searxng not configured")
-
-// marginNoteSearxngQueryRunes caps the search query (design D7: quoted_text
+// marginNoteSearchQueryRunes caps the search query (design D7: quoted_text
 // 截前 80 runes，为空回退问题文本).
-const marginNoteSearxngQueryRunes = 80
+const marginNoteSearchQueryRunes = 80
 
-// marginNoteSearxngResultLimit is how many raw results feed the prompt.
-const marginNoteSearxngResultLimit = 5
+// marginNoteSearchResultLimit is how many raw results feed the prompt.
+const marginNoteSearchResultLimit = 5
 
 // marginNoteWebSearchFn is the swappable web-search hook (marginNoteChatFn
-// precedent): tests replace it with a stub; the default resolves config on
-// every call (UI changes take effect without restart).
-var marginNoteWebSearchFn = func(ctx context.Context, query string) ([]searxng.Result, error) {
-	endpoint, ok := marginNoteSearxngEndpoint()
-	if !ok {
-		return nil, errMarginNoteSearchDisabled
-	}
-	return searxng.Search(ctx, endpoint, query)
-}
+// precedent): tests replace it with a stub; the default goes straight to the
+// unified entry（凭据由 platform/websearch 每次现读，调用方不传 endpoint）。
+var marginNoteWebSearchFn = websearch.Search
 
-// MarginNoteSearchQuery derives the SearXNG query for one question: the
-// anchored text first (capped at 80 runes — long selections search poorly),
-// falling back to the question itself when the anchor is blank.
+// MarginNoteSearchQuery derives the fallback search query for one question:
+// the anchored text first (capped at 80 runes — long selections search
+// poorly), falling back to the question itself when the anchor is blank.
 func MarginNoteSearchQuery(quotedText, question string) string {
-	if q := searxng.BuildQuery(quotedText, marginNoteSearxngQueryRunes); q != "" {
+	if q := clampSearchQuery(quotedText, marginNoteSearchQueryRunes); q != "" {
 		return q
 	}
-	return searxng.BuildQuery(question, marginNoteSearxngQueryRunes)
+	return clampSearchQuery(question, marginNoteSearchQueryRunes)
 }
 
-// marginNoteSearxngEndpoint resolves the current SearXNG endpoint. ok=false →
-// disabled (DB absent-or-disabled AND env/config.yaml empty)。实现委托
-// searxng.ResolveConfiguredEndpoint（单一事实源：与本包探测下沉的设置面板
-// 健康探测同一解析路径，界面改两侧同时生效）。
-func marginNoteSearxngEndpoint() (string, bool) {
-	return searxng.ResolveConfiguredEndpoint()
+// clampSearchQuery trims then caps a search term at maxRunes（截断口径沿用
+// margin-note-llm-search-query 的既有规则：先 trim 再按 rune 截）。
+func clampSearchQuery(raw string, maxRunes int) string {
+	return truncateRunes(strings.TrimSpace(raw), maxRunes)
 }
 
-// marginNoteSearxngEndpointFn is the swappable endpoint precheck hook (D3:
-// AskMarginNote 发起 query 生成之前先预检，未配置/禁用跳过整个联网链路)。测
-// 试替换它控制「已配置/未配置」两态（默认钩子读 aisettings 全局 DB，本包单测
-// 未设会空指针，先例见 swapMarginNoteChat 注释）。
-var marginNoteSearxngEndpointFn = marginNoteSearxngEndpoint
+// marginNoteSearchPrecheckFn is the swappable credential precheck hook (D3:
+// AskMarginNote 发起 query 生成之前先预检，未配置跳过整个联网链路)。默认实现
+// 现读 ai_vendors（websearch.ResolveCredentials，与设置面板探测同一解析路径，
+// 界面改两侧同时生效）；测试替换它控制「已配置 / 未配置 / 其他故障」三态
+// （本包单测未设全局 DB 时解析直接返回 ErrNotConfigured，先例见
+// swapMarginNoteChat 注释）。
+var marginNoteSearchPrecheckFn = func(ctx context.Context) error {
+	_, err := websearch.ResolveCredentials(ctx)
+	return err
+}
 
 // ── LLM 自由选词搜索（margin-note-llm-search-query design D1~D8）──────────
 
@@ -150,7 +144,7 @@ func buildMarginNoteQueryGenPrompt(quotedText, question, threadTitle, threadSumm
 
 	var u strings.Builder
 	if quoted := strings.TrimSpace(quotedText); quoted != "" {
-		u.WriteString("【读者划选的原文】\n" + searxng.BuildQuery(quoted, marginNoteQueryGenQuotedRunes) + "\n\n")
+		u.WriteString("【读者划选的原文】\n" + clampSearchQuery(quoted, marginNoteQueryGenQuotedRunes) + "\n\n")
 	}
 	u.WriteString("【读者的问题】\n" + question + "\n")
 	if threadTitle != "" || threadSummary != "" {
@@ -210,13 +204,14 @@ func parseMarginNoteQueries(content string) []string {
 	return queries
 }
 
-// ── 联网搜索状态三态（add-searxng-health-indicator design D3/D4）────────
+// ── 联网搜索状态三态（add-searxng-health-indicator design D3/D4，本 change
+// 只换搜索后端，三态语义零变更）────────
 //
 // 落库三态（面板四态的落库投影：unreachable/degraded 对读者语义同为「联网
 // 没帮上」，合并为 empty；面板才需细分排障）。枚举值即字符串常量，可读性好、
 // 日志友好；旧行 NULL=历史数据（前端不渲染标记，不回填）。
 const (
-	// MarginNoteWebSearchStatusDisabled: SearXNG 未配置或未启用（预检不过）。
+	// MarginNoteWebSearchStatusDisabled: 搜索入口未配置（无可用 DeepSeek 供应商，预检不过）。
 	MarginNoteWebSearchStatusDisabled = "disabled"
 	// MarginNoteWebSearchStatusOK: 链路启用且有结果进入参考池。
 	MarginNoteWebSearchStatusOK = "ok"
@@ -225,18 +220,20 @@ const (
 )
 
 // searchWebForMarginNoteWithQueryGen runs the D5 degrade tree for the
-// web-search step: endpoint 预检（D3）→ LLM query 生成（D1）→ 并行搜索合并
+// web-search step: 凭据预检（D3）→ LLM query 生成（D1）→ 并行搜索合并
 // （D4）→ 各级静默降级。返回的合并结果池直接作为回答调用的联网参考块与
 // web_sources 白名单候选集；status 与降级树同函数采集（单一采集点，不会漏
 // 分支）：预检不过→disabled；链路启用且池非空→ok；链路启用但全部失败/空
 // →empty。静默降级行为不变（联网是增益不是依赖）。
-func searchWebForMarginNoteWithQueryGen(ctx context.Context, quotedText, question, threadTitle, threadSummary string) ([]searxng.Result, string) {
-	// D3 端点预检前置：未配置/禁用直接跳过整个联网链路（省 query 生成调用）。
-	if _, ok := marginNoteSearxngEndpointFn(); !ok {
+func searchWebForMarginNoteWithQueryGen(ctx context.Context, quotedText, question, threadTitle, threadSummary string) ([]websearch.Result, string) {
+	// D3 凭据预检前置：未配置直接跳过整个联网链路（省 query 生成调用）。其他
+	// 故障（如 DB 暂时不可用）不跳过——照常走链路，让每次搜索失败落 empty
+	// （未配置是确定态，DB 故障是暂时态，不能当作「没配」处理）。
+	if errors.Is(marginNoteSearchPrecheckFn(ctx), websearch.ErrNotConfigured) {
 		return nil, MarginNoteWebSearchStatusDisabled
 	}
 	queries := generateMarginNoteSearchQueries(ctx, quotedText, question, threadTitle, threadSummary)
-	var results []searxng.Result
+	var results []websearch.Result
 	if len(queries) == 0 {
 		// 生成失败/空 → 静默回退锚文本 query（现状规则）单 query 搜索。
 		if fallback := MarginNoteSearchQuery(quotedText, question); fallback != "" {
@@ -252,11 +249,11 @@ func searchWebForMarginNoteWithQueryGen(ctx context.Context, quotedText, questio
 }
 
 // searchWebParallelForMarginNote fans out one search per query (D4 并行)：各
-// goroutine 独立调 marginNoteWebSearchFn（searxng 客户端单次超时 8s 不变，最
+// goroutine 独立调 marginNoteWebSearchFn（websearch 客户端单次超时 8s 不变，最
 // 坏墙钟 8s）；单个 query 失败/空不拖垮其他；全部失败/空 → 无联网参考块
-// （静默，不再回退锚文本——SearXNG 同轮已挂，二跳只加延迟）。
-func searchWebParallelForMarginNote(ctx context.Context, queries []string) []searxng.Result {
-	perQuery := make([][]searxng.Result, len(queries))
+// （静默，不再回退锚文本——搜索入口同轮已挂，二跳只加延迟）。
+func searchWebParallelForMarginNote(ctx context.Context, queries []string) []websearch.Result {
+	perQuery := make([][]websearch.Result, len(queries))
 	var wg sync.WaitGroup
 	for i, q := range queries {
 		wg.Add(1)
@@ -280,11 +277,14 @@ func searchWebParallelForMarginNote(ctx context.Context, queries []string) []sea
 }
 
 // mergeMarginNoteSearchResults merges per-query results into the whitelist
-// pool (D4 合并)：按 query 顺序 × 各自结果顺序遍历，URL（trim 精确匹配）去
-// 重保序（首次出现位次），截前 marginNoteSearxngResultLimit 条。
-func mergeMarginNoteSearchResults(perQuery [][]searxng.Result) []searxng.Result {
+// pool (design D4 合并与重排)：先按 query 顺序 × 各自结果顺序遍历，URL（trim
+// 精确匹配）去重、首次出现的那条为准；再 sort.SliceStable 按相关度分降序重
+// 排（同分或缺失时保持首次出现顺序）；最后截前 marginNoteSearchResultLimit
+// 条。跨 query 可比性有风险（不同 query 的分数分布可能不同），故用稳定排序
+// 保序兜底，先上线观察。
+func mergeMarginNoteSearchResults(perQuery [][]websearch.Result) []websearch.Result {
 	seen := make(map[string]struct{})
-	merged := make([]searxng.Result, 0, marginNoteSearxngResultLimit)
+	merged := make([]websearch.Result, 0, marginNoteSearchResultLimit)
 	for _, results := range perQuery {
 		for _, r := range results {
 			url := strings.TrimSpace(r.URL)
@@ -296,10 +296,13 @@ func mergeMarginNoteSearchResults(perQuery [][]searxng.Result) []searxng.Result 
 			}
 			seen[url] = struct{}{}
 			merged = append(merged, r)
-			if len(merged) >= marginNoteSearxngResultLimit {
-				return merged
-			}
 		}
+	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		return merged[i].Score > merged[j].Score
+	})
+	if len(merged) > marginNoteSearchResultLimit {
+		merged = merged[:marginNoteSearchResultLimit]
 	}
 	return merged
 }

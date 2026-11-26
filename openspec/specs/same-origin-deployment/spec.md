@@ -1,3 +1,5 @@
+<!-- domain: dev -->
+
 # same-origin-deployment Specification
 
 ## Purpose

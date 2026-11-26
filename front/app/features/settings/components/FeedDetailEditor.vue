@@ -25,7 +25,7 @@ const props = withDefaults(defineProps<{
 })
 
 const emit = defineEmits<{
-  'update-feed': [feedId: string, setting: 'refresh_interval' | 'max_articles' | 'tagging_enabled' | 'firecrawl_enabled' | 'completion_on_refresh' | 'article_summary_enabled' | 'max_completion_retries' | 'category_id' | 'url', value: number | boolean | string | null]
+  'update-feed': [feedId: string, setting: 'refresh_interval' | 'max_articles' | 'tagging_enabled' | 'firecrawl_enabled' | 'completion_on_refresh' | 'article_summary_enabled' | 'ai_detection_enabled' | 'max_completion_retries' | 'category_id' | 'url', value: number | boolean | string | null]
   'refresh-feed': [feedId: string]
   'create-category': [name: string]
   'delete-feed': [feedId: string]
@@ -320,6 +320,22 @@ function formatStatus(feed: RssFeed): string {
           <AppToggle
             :model-value="!!feed.taggingEnabled"
             @update:model-value="emit('update-feed', feed.id, 'tagging_enabled', $event)"
+          />
+        </div>
+
+        <!-- AI 生成检测（add-ai-generated-article-detection）：与打标互不联动、默认关、就地即时保存 -->
+        <div class="feed-detail__toggle-row" data-testid="feed-toggle-ai-detection">
+          <div class="feed-detail__toggle-label">
+            <Icon icon="mdi:robot-outline" width="16" height="16" style="color: var(--color-text-secondary)" />
+            <div>
+              <span class="feed-detail__toggle-name">AI 生成检测</span>
+              <span class="feed-detail__toggle-desc">判定文章是否疑似 AI 撰写，仅供标记与排序参考</span>
+            </div>
+          </div>
+          <AppToggle
+            :model-value="!!feed.aiDetectionEnabled"
+            data-testid="feed-toggle-ai-detection-input"
+            @update:model-value="emit('update-feed', feed.id, 'ai_detection_enabled', $event)"
           />
         </div>
       </div>

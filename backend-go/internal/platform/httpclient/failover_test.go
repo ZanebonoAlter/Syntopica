@@ -246,7 +246,7 @@ func TestProxyDialFailureFallsBackToDirect(t *testing.T) {
 		t.Fatalf("SetProxy: %v", err)
 	}
 
-	client := New(WithTimeout(5 * time.Second))
+	client := New(WithTimeout(5*time.Second), WithCrawlScope())
 	resp, err := client.Get(targetURL + "/feed.xml")
 	if err != nil {
 		t.Fatalf("GET through dead proxy must fall back to direct: %v", err)
@@ -277,7 +277,7 @@ func TestCircuitOpenSkipsProxyDial(t *testing.T) {
 	}
 
 	dials := countProxyDials(t)
-	client := New(WithTimeout(2 * time.Second))
+	client := New(WithTimeout(2*time.Second), WithCrawlScope())
 	for i := 0; i < 3; i++ {
 		resp, err := client.Get(targetURL)
 		if err != nil {
@@ -311,7 +311,7 @@ func TestProbeSuccessReopensCircuit(t *testing.T) {
 	}
 	_, restore := failProxyDials(t)
 
-	client := New(WithTimeout(2 * time.Second))
+	client := New(WithTimeout(2*time.Second), WithCrawlScope())
 	resp1, err := client.Get(targetURL)
 	if err != nil {
 		t.Fatalf("outage-phase request: %v", err)
@@ -351,7 +351,7 @@ func TestProbeFailureExtendsWindow(t *testing.T) {
 	}
 	dials, _ := failProxyDials(t)
 
-	client := New(WithTimeout(2 * time.Second))
+	client := New(WithTimeout(2*time.Second), WithCrawlScope())
 	resp1, err := client.Get(targetURL)
 	if err != nil {
 		t.Fatalf("first request: %v", err)
@@ -398,7 +398,7 @@ func TestProbeSingleFlightConcurrentDirect(t *testing.T) {
 	}
 	dials, _ := failProxyDials(t)
 
-	client := New(WithTimeout(2 * time.Second))
+	client := New(WithTimeout(2*time.Second), WithCrawlScope())
 	resp1, err := client.Get(targetURL)
 	if err != nil {
 		t.Fatalf("first request: %v", err)
@@ -453,7 +453,7 @@ func TestProxyAliveTargetErrorsNoBreaker(t *testing.T) {
 		if err := SetProxy(proxy.URL); err != nil {
 			t.Fatalf("SetProxy: %v", err)
 		}
-		client := New(WithTimeout(2 * time.Second))
+		client := New(WithTimeout(2*time.Second), WithCrawlScope())
 		for i := 0; i < 2; i++ {
 			resp, err := client.Get("http://example.com/") // non-loopback; proxy answers, target never contacted
 			if err != nil {
@@ -483,7 +483,7 @@ func TestProxyAliveTargetErrorsNoBreaker(t *testing.T) {
 		if err := SetProxy(proxy.URL); err != nil {
 			t.Fatalf("SetProxy: %v", err)
 		}
-		client := New(WithTimeout(2 * time.Second))
+		client := New(WithTimeout(2*time.Second), WithCrawlScope())
 		resp, err := client.Get(targetURL)
 		if err != nil {
 			t.Fatalf("GET: %v", err)
@@ -517,7 +517,7 @@ func TestProxyAliveTargetErrorsNoBreaker(t *testing.T) {
 		if err := SetProxy(proxy.URL); err != nil {
 			t.Fatalf("SetProxy: %v", err)
 		}
-		client := New(WithTimeout(2 * time.Second))
+		client := New(WithTimeout(2*time.Second), WithCrawlScope())
 		if _, err := client.Get(tlsURL); err == nil {
 			t.Fatal("expected the CONNECT refusal to surface to the caller")
 		}
@@ -537,7 +537,7 @@ func TestProxyAliveTargetErrorsNoBreaker(t *testing.T) {
 		if err := SetProxy(proxy.URL); err != nil {
 			t.Fatalf("SetProxy: %v", err)
 		}
-		client := New(WithTimeout(100 * time.Millisecond))
+		client := New(WithTimeout(100*time.Millisecond), WithCrawlScope())
 		if _, err := client.Get("http://example.com/"); err == nil {
 			t.Fatal("expected the timeout to surface to the caller")
 		}
@@ -559,7 +559,7 @@ func TestRuntimeClearProxyTakesEffect(t *testing.T) {
 	if err := SetProxy(proxy.URL); err != nil {
 		t.Fatalf("SetProxy: %v", err)
 	}
-	client := New(WithTimeout(2 * time.Second)) // built BEFORE the clear
+	client := New(WithTimeout(2*time.Second), WithCrawlScope()) // built BEFORE the clear
 
 	resp1, err := client.Get(targetURL)
 	if err != nil {
@@ -600,7 +600,7 @@ func TestRuntimeSwapProxyResetsBreaker(t *testing.T) {
 	}
 	_, _ = failProxyDials(t)
 
-	client := New(WithTimeout(2 * time.Second))
+	client := New(WithTimeout(2*time.Second), WithCrawlScope())
 	resp1, err := client.Get(targetURL)
 	if err != nil {
 		t.Fatalf("outage request: %v", err)
@@ -637,7 +637,7 @@ func TestFailoverMatrixHTTPSConnectDialFailure(t *testing.T) {
 	if err := SetProxy("http://" + freePortAddr(t)); err != nil {
 		t.Fatalf("SetProxy: %v", err)
 	}
-	client := New(WithTimeout(3 * time.Second))
+	client := New(WithTimeout(3*time.Second), WithCrawlScope())
 	resp, err := client.Get(tlsURL)
 	if err != nil {
 		t.Fatalf("https via dead proxy must fall back to direct: %v", err)
@@ -661,7 +661,7 @@ func TestFailoverMatrixSocks5DialFailure(t *testing.T) {
 	if err := SetProxy("socks5://" + freePortAddr(t)); err != nil {
 		t.Fatalf("SetProxy: %v", err)
 	}
-	client := New(WithTimeout(3 * time.Second))
+	client := New(WithTimeout(3*time.Second), WithCrawlScope())
 	resp, err := client.Get(targetURL)
 	if err != nil {
 		t.Fatalf("socks5 dead proxy must fall back to direct: %v", err)

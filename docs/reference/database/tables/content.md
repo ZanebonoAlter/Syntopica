@@ -12,15 +12,15 @@
 | `id` | SERIAL | PK | 主键 |
 | `feed_id` | INTEGER | NOT NULL; index | 所属订阅源 ID（逻辑关联 `feeds.id`，无 DB FK） |
 | `title` | VARCHAR(500) | NOT NULL | 文章标题 |
-| `description` | TEXT | — | 文章描述（参与全文检索，权重 B） |
-| `content` | TEXT | — | RSS 原始内容（HTML 片段） |
+| `description` | TEXT | — | 文章摘要。**入库即纯文本化**（fix-reader-lede-blank-space）：RSS 条目的 `description` 可能是整篇文章的 HTML（智源社区均值 66 KB、最大 864 KB），入库时经 `htmltext.PlainSummary(raw, 300)` 收敛为 ≤300 字符纯文本（去 script/style → 剔隐藏子树 → 去标签 → 还原实体 → 折叠空白 → 按 rune 截断加省略号）；清洗在入库层 `feed_service.buildArticleFromEntry`，解析层保持源站原文。存量可一次性回填：`go run ./cmd/clean-article-descriptions`（默认 dry-run，`--apply` 才写库，只改本列）。参与全文检索，权重 B；trgm 索引 `idx_articles_description_trgm` 覆盖本列 |
+| `content` | TEXT | — | RSS 原始内容（HTML 片段）。**保留源站原文、不被摘要清洗改写**（fix-reader-lede-blank-space）：正文源切换、Firecrawl 兜底与整理稿降级都依赖它；阅读页原文源渲染前在前端做保守清洗（`utils/articleContentHtml.ts`） |
 | `link` | VARCHAR(1000) | index `idx_articles_link`；部分唯一索引 `uq_articles_feed_link`（迁移 `20260917_0001`） | 文章链接。**入库判重键 = `(feed_id, link)`**（标题不参与判重），唯一部分索引 `WHERE link <> ''` 兜底并发刷新（空 link 行不受约束）；跨 feed 复用打标与存量归并都依赖 `idx_articles_link` |
 | `image_url` | VARCHAR(1000) | — | 封面图 |
 | `pub_date` | TIMESTAMP | — | 发布时间 |
 | `author` | VARCHAR(200) | — | 作者 |
 | `read` | BOOLEAN | DEFAULT false | 是否已读（索引 `idx_articles_read`） |
 | `favorite` | BOOLEAN | DEFAULT false | 是否收藏（索引 `idx_articles_favorite`）；归档免死标记 |
-| `archived` | BOOLEAN | DEFAULT false（迁移 `20260818_0001`） | 归档标记：超出 feed `max_articles` 活跃窗口的超限文章置 true。归档行**保留全部文本字段**（日报线索按 ID 反查），但 topic tags 边 / reading_behaviors 已删、`search_vector` 置 NULL；reader 列表与统计默认过滤归档行，按 ID 详情豁免（见 `flow/reading.md` §业务约束 6） |
+| `archived` | BOOLEAN | DEFAULT false（迁移 `20260818_0001`） | 归档标记：超出 feed `max_articles` 活跃窗口的超限文章置 true。归档行**保留全部文本字段**（日报线索按 ID 反查），但 topic tags 边 / reading_behaviors 已删；reader 列表与统计默认过滤归档行，按 ID 详情豁免，站内搜索默认含入（见 `flow/reading.md` §业务约束 6/10） |
 | `summary_status` | VARCHAR(20) | DEFAULT 'complete' | AI 总结状态：`incomplete` / `pending` / `complete` / `failed` |
 | `summary_generated_at` | TIMESTAMP | — | AI 总结生成时间 |
 | `summary_processing_started_at` | TIMESTAMP | — | AI 总结开始处理时间 |
@@ -32,10 +32,13 @@
 | `firecrawl_error` | TEXT | — | Firecrawl 抓取错误信息 |
 | `firecrawl_content` | TEXT | — | Firecrawl 抓取的完整网页内容（Markdown） |
 | `firecrawl_crawled_at` | TIMESTAMP | — | Firecrawl 抓取时间 |
-| `search_vector` | tsvector | — | 全文检索向量（触发器维护，见下） |
+| `ai_detection_status` | VARCHAR(20) | NOT NULL DEFAULT 'unknown'（迁移 `20261120_0001`） | 疑似 AI 判定状态：`unknown`（未判定，存量与判定失败都停在这里）/ `suspect`（疑似 AI 生成）/ `not_ai`（已确认非 AI）。空串读时归一为 `unknown`（`models.NormalizeAIDetectionStatus`）；**只有判定阈值达标才写 `suspect`**，人工标记来源另记 `ai_detection_source` |
+| `ai_detection_score` | DOUBLE PRECISION | NOT NULL DEFAULT 0 | 疑似 AI 置信分 0-1（未判定 0；人工标记写界值——标记 `1`、取消/确认非 AI `0`） |
+| `ai_detection_source` | VARCHAR(20) | NOT NULL DEFAULT '' | 判定来源：`llm`（自动判定）/ `manual`（人工标记）/ `''`（未判定）。人工结论优先：判定作业执行前会跳过已有 `manual` 结论的文章（显式重判除外） |
+| `ai_detection_at` | TIMESTAMPTZ | NULL | 判定时间（人工标记与自动判定都写） |
 | `created_at` | TIMESTAMP | — | 创建时间 |
 
-**全文检索（已废弃，2026-08-20）**：`search_vector` 列（tsvector）与触发器 `articles_search_vector_trigger`、GIN 索引 `idx_articles_search_vector` 自迁移 `20260417_0002` 引入，但业务零引用（代码 grep + idx_scan=0 双证据），索引与触发器已删除（列保留，重建分钟级）；归档 cleanup 置 `search_vector = NULL` 的行为保留。
+**全文检索（tsvector 路径已彻底退场，2026-10-13）**：`search_vector` 列（tsvector）与触发器/旧 GIN 索引自迁移 `20260417_0002` 引入，但业务零引用且 `simple` 分词器对中文失效（实测漏 97%）——索引与触发器先于 2026-08-20 删除，列随迁移 `20261013_0002` DROP（add-article-search；列数据可由 title/description 重算，可再生；归档 cleanup 置 NULL 的行为已同步移除）。
 
 **虚拟字段（`gorm:"->"` 计算列，非持久化）**：`tag_count`（文章标签数）、`relevance_score`（相关度评分）。
 
@@ -44,6 +47,8 @@
 **复合索引（迁移 `20260417_0001`）**：`idx_articles_feed_pub_date(feed_id, pub_date DESC)`、`idx_articles_feed_id_title(feed_id, title)`。
 
 **去重相关索引（迁移 `20260917_0001`）**：`idx_articles_link(link)`（普通索引，服务跨 feed 打标复用查询与存量归并）+ `uq_articles_feed_link(feed_id, link) WHERE link <> ''`（部分唯一索引，同 feed 同 link 只能有一行——并发刷新双方的 `Create` 冲突被刷新路径 `continue` 吞掉，空 link 行豁免）。
+
+**搜索 trgm 索引（迁移 `20261013_0001`，add-article-search）**：`idx_articles_title_trgm`（`title` 列 `gin_trgm_ops`）+ `idx_articles_description_trgm`（`description` 列 `gin_trgm_ops`），依赖 `CREATE EXTENSION pg_trgm`。服务 `GET /api/search` 与 `GET /api/articles?search=` 的中文子串/trigram 匹配（裸 LIKE 全表扫实测 ~3s，走索引后毫秒级）；估算体积 100~200MB，文章写入频率低（日增百级），GIN 维护开销可忽略。
 
 ### 1.2 feeds（订阅源表）
 
@@ -69,6 +74,7 @@
 | `max_completion_retries` | INTEGER | DEFAULT 3 | AI 总结最大重试次数 |
 | `firecrawl_enabled` | BOOLEAN | DEFAULT false | 是否启用 Firecrawl 抓取 |
 | `tagging_enabled` | BOOLEAN | DEFAULT true | 是否启用自动打标签 |
+| `ai_detection_enabled` | BOOLEAN | NOT NULL DEFAULT false（迁移 `20261120_0001`） | 订阅源级「AI 生成检测」开关：只有 `true` 时该源文章才在内容就绪（全文抓取成功 / 抓取终态失败降级 / 未开抓取时入库）时入 `detection_jobs` 判定队列；与 `tagging_enabled` 互不联动，存量行默认为关 |
 
 > ⚠️ 旧文档曾列 `ai_summary_enabled`（DEFAULT true）：**代码无此字段**。实际是 `article_summary_enabled`（DEFAULT false），两者曾被混淆，请勿再引用 `ai_summary_enabled`。
 
@@ -104,7 +110,7 @@
 
 ## 域 ER 图
 
-> 实线关系 = GORM 逻辑关联；标注「真实DB FK」的边 = DB 物理外键（共 6 条，全清单见 [_conventions.md](_conventions.md)）。外域邻居表仅标名，字段见其所属域文档。
+> 实线关系 = GORM 逻辑关联；标注「真实DB FK」的边 = DB 物理外键（共 13 条，全清单见 [_conventions.md](_conventions.md)）。外域邻居表仅标名，字段见其所属域文档。
 
 ```mermaid
 erDiagram

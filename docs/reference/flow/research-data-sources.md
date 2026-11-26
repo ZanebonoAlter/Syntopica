@@ -1,6 +1,6 @@
 # 研究数据源流程（Research Data Sources）
 
-<!-- doc-impact-applies: backend-go/internal/datasources/ | section=业务约束与不变量 -->
+<!-- doc-impact-applies: backend-go/internal/datasources/, front/app/features/settings/components/SettingsSectionDatasources.vue, front/app/features/settings/components/SettingsSectionDatasourcesNetwork.vue, front/app/api/datasources.ts | section=业务约束与不变量 -->
 > 第 10 个业务域（change integrate-research-data-sources 建立）：为研究对话助手供给结构化、可溯源的官方数据取数。互补：[configuration.md](../configuration.md)「研究数据源」节（配置与口径速查）、[api/datasources.md](../api/datasources.md)（端点契约）、[data-enrichment.md](data-enrichment.md)（工具注册表与 agent loop 宿主）。
 
 ## 需求说明
@@ -57,6 +57,8 @@
 
 | 日期 | 变更 | 摘要 | 归档位置 |
 |------|------|------|----------|
+| 2026-11-06 | enable-unbound-jit-injection | 约束标签辖区补全：补后端漏网目录与前端业务区信号，修 5 条孤儿标签；未激活档编辑路径 JIT 注入见 change（本 flow 无业务行为变更） | [`openspec/changes/archive/2026-11-06-enable-unbound-jit-injection`](../../../openspec/changes/archive/2026-11-06-enable-unbound-jit-injection) |
 | 2026-09-19 | integrate-research-data-sources | 建域：四源取数器（EIA/JODI 口径从 energy-mcp Go 化 + WDI/Comtrade 新接）、预算 HTTP 层+TTL 缓存、data_sources 目录表+seed、目录/probe API、agent 工具适配注入（现有工具面不变）、COMTRADE_API_KEY 配置 | [`openspec/changes/archive/2026-09-19-integrate-research-data-sources`](../../../openspec/changes/archive/2026-09-19-integrate-research-data-sources) |
 | 2026-09-22 | board-signal-reports | 研究授权首例：板块信号研究 loop 显式授权四源（唯一例外，经 cutoff 过滤包装层消费，旧流程工具面零变化）+ EIA `weeks` 1~12 官方归档版次 CSV 历史窗口（无 key、缓存键参数化）+ JODI `years` 1~5 显式多年（与 month 互斥、本年 404 回退一次去重、历史年记 gap） | [archive/2026-09-26-board-signal-reports](../../../openspec/changes/archive/2026-09-26-board-signal-reports) |
 | 2026-09-28 | add-datasources-test-shard | test-patrol 补 `be-datasources` 巡检分片（SHARD_ORDER 12→13 片）：datasources 域 7+ 测试文件此前零巡检覆盖（实现漂移，非 spec 缺口）；纯 harness 测试巡检面，无业务链路变化 | [archive/2026-09-28-add-datasources-test-shard](../../../openspec/changes/archive/2026-09-28-add-datasources-test-shard) |
+| 2026-10-14 | add-fast-frequency-datasources | 目录四源扩七源：yahoo_chart（symbol 封闭枚举 15 个/range 枚举/非官方接口无 SLA 显式失败）+ fred_series（series_id 格式即边界/免费 key 三级动态链 `ai_settings.fred_config`>`FRED_API_KEY`>`fred.api_key`）+ gdelt_doc（mode/timespan 枚举、query ≤120 字符、非事实核查非新闻正文）；host 白名单扩三 host；probe/live smoke 扩源；fetch 层 429 统一退避重试（`FetchBudget.Retry429Backoff` 默认 20s，代码级重试不耗研究轮次，仍 429 报劝退帧；传输层错误带底层原因） | [archive/2026-10-14-add-fast-frequency-datasources](../../../openspec/changes/archive/2026-10-14-add-fast-frequency-datasources) |

@@ -1,5 +1,6 @@
 import { apiClient } from './client'
-import type { ApiResponse, BoardSourceBreakdown } from '~/types'
+import { normalizeArticleDetection } from './normalizers/article'
+import type { ApiResponse, ArticleDetection, BoardSourceBreakdown } from '~/types'
 
 export interface SemanticBoard {
   id: number
@@ -54,6 +55,14 @@ export interface BoardCompositeMount {
 export interface BoardHealthLabelMetric {
   aux_id: number
   label: string
+  /** 构成标签类型（auxiliary | composite）；缺字段 = 旧快照（类型未知）。 */
+  label_type?: string
+  /**
+   * 核心主体标记（fix-board-health-magnet-signal D3）：标签名出现在版块标题 /
+   * description / aliases 任一文本中。核心主体是版块自身要谈论的对象，
+   * MUST NOT 作为摘除或重写对象。缺字段 = 旧快照（按「非核心主体」处理，不臆造）。
+   */
+  core_subject?: boolean
   samples: number
   cosine_mean: number | null
   cosine_median: number | null
@@ -61,6 +70,93 @@ export interface BoardHealthLabelMetric {
   cosine_p75: number | null
   low_sim_ratio: number | null
   insufficient: boolean
+  /** 体检时刻的描述快照（病C 描述污染证据源；空 = 该标签无描述）。 */
+  description?: string
+  /** 磁铁信号（磁铁污染嫌疑）；缺字段/null = 未算或信号不足。 */
+  magnet?: BoardHealthMagnetSignal | null
+  /** pgvector top-3 最近邻（排除自身）；null = 自身向量缺失（信号不足）。 */
+  neighbors?: BoardHealthNeighbor[] | null
+  /** 命中的文章式词根（事件性预筛）；缺字段/空 = 未命中。 */
+  desc_flags?: string[] | null
+}
+
+/**
+ * 体检快照·磁铁信号（构成标签对失败挂载子集 vs 健康挂载子集的贴合度差）。
+ *
+ * 判定口径（fix-board-health-magnet-signal D1）：`failed_mean - good_mean ≥ 阈值`
+ * 才成立——「磁铁」的语义是「把跑题的挂载吸过来」，失败侧贴合均值必须**高于**健康侧。
+ *
+ * `good_mean` / `good_samples` 是判定用的健康侧；`all_mean` / `all_samples` **保留
+ * 但退出嫌疑判定**（历史快照解析 + 旧口径回退展示）。
+ *
+ * 口径标记 `caliber`（fix-board-health-magnet-signal D12 / review R-4）：
+ *  - `'healthy_subset'` = 新口径（本轮由后端写入；**与样本是否充足无关**——
+ *    健康侧不可算时照样写这个值）；
+ *  - 空串 / 缺字段 = 旧口径快照（历史快照或该字段写入之前的快照）。
+ *
+ * 消费方 MUST 按 `caliber` 区分「旧口径快照」与「新快照但健康侧不可算」——
+ * `good_mean` 无 `omitempty`，新快照在健康侧不可算时同样是 null，两者不可区分。
+ */
+export interface BoardHealthMagnetSignal {
+  /** 健康挂载子集（direction_mismatch=false）贴合均值；缺字段/null = 旧快照或该侧无样本。 */
+  good_mean?: number | null
+  /**
+   * 磁铁口径标记：`healthy_subset` = 新口径（失败子集 vs 健康子集）；
+   * 空串 / 缺字段 = 旧口径快照（全体口径）。
+   */
+  caliber?: string
+  failed_mean: number | null
+  all_mean: number | null
+  /** 健康挂载子集样本数；缺字段 = 旧快照（按 0 处理，不臆造）。 */
+  good_samples?: number
+  failed_samples: number
+  all_samples: number
+  suspicious: boolean
+  insufficient: boolean
+}
+
+/**
+ * 体检快照·分诊合理性闸门结论（fix-board-health-magnet-signal D6/G3）。
+ *
+ * `actionable` / `ratio` 描述的是**降级前**的状态（= 闸门触发原因），
+ * 不是降级后的条数；`degraded` = 本轮可执行项是否被整轮降级为证据不足。
+ */
+export interface BoardHealthTriageGuard {
+  /** 降级前的可执行项条数（remove + rewrite）。 */
+  actionable: number
+  /** 分诊清单总条数。 */
+  total: number
+  /** 可执行占比（0-1）；降级前的状态。 */
+  ratio: number
+  /** 闸门阈值（0-1，默认 0.8）。 */
+  threshold: number
+  /** 本轮是否被闸门降级。 */
+  degraded: boolean
+  /** 降级原因（服务端文案）。 */
+  reason: string
+}
+
+/** 体检快照·最近邻证据（active 辅助标签 top-3，排除自身）。 */
+export interface BoardHealthNeighbor {
+  aux_id: number
+  label: string
+  cosine: number
+}
+
+/** 体检快照·失败挂载主要流向（top_board 为 null = 未知，不臆造目标）。 */
+export interface BoardHealthMagnetFlow {
+  failed_tags: number
+  flow_tags: number
+  top_board: string | null
+  top_tags: number
+}
+
+/** 体检快照·标签级分诊裁决（category 四值：remove|rewrite|keep|insufficient）。 */
+export interface BoardHealthTriageItem {
+  aux_id: number
+  category: string
+  evidence: string
+  suggestion?: string
 }
 
 /** 体检快照·版块级指标（全部匹配行口径）。 */
@@ -69,11 +165,19 @@ export interface BoardHealthBoardMetric {
   reason_dist: Record<string, number>
   ghost_matches: number
   vector_missing: number
+  /** 失败挂载主要流向证据；缺字段/null = 本轮无失败挂载或未知。 */
+  magnet_flow?: BoardHealthMagnetFlow | null
 }
 
 export interface BoardHealthMetrics {
   board: BoardHealthBoardMetric
   labels: BoardHealthLabelMetric[]
+  /** 标签级分诊清单；缺字段/null = 历史快照/降级轮次（按旧形态展示）。 */
+  triage?: BoardHealthTriageItem[] | null
+  /**
+   * 分诊合理性闸门结论；缺字段/null = 无闸门记录（旧快照，或本轮未产生闸门结论）。
+   */
+  triage_guard?: BoardHealthTriageGuard | null
 }
 
 /** 未收编候选（事实画像 diff：成员 tags 高频携带但不在版块构成中）。 */
@@ -186,6 +290,52 @@ export interface MatchingConfig {
   semantic_board_upgrade_cotag_dedupe_sim_threshold: number
   semantic_board_upgrade_cotag_hard_limit: number
   semantic_board_upgrade_cluster_method: string
+  /**
+   * 相关事件相似度阈值（enable-story-cross-day-continuation；默认 0.86、范围 [0,1]）。
+   * 与入板匹配参数彼此独立：只影响「相关事件」列表，不重算向量、不参与命中即停顺序。
+   */
+  related_event_similarity_threshold: number
+  /**
+   * 候选泳道在版块关注度里的权重（lane-heat-metric D8；默认 0.5、范围 [0,1] 有限数）。
+   * 只进「当天线索热度」计算，SHALL NOT 参与话题生命周期与入板匹配。
+   * 缺省 = 旧后端未下发（前端回退默认 0.5）。
+   */
+  lane_heat_candidate_weight?: number
+}
+
+/** 相关事件条目的可读来源（候选标签在该版块的最新文章；无来源如实为 null）。 */
+export interface RelatedEventSourceArticle {
+  id: number
+  title: string
+}
+
+export interface RelatedEventItem {
+  tag_id: number
+  label: string
+  description: string
+  /** 语义相似度（cosine），不是「同一事件概率」。 */
+  similarity: number
+  source_article: RelatedEventSourceArticle | null
+}
+
+/**
+ * 相关事件只读响应（GET /semantic-boards/:id/tags/:tagId/related-events）。
+ * status 三态如实上报索引覆盖：ready / partial / not_ready —— 缺索引不得当作空结果。
+ */
+export interface RelatedEventsResponse {
+  board_id: number
+  tag_id: number
+  status: 'ready' | 'partial' | 'not_ready'
+  reason?: string
+  threshold: number
+  window_days: number
+  window_start: string
+  window_end: string
+  candidate_count: number
+  indexed_count: number
+  representation_version: string
+  space_key?: string
+  items: RelatedEventItem[]
 }
 
 export interface SuggestedAuxiliaryLabel extends AuxiliaryLabelItem {
@@ -203,9 +353,10 @@ export interface BoardArticleTag {
   id: number
   label: string
   category: string
+  /** 标签描述（topic_tags.description；后端 8G.3a 起随 filtered_tags 返回）。 */
+  description?: string
   match_reason: string
   score: number
-  downgraded: boolean
   direction_mismatch: boolean
 }
 
@@ -260,7 +411,6 @@ export interface MatchDetailResponse {
   semantic_board_id: number
   match_reason: string
   score: number
-  downgraded: boolean
   direction_mismatch?: boolean
   direction_sim: number | null
   effective_min_hits: number
@@ -274,15 +424,62 @@ export interface MatchDetailResponse {
   pairs: MatchDetailPair[]
 }
 
-export interface BoardArticle {
+export interface BoardArticle extends ArticleDetection {
   id: number
   title: string
   url: string
+  /** 原文链接（后端 Article.ToDict 的 `link`，归档「打开原文」用）。 */
+  link?: string
   pub_date: string
   feed_id: number
   feed_name: string
   filtered_tags: BoardArticleTag[]
+  /** 归档口径（D5）：是否出现在查询窗口内任一分区线索的 related_article_ids。 */
+  in_report?: boolean
+  /** 弱证据：无强匹配（无标签 / max_sim），后端统一判定。 */
+  weak_evidence?: boolean
   [key: string]: unknown
+}
+
+/**
+ * 版块文章行的原始载荷：判定字段仍是 snake_case，由 API 模块映射为 camelCase
+ * （reading.md 红线 1：映射只发生在 API 模块）。
+ */
+interface BoardArticlePayload extends BoardArticle {
+  ai_detection_status?: string
+  ai_detection_score?: number
+  ai_detection_source?: string
+  ai_detection_at?: string
+}
+
+/**
+ * 版块文章行的判定字段归一（reading.md 红线 1：映射只在 API 模块发生）。
+ *
+ * 先剔除四个 snake_case 原键再挂 camelCase：不能用 `{...item, ...normalizeArticleDetection(item)}`
+ * ——那样同一语义会双键并存（snake_case 与 camelCase 同时在对象上），组件层可能误读（review R-9）。
+ */
+function normalizeBoardArticle(item: BoardArticlePayload): BoardArticle {
+  const rest = { ...item }
+  delete rest.ai_detection_status
+  delete rest.ai_detection_score
+  delete rest.ai_detection_source
+  delete rest.ai_detection_at
+  return { ...rest, ...normalizeArticleDetection(item) }
+}
+
+/**
+ * 版块文章按日计数（archive-time-chart-range，GET /semantic-boards/:id/article-daily-counts）。
+ *
+ * 口径固定为「全版块命中文章数（篇）」：不随来源 / 构成标签 / 方向不符 / 日报状态筛选
+ * 变化（筛选只作用于归档列表）。`days` 是**稀疏**数组（只含 count>0 的日期、升序），
+ * 缺日由调用方按已知 0 处理。
+ */
+export interface BoardArticleDailyCounts {
+  /** 该版块命中文章的最早自然日；无命中文章时为 null。 */
+  earliest_date: string | null
+  /** 该版块命中文章的最新自然日；无命中文章时为 null。 */
+  latest_date: string | null
+  days: Array<{ date: string, count: number }>
 }
 
 
@@ -406,11 +603,43 @@ export function useSemanticBoardsApi() {
 
   async function getBoardArticles(id: number, params?: Record<string, unknown>): Promise<ApiResponse<BoardArticle[]>> {
     const query = params ? apiClient.buildQueryParams(params) : ''
-    return apiClient.get(`/semantic-boards/${id}/articles${query ? `?${query}` : ''}`)
+    const response = await apiClient.get<BoardArticlePayload[]>(`/semantic-boards/${id}/articles${query ? `?${query}` : ''}`)
+    // 判定字段的 snake_case → camelCase 映射只在 API 模块发生（reading.md 红线 1）
+    return {
+      ...response,
+      data: (response.data ?? []).map(normalizeBoardArticle),
+    }
+  }
+
+  /**
+   * 版块文章按日计数（只读聚合，archive-time-chart-range）。
+   *
+   * 固定口径：无查询参数——筛选 / 分页 / 日期窗口一律不参与；成员口径与
+   * `getBoardArticles` 主查询逐字一致（同一版块标签集合、feeds 内连接、DATE 归日、
+   * 按文章 id 去重）。
+   */
+  async function getBoardArticleDailyCounts(id: number): Promise<ApiResponse<BoardArticleDailyCounts>> {
+    return apiClient.get<BoardArticleDailyCounts>(`/semantic-boards/${id}/article-daily-counts`)
   }
 
   async function getMatchDetail(boardId: number, tagId: number): Promise<ApiResponse<MatchDetailResponse>> {
     return apiClient.get(`/semantic-boards/${boardId}/match-detail/${tagId}`)
+  }
+
+  /**
+   * 同版块「相关事件」（按需展开才请求；服务端只读，不调模型不写库）。
+   * 阈值取 ai_settings.related_event_similarity_threshold，返回实际生效值。
+   */
+  async function getRelatedEvents(boardId: number, tagId: number): Promise<ApiResponse<RelatedEventsResponse>> {
+    return apiClient.get(`/semantic-boards/${boardId}/tags/${tagId}/related-events`)
+  }
+
+  /**
+   * 标签的辅助标签全集（GET /api/tags/:id/auxiliary-labels）。
+   * 层级视图「事件辅助标签 × 版块收编」逐对核对用；字段对齐后端 semanticBoardAuxiliaryDTO。
+   */
+  async function getTagAuxiliaryLabels(tagId: number): Promise<ApiResponse<{ items: AuxiliaryLabelItem[]; total: number }>> {
+    return apiClient.get(`/tags/${tagId}/auxiliary-labels`)
   }
 
 async function suggestAuxiliariesForBoard(boardId: number, params?: {
@@ -444,10 +673,30 @@ async function suggestAuxiliariesForBoard(boardId: number, params?: {
     suggestAuxiliaries,
     suggestAuxiliariesForBoard,
     getBoardArticles,
+    getBoardArticleDailyCounts,
     getMatchDetail,
+    getRelatedEvents,
+    getTagAuxiliaryLabels,
     triggerBackfill,
     getBackfillStatus,
     getMatchingConfig,
     updateMatchingConfig,
   }
+}
+
+// ── 今日雷达（rework-workshop-into-radar-and-desk 8.2 + 8A/R-18）─────────────
+// 后端 snake_case JSON 协议不变；仅 Radar 客户端分支在边界归一为 camelCase/
+// 字符串 ID 读模型（raw 契约与转换唯一实现在 api/normalizers/boardRadar.ts，
+// 组件层不散落映射，也不扩展到 semanticBoards 其它 API）。
+
+export type { RadarBoard, RadarLane, RadarOverview, RadarTopLaneItem, RadarTopLanes, BoardRadarRawBoard, BoardRadarRawOverview, BoardRadarRawTopLanes, BoardRadarRawTopLaneItem, RadarOverviewResponse } from '~/api/normalizers/boardRadar'
+
+import { mapRadarOverviewResponse, type BoardRadarRawOverview, type RadarOverviewResponse } from '~/api/normalizers/boardRadar'
+
+export function useBoardRadarApi() {
+  async function getOverview(): Promise<RadarOverviewResponse> {
+    const res = await apiClient.get<BoardRadarRawOverview>('/semantic-boards/overview')
+    return mapRadarOverviewResponse(res)
+  }
+  return { getOverview }
 }

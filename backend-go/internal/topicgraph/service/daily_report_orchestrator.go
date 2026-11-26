@@ -74,7 +74,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 	)
 	var topicBriefs map[uint][]repository.TopicRecentBrief
 	if existingTopics != nil {
-		briefs, briefsErr := repository.Repo.ListTopicRecentBriefs(boardID, briefsSinceDays, briefsPerTopicCap)
+		briefs, briefsErr := repository.Repo.ListTopicRecentBriefs(boardID, startOfDay, briefsSinceDays, briefsPerTopicCap)
 		if briefsErr != nil {
 			logging.Warnf("daily-report: load topic briefs for board %d failed (degrading to label-only): %v", boardID, briefsErr)
 		} else {
@@ -108,19 +108,20 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 			}
 		}
 	}
-	clusters, err := ClusterTagsLane(ctx, tags, existingTopics, tagEmb, topicBriefs, topicCfg)
+	clusters, err := ClusterTagsLane(ctx, tags, existingTopics, tagEmb, topicBriefs, topicCfg, LoadLaneConstraintOption(existingTopics, tagIDs))
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("cluster tags (lane): %w", err)
+	}
+
+	if inputs, ok := ctx.Value(reportHighlightInputsKey{}).(*reportHighlightInputs); ok {
+		inputs.tags = tags
+		inputs.clusters = clusters
 	}
 
 	// Step 4: Query yesterday's report for continuity
 	prevReport := findPreviousReportBrief(boardID, startOfDay)
 
-	// Step 5: Generate in parallel (A + C×K)
-	type highlightsResult struct {
-		data []repository.Highlight
-		err  error
-	}
+	// Step 5: Generate threads in parallel (C×K). Highlights wait for saved identities.
 	type threadsResult struct {
 		clusterIdx   int
 		data         []repository.Thread
@@ -128,14 +129,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		err          error
 	}
 
-	highlightsCh := make(chan highlightsResult, 1)
 	threadsCh := make(chan threadsResult, len(clusters))
-
-	// Call A: Highlights
-	go func() {
-		data, err := GenerateHighlights(ctx, tags, clusters)
-		highlightsCh <- highlightsResult{data: data, err: err}
-	}()
 
 	// Call C×K: Threads per cluster
 	for i, cluster := range clusters {
@@ -143,12 +137,6 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 			data, sectionTitle, err := GenerateClusterThreads(ctx, c, tags)
 			threadsCh <- threadsResult{clusterIdx: idx, data: data, sectionTitle: sectionTitle, err: err}
 		}(i, cluster)
-	}
-
-	// Collect highlights
-	hr := <-highlightsCh
-	if hr.err != nil {
-		return nil, nil, nil, fmt.Errorf("generate highlights: %w", hr.err)
 	}
 
 	// Collect threads
@@ -176,8 +164,8 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		threadsByCluster[tr.clusterIdx] = tr.data
 	}
 
-	// Step 6: Assemble report
-	highlightsJSON, _ := json.Marshal(hr.data)
+	// Step 6: Assemble with a temporary title and empty highlights. The saved
+	// report is finalized only after bounded attribution and display dedup.
 
 	// Calculate article count
 	totalArticles := 0
@@ -185,17 +173,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		totalArticles += t.ArticleCount
 	}
 
-	// Title: use first highlight if available, else board name + date
 	title := fmt.Sprintf("日报 %s", startOfDay.Format("2006-01-02"))
-	if len(hr.data) > 0 {
-		title = hr.data[0].Title
-	}
-
-	// Summary: use first highlight reason as summary fallback
-	summary := ""
-	if len(hr.data) > 0 {
-		summary = hr.data[0].Reason
-	}
 
 	clustersJSON, _ := json.Marshal(clusters)
 
@@ -203,8 +181,8 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		SemanticBoardID:         boardID,
 		PeriodDate:              startOfDay,
 		Title:                   title,
-		Summary:                 summary,
-		Highlights:              highlightsJSON,
+		Summary:                 "",
+		Highlights:              []byte("[]"),
 		Dynamics:                "",
 		ArticleCount:            totalArticles,
 		EventTagCount:           len(tags),
@@ -225,22 +203,39 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 	}
 
 	// Build sections
+	//
+	// Step 5.5 — intra-lane theme bucketing (add-intra-lane-theme-bucketing):
+	// an over-wide cluster's day is split into 2-6 theme directions AFTER its
+	// threads exist (threads are the grouping unit) and BEFORE section
+	// embeddings are computed (each bucket embeds its own tag set). Any failure
+	// or a repair that converges back to one group keeps the current single
+	// section — bucketing never blocks the report (spec 分桶失败不阻断流水线).
+	plans := resolveSectionPlans(ctx, clusters, threadsByCluster, sectionTitleByCluster, tags, topicLabelByID, topicCfg)
+
+	// 疑似 AI 文章的排序后置（design D8）：只影响线索文章在展开列表里的先后，不改
+	// related_article_ids 的成员与条数（红线 45）。先算一次候选文章里的疑似集合，
+	// 避免每篇文章一次查询；查询失败降级为空集（不重排、不阻断日报生成）。
+	suspectArticleIDs := loadSuspectArticleSet(uniqueUintIDs(threadCandidateArticleIDs(tagArticleMap)))
+
 	var sections []repository.DailyReportSection
-	for i, cluster := range clusters {
-		threads := threadsByCluster[i]
+	for pi := range plans {
+		plan := &plans[pi]
+		cluster := clusters[plan.clusterIdx]
+		threads := plan.threads
 		// Populate related article IDs
-		populateThreadArticles(threads, tagArticleMap)
-		clusterTags := filterTagsByIDs(tags, cluster.TagIDs)
+		populateThreadArticles(threads, tagArticleMap, suspectArticleIDs)
+		plan.threads = threads
+		clusterTags := filterTagsByIDs(tags, plan.tagIDs)
 		clusterArticleCount := 0
 		for _, t := range clusterTags {
 			clusterArticleCount += t.ArticleCount
 		}
 
-		tagIDsJSON := marshalJSONArray(cluster.TagIDs)
+		tagIDsJSON := marshalJSONArray(plan.tagIDs)
 
 		// Calculate best_tier and avg_score
 		tagIDSet := make(map[uint]bool)
-		for _, tid := range cluster.TagIDs {
+		for _, tid := range plan.tagIDs {
 			tagIDSet[tid] = true
 		}
 		bestTier := 4 // worst possible
@@ -248,7 +243,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 		matchCount := 0
 		for _, t := range tags {
 			if tagIDSet[t.ID] {
-				tier := tagging.MatchTier(t.MatchReason, t.Downgraded)
+				tier := tagging.MatchTier(t.MatchReason)
 				if tier < bestTier {
 					bestTier = tier
 				}
@@ -261,26 +256,28 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 			avgScore = totalScore / float64(matchCount)
 		}
 
-		breakdownJSON := buildQualityBreakdownJSON(tags, cluster.TagIDs)
+		breakdownJSON := buildQualityBreakdownJSON(tags, plan.tagIDs)
 
-		clusterLabel := resolveClusterLabel(sectionTitleByCluster[i], threadsByCluster[i], cluster, topicLabelByID)
+		clusterLabel := resolveClusterLabel(plan.sectionTitle, threads, cluster, topicLabelByID)
 		sections = append(sections, repository.DailyReportSection{
-			ClusterIndex:     i,
+			ClusterIndex:     plan.clusterIdx,
 			ClusterLabel:     clusterLabel,
 			ClusterTagIDs:    tagIDsJSON,
 			ArticleCount:     clusterArticleCount,
 			BestTier:         bestTier,
 			AvgScore:         avgScore,
 			QualityBreakdown: breakdownJSON,
+			BucketTitle:      plan.bucketTitle,
+			BucketIndex:      plan.bucketIndex,
 			MatchedTopicID:   cluster.MatchedTopicID,
 			LaneTier:         clusterLaneToTier(cluster.Lane),
 		})
 	}
 
-	// Build thread batches (convert []repository.Thread → []repository.DailyReportThread per cluster)
+	// Build thread batches (convert []repository.Thread → []repository.DailyReportThread per section)
 	var threadBatches [][]repository.DailyReportThread
-	for i := range clusters {
-		threads := threadsByCluster[i]
+	for pi := range plans {
+		threads := plans[pi].threads
 		var batch []repository.DailyReportThread
 		for _, th := range threads {
 			tagIDsJSON := marshalJSONArray(th.TagIDs)
@@ -388,7 +385,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 			}
 		}
 		if len(kwWatches) > 0 {
-			kwSections, kwBatches, kErr := MaterializeKeywordWatches(ctx, boardID, kwWatches, nextIdx+appended, matCfg, router.Chat)
+			kwSections, kwBatches, kErr := MaterializeKeywordWatches(ctx, boardID, kwWatches, date, nextIdx+appended, matCfg, router.Chat)
 			if kErr != nil {
 				logging.Warnf("daily-report: keyword materialization failed for board %d (skipped): %v", boardID, kErr)
 			} else {
@@ -406,6 +403,75 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 	filterVanishedArticleRefs(repository.Repo.DB(), threadBatches)
 
 	return report, sections, threadBatches, nil
+}
+
+// resolveHighlightsPayload maps the highlights generation result to the value
+// persisted in board_daily_reports.highlights.
+//
+// A failed generation degrades to an empty JSON array — NEVER a JSON null
+// scalar (a null scalar breaks jsonb_array_elements_text and makes the
+// frontend hide the whole "今日重点" block). The second return value reports
+// whether the report degraded, so the caller can log it. Degradation never
+// fabricates highlight content out of other fields.
+//
+// Pure function (no DB / airouter access) so the mapping is unit-testable.
+func resolveHighlightsPayload(data []repository.Highlight, err error) ([]byte, bool) {
+	if err != nil {
+		return marshalJSONArray(nil), true
+	}
+	return marshalJSONArray(data), false
+}
+
+// sectionPlan is one section the orchestrator will assemble. A regular cluster
+// yields exactly one plan; a bucketed cluster yields one plan per theme
+// direction (same clusterIdx, ascending bucketIndex).
+type sectionPlan struct {
+	clusterIdx   int
+	threads      []repository.Thread
+	tagIDs       []uint
+	bucketTitle  string
+	bucketIndex  int
+	sectionTitle string
+}
+
+// resolveSectionPlans is the Step 5.5 bucket planner: for every cluster it asks
+// BucketCluster whether the day's threads split into theme directions. Any
+// failure (LLM / JSON / repair) degrades to the single-section plan, so the
+// report never fails because of bucketing (spec 分桶失败不阻断流水线).
+//
+// Kept free of DB/airouter side effects apart from the swappable bucketChatFn,
+// so the single-vs-split decision is unit-testable.
+func resolveSectionPlans(ctx context.Context, clusters []repository.ClusterGroup, threadsByCluster map[int][]repository.Thread, sectionTitles map[int]string, tags []repository.TagInput, topicLabels map[uint]string, cfg repository.PersistentTopicConfig) []sectionPlan {
+	plans := make([]sectionPlan, 0, len(clusters))
+	for i, cluster := range clusters {
+		clusterThreads := threadsByCluster[i]
+		// L1/L2 groups arrive with an empty GroupName (assembleLaneGroups keys them
+		// by topic). Fill the lane label so the bucketing prompt sees which lane it
+		// is splitting and the title fallback can use it (spec 兜底链).
+		laneLabel := strings.TrimSpace(cluster.GroupName)
+		if laneLabel == "" && cluster.MatchedTopicID != nil {
+			laneLabel = topicLabels[*cluster.MatchedTopicID]
+		}
+		buckets, bucketErr := BucketCluster(ctx, cluster, clusterThreads, tags, laneLabel, cfg)
+		if bucketErr != nil {
+			logging.Warnf("daily-report: intra-lane bucketing failed for cluster %d '%s' (keeping single section): %v", i, cluster.GroupName, bucketErr)
+		}
+		if len(buckets) < 2 {
+			plans = append(plans, sectionPlan{
+				clusterIdx: i, threads: clusterThreads, tagIDs: cluster.TagIDs,
+				sectionTitle: sectionTitles[i],
+			})
+			continue
+		}
+		for bi, bucket := range buckets {
+			plans = append(plans, sectionPlan{
+				clusterIdx: i, threads: bucket.Threads, tagIDs: bucket.TagIDs,
+				bucketTitle: bucket.Title, bucketIndex: bi,
+				sectionTitle: bucket.SectionTitle,
+			})
+		}
+	}
+	return plans
 }
 
 const (
@@ -515,7 +581,6 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 		Source       string  `json:"source"`
 		MatchReason  string  `json:"match_reason"`
 		Score        float64 `json:"score"`
-		Downgraded   bool    `json:"downgraded"`
 		ArticleCount int     `json:"article_count"`
 	}
 
@@ -528,7 +593,6 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 			topic_tags.source AS source,
 			topic_tag_board_labels.match_reason AS match_reason,
 			topic_tag_board_labels.score AS score,
-			topic_tag_board_labels.downgraded AS downgraded,
 			COUNT(DISTINCT articles.id) AS article_count`).
 		Joins("JOIN topic_tag_board_labels ON topic_tag_board_labels.topic_tag_id = topic_tags.id").
 		Joins("JOIN article_topic_tags ON article_topic_tags.topic_tag_id = topic_tags.id").
@@ -549,7 +613,7 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 			collectCfg.ExclusiveGap)
 	}
 	err := boardTagsQuery.
-		Group("topic_tags.id, topic_tags.label, topic_tags.category, topic_tags.description, topic_tags.source, topic_tag_board_labels.match_reason, topic_tag_board_labels.score, topic_tag_board_labels.downgraded").
+		Group("topic_tags.id, topic_tags.label, topic_tags.category, topic_tags.description, topic_tags.source, topic_tag_board_labels.match_reason, topic_tag_board_labels.score").
 		Order("article_count DESC, topic_tags.id ASC").
 		Scan(&rows).Error
 	if err != nil {
@@ -572,7 +636,6 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 			Source:         row.Source,
 			MatchReason:    row.MatchReason,
 			Score:          row.Score,
-			Downgraded:     row.Downgraded,
 			ArticleContext: buildArticleContextForTag(row.ID, startOfDay, endOfDay),
 		})
 
@@ -646,19 +709,104 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 				ArticleCount:   len(artIDs),
 				MatchReason:    boardMatch.MatchReason,
 				Score:          boardMatch.Score,
-				Downgraded:     boardMatch.Downgraded,
 				ArticleContext: buildArticleContextForTag(t.ID, startOfDay, endOfDay),
 			})
 			articleIDSets = append(articleIDSets, artIDs)
 		}
 	}
 
+	// 疑似占比（design D9）：只给 filterTagsByQuality 的名额竞争截断当末位排序因子，
+	// 不参与「进日报」判定、不改变候选成员。查询失败时占比保持 0（= 不影响排序）。
+	applyAISuspectRatios(tags, articleIDSets)
+
 	return tags, articleIDSets, nil
 }
+
+// threadCandidateArticleIDs 把 tag→article 映射展平成候选文章 id 列表。
+func threadCandidateArticleIDs(tagArticleMap map[uint][]uint) []uint {
+	ids := make([]uint, 0, len(tagArticleMap))
+	for _, articleIDs := range tagArticleMap {
+		ids = append(ids, articleIDs...)
+	}
+	return ids
+}
+
+// applyAISuspectRatios 给每个候选标签算它名下当天文章的「疑似 AI 生成」比例
+// （按比例而非命中篇数：10 篇里 1 篇疑似 = 0.1，2 篇全疑似 = 1.0）。
+//
+// 判定字段只是软降权因子：查询失败只记 warn 并保持全 0（= 不影响排序），日报生成
+// 不因它中断。
+func applyAISuspectRatios(tags []repository.TagInput, articleIDSets [][]uint) {
+	if len(tags) == 0 || len(articleIDSets) == 0 {
+		return
+	}
+	var candidateIDs []uint
+	for _, ids := range articleIDSets {
+		candidateIDs = append(candidateIDs, ids...)
+	}
+	suspects := loadSuspectArticleSet(uniqueUintIDs(candidateIDs))
+	if suspects == nil {
+		return
+	}
+
+	for i := range tags {
+		if i >= len(articleIDSets) || len(articleIDSets[i]) == 0 {
+			continue
+		}
+		hits := 0
+		for _, id := range articleIDSets[i] {
+			if suspects[id] {
+				hits++
+			}
+		}
+		tags[i].AISuspectRatio = float64(hits) / float64(len(articleIDSets[i]))
+	}
+}
+
+// loadSuspectArticleSet 查给定文章集合里判定状态为「疑似 AI 生成」的 id 集合。
+// 数据库不可用或查询失败返回 nil——调用方据此保持原行为（不重排 / 占比全 0）：
+// 判定字段是软降权因子，无权让日报生成失败。
+func loadSuspectArticleSet(articleIDs []uint) map[uint]bool {
+	if len(articleIDs) == 0 || repository.Repo == nil || repository.Repo.DB() == nil {
+		return nil
+	}
+	var suspectIDs []uint
+	if err := repository.Repo.DB().Model(&models.Article{}).
+		Where("id IN ? AND ai_detection_status = ?", articleIDs, models.AIDetectionStatusSuspect).
+		Pluck("id", &suspectIDs).Error; err != nil {
+		logging.Warnf("[daily-report] load ai detection status failed (keep original order / zero ratios): %v", err)
+		return nil
+	}
+	suspects := make(map[uint]bool, len(suspectIDs))
+	for _, id := range suspectIDs {
+		suspects[id] = true
+	}
+	return suspects
+}
+
+// uniqueUintIDs 去重合并 id 列表（保持首次出现顺序）。
+func uniqueUintIDs(ids []uint) []uint {
+	seen := make(map[uint]bool, len(ids))
+	unique := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		unique = append(unique, id)
+	}
+	return unique
+}
+
 func findPreviousReportBrief(boardID uint, date time.Time) *repository.BoardDailyReport {
 	var report repository.BoardDailyReport
+	// Order 必须显式按报告日倒序：GORM 的 First() 自带 `ORDER BY <主键> ASC`，
+	// 不写 Order 时拿到的是**最早**一份报告而不是紧邻的前一日（review R-1：
+	// 补填按旧→新串行就是为了让 prev_report_id 指向上一天，主键序会把它指向
+	// 史前第一份）。
 	err := repository.Repo.DB().Where("semantic_board_id = ? AND period_date < ? AND status = ?",
 		boardID, repository.NormalizeReportDate(date).Format("2006-01-02"), "completed").
+		Order("period_date DESC").
 		First(&report).Error
 	if err != nil {
 		return nil
@@ -667,7 +815,8 @@ func findPreviousReportBrief(boardID uint, date time.Time) *repository.BoardDail
 }
 
 // buildQualityBreakdownJSON builds the quality_breakdown JSON from tags filtered by tagIDs.
-// Each entry carries per-tag match detail: tag_id, label, match_reason, score, downgraded.
+// Each entry carries per-tag match detail: tag_id, label, match_reason, score.
+// downgraded 键已于 2026-11-12 随标记退役移除；历史 JSON 中的残留键读取端忽略。
 func buildQualityBreakdownJSON(tags []repository.TagInput, tagIDs []uint) []byte {
 	tagIDSet := make(map[uint]bool, len(tagIDs))
 	for _, tid := range tagIDs {
@@ -678,7 +827,6 @@ func buildQualityBreakdownJSON(tags []repository.TagInput, tagIDs []uint) []byte
 		Label       string  `json:"label"`
 		MatchReason string  `json:"match_reason"`
 		Score       float64 `json:"score"`
-		Downgraded  bool    `json:"downgraded"`
 	}
 	entries := make([]qEntry, 0, len(tagIDs))
 	for _, t := range tags {
@@ -688,7 +836,6 @@ func buildQualityBreakdownJSON(tags []repository.TagInput, tagIDs []uint) []byte
 				Label:       t.Label,
 				MatchReason: t.MatchReason,
 				Score:       t.Score,
-				Downgraded:  t.Downgraded,
 			})
 		}
 	}
@@ -716,12 +863,17 @@ func filterTagsByQuality(tags []repository.TagInput) []repository.TagInput {
 	// If kept > 30, truncate by quality (截断)
 	if len(kept) > 30 {
 		sort.SliceStable(kept, func(i, j int) bool {
-			ti := tagging.MatchTier(kept[i].MatchReason, kept[i].Downgraded)
-			tj := tagging.MatchTier(kept[j].MatchReason, kept[j].Downgraded)
+			ti := tagging.MatchTier(kept[i].MatchReason)
+			tj := tagging.MatchTier(kept[j].MatchReason)
 			if ti != tj {
 				return ti < tj
 			}
-			return kept[i].Score > kept[j].Score
+			if kept[i].Score != kept[j].Score {
+				return kept[i].Score > kept[j].Score
+			}
+			// 末位因子（design D9）：同层级同分数时，疑似占比高的标签靠后，
+			// 名额不够时优先舍弃。占比按比例算，不按命中篇数。
+			return kept[i].AISuspectRatio < kept[j].AISuspectRatio
 		})
 		kept = kept[:30]
 	}

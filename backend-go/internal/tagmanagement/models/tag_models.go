@@ -23,7 +23,7 @@ type TopicTagEmbedding struct {
 	EmbeddingType string    `gorm:"size:20;uniqueIndex:idx_topic_tag_embeddings_tag_type_hash" json:"embedding_type"`
 	EmbeddingVec  string    `gorm:"type:vector;column:embedding" json:"-"`
 	Dimension     int       `json:"dimension"`                                                                   // Vector dimension (e.g., 2048 for text-embedding-3-large)
-	Model         string    `gorm:"size:50" json:"model"`                                                        // Model used: "text-embedding-ada-002"
+	Model         string    `gorm:"size:100" json:"model"`                                                       // Model used: "text-embedding-ada-002"
 	TextHash      string    `gorm:"size:64;uniqueIndex:idx_topic_tag_embeddings_tag_type_hash" json:"text_hash"` // Hash of (label + aliases + category) for re-embedding detection
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -56,7 +56,7 @@ type TopicTagAnalysis struct {
 	AnchorDate   time.Time `gorm:"index:idx_tag_analysis_date,unique" json:"anchor_date"`
 	ArticleCount int       `json:"article_count"`
 	PayloadJSON  string    `gorm:"type:text" json:"payload_json"` // 首批 Postgres 切换阶段继续保留为文本 JSON 载荷，不做结构化拆分。
-	Source       string    `json:"source"`                        // ai, heuristic, cached
+	Source       string    `json:"source"`                        // ai, cached（heuristic 已于 2026-11-12 退役）
 	Version      int       `json:"version"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
@@ -75,7 +75,6 @@ type TopicTagBoardLabel struct {
 	SemanticBoardID   uint      `gorm:"primaryKey" json:"semantic_board_id"`
 	Score             float64   `json:"score"`
 	MatchReason       string    `gorm:"type:text" json:"match_reason"`
-	Downgraded        bool      `json:"downgraded"`
 	DirectionMismatch bool      `json:"direction_mismatch"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`

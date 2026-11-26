@@ -1,3 +1,5 @@
+<!-- domain: harness -->
+
 # gate-toolchain-health Specification
 
 ## Purpose

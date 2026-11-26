@@ -502,8 +502,17 @@ func TestSignalCompose_AppendixIsCodeGenerated(t *testing.T) {
 	if _, err := time.Parse(time.RFC3339, meta.Cutoff); err != nil {
 		t.Fatalf("cutoff must be RFC3339: %v", err)
 	}
-	if payload.SchemaVersion != 2 {
+	if payload.SchemaVersion != 3 {
 		t.Fatalf("schema_version: %d", payload.SchemaVersion)
+	}
+	// schema3：兼容四段 text 由代码生成，块保留模型产出；机械分源时效入库。
+	for _, s := range payload.Report.Sections {
+		if s.Text == "" || len(s.Blocks) == 0 {
+			t.Fatalf("schema3 section %s must carry compat text + blocks", s.Kind)
+		}
+	}
+	if payload.DataFreshness == nil || !payload.DataFreshness.HasObservations || len(payload.DataFreshness.Sources) == 0 {
+		t.Fatalf("schema3 must carry mechanical data freshness: %+v", payload.DataFreshness)
 	}
 	var snapshot map[string]any
 	if err := json.Unmarshal(payload.SignalSnapshot, &snapshot); err != nil {
@@ -594,25 +603,29 @@ func TestSignalCompose_FactsAsOfPresentPasses(t *testing.T) {
 	}
 }
 
-// ③ facts 缺「数据截至」→ 回注重试且反馈点名时效要求。
+// ③ facts 缺「数据截至」→ schema3 新口径：不因缺固定短语拒绝（系统已机械
+// 生成分源时效，首稿即入库且 data_freshness 携带各源最新期）；但写了期值仍
+// 不得编造（编造路径由 FabricatedAsOfPeriodRetried 锁住）。
 func TestSignalCompose_FactsAsOfMissingRetried(t *testing.T) {
 	ledger := scFixtureLedger()
 	missing := scSections("c1:o1")
 	missing[1] = map[string]any{"kind": "facts", "text": "发生了什么。[[data:c1:o1]]"}
 	router := &scStubRouter{replies: []srComposeReply{
 		{content: scDraft(missing, nil)},
-		{content: scDraft(scSections("c1:o1"), nil)},
 	}}
 	raw, err := scCompose(t, router, scInput(ledger))
 	if err != nil {
-		t.Fatalf("retry path failed: %v", err)
+		t.Fatalf("missing as-of must pass under schema3: %v", err)
 	}
-	if payload := scParsePayload(t, raw); payload.GenerationMeta.Attempts != 2 || payload.GenerationMeta.Retries != 1 {
+	payload := scParsePayload(t, raw)
+	if payload.GenerationMeta.Attempts != 1 || payload.GenerationMeta.Retries != 0 {
 		t.Fatalf("attempts/retries: %+v", payload.GenerationMeta)
 	}
-	feedback := router.calls[1].Messages[len(router.calls[1].Messages)-1].Content
-	if !strings.Contains(feedback, "数据截至") || !strings.Contains(feedback, "时效") {
-		t.Fatalf("retry feedback must name the as-of requirement: %s", feedback)
+	if payload.DataFreshness == nil || len(payload.DataFreshness.Sources) == 0 {
+		t.Fatalf("system-generated freshness must accompany a missing as-of phrase: %+v", payload.DataFreshness)
+	}
+	if len(router.calls) != 1 {
+		t.Fatalf("no retry may happen for a missing phrase under schema3, calls=%d", len(router.calls))
 	}
 }
 
@@ -859,5 +872,317 @@ func TestSignalCompose_ValidateAsOfGranularityBranches(t *testing.T) {
 	}
 	if pass(mixed, "2026-10") {
 		t.Fatal("mixed ledger: daily shrunk to month must be rejected")
+	}
+}
+
+// ── schema3 受控块（redesign-enrichment-research-workbench 3.1）────────────────
+
+// scSectionsWithBlocks 构造带 blocks 的四段：thesis/implication 单段落；
+// facts = 段落 + 证据表（同单位行）+ 图挂载；causal = 段落。
+func scSectionsWithBlocks(factsBlocks []any) []map[string]any {
+	if factsBlocks == nil {
+		factsBlocks = []any{
+			map[string]any{"type": "paragraph", "text": "发生了什么。数据截至 2026-08-03。[[data:c1:o1]]"},
+			map[string]any{"type": "evidence_table", "title": "关键观测", "rows": []any{
+				map[string]any{"label": "商业原油库存两期", "refs": []any{"c1:o1", "c1:o2"}},
+			}},
+			map[string]any{"type": "chart", "chart_id": "ch1"},
+		}
+	}
+	return []map[string]any{
+		{"kind": "thesis", "blocks": []any{map[string]any{"type": "paragraph", "text": "先说结论。"}}},
+		{"kind": "facts", "blocks": factsBlocks},
+		{"kind": "causal", "blocks": []any{map[string]any{"type": "paragraph", "text": "这意味着什么：另一种解释还没排除。"}}},
+		{"kind": "implication", "blocks": []any{map[string]any{"type": "paragraph", "text": "接下来怎么看，先维持判断。"}},
+			"verdict": "维持原判断", "direction": "conditional", "horizon": "一个月",
+			"trigger_condition": "若数据反向则修正", "self_doubt": "样本太短"},
+	}
+}
+
+func scChart() []any {
+	return []any{map[string]any{"chart_id": "ch1", "kind": "line", "claim": "库存两期对比 [[data:c1:o1]]", "refs": []any{"c1:o1", "c1:o2"}}}
+}
+
+// 合法稿：三类平面块全部接受；块保留进 payload、兼容 text 代码生成、
+// freshness 机械入库、预算不含兼容 text。
+func TestSignalCompose_Schema3BlocksAccepted(t *testing.T) {
+	ledger := scFixtureLedger()
+	router := &scStubRouter{replies: []srComposeReply{{content: scDraft(scSectionsWithBlocks(nil), scChart())}}}
+	raw, err := scCompose(t, router, scInput(ledger))
+	if err != nil {
+		t.Fatalf("schema3 draft must compose: %v", err)
+	}
+	payload := scParsePayload(t, raw)
+	if payload.SchemaVersion != 3 || payload.DataFreshness == nil {
+		t.Fatalf("schema3 + freshness required: %d %+v", payload.SchemaVersion, payload.DataFreshness)
+	}
+	var facts *SignalReportSection
+	for i := range payload.Report.Sections {
+		if payload.Report.Sections[i].Kind == "facts" {
+			facts = &payload.Report.Sections[i]
+		}
+	}
+	if facts == nil || len(facts.Blocks) != 3 {
+		t.Fatalf("facts must keep the three blocks: %+v", facts)
+	}
+	if facts.Blocks[1].Type != SignalBlockEvidenceTable || len(facts.Blocks[1].Rows) != 1 ||
+		facts.Blocks[1].Rows[0].Refs[0] != "c1:o1" {
+		t.Fatalf("evidence table must survive verbatim: %+v", facts.Blocks[1])
+	}
+	// 兼容 text：段落原文 + 表格行渲染成占位符行（旧 reader 可读）。
+	if !strings.Contains(facts.Text, "【证据表】关键观测") || !strings.Contains(facts.Text, "[[data:c1:o1]]") ||
+		!strings.Contains(facts.Text, "商业原油库存两期") {
+		t.Fatalf("compat text must render the table rows as ref lines: %q", facts.Text)
+	}
+	// 图挂载锚点 + charts 数组本体都在。
+	if !strings.Contains(facts.Text, "【图】ch1") || len(payload.Report.Charts) != 1 {
+		t.Fatalf("chart mount anchor and charts array must both exist: %q %v", facts.Text, payload.Report.Charts)
+	}
+	if len(router.calls) != 1 {
+		t.Fatalf("legal schema3 draft must compose on the first attempt, calls=%d", len(router.calls))
+	}
+}
+
+// 关键非法稿：未知类型/未知字段/放置错位/混口径/复制值/悬空引用/新闻进表/
+// 挂未定义图/重复挂载——全部回注且不入库。
+func TestSignalCompose_Schema3BlockRejections(t *testing.T) {
+	cases := map[string][]any{
+		"unknown block type": {
+			map[string]any{"type": "paragraph", "text": "发生了什么。"},
+			map[string]any{"type": "hero_image", "url": "x"},
+		},
+		"unknown field in paragraph": {
+			map[string]any{"type": "paragraph", "text": "发生了什么。", "align": "center"},
+		},
+		"mixed units in one row": {
+			map[string]any{"type": "paragraph", "text": "发生了什么。"},
+			map[string]any{"type": "evidence_table", "title": "t", "rows": []any{
+				map[string]any{"label": "库存与出口", "refs": []any{"c1:o1", "c2:o2"}},
+			}},
+		},
+		"copied ledger value in label": {
+			map[string]any{"type": "paragraph", "text": "发生了什么。"},
+			map[string]any{"type": "evidence_table", "title": "t", "rows": []any{
+				map[string]any{"label": "库存420万桶", "refs": []any{"c1:o1"}},
+			}},
+		},
+		"dangling ref in row": {
+			map[string]any{"type": "paragraph", "text": "发生了什么。"},
+			map[string]any{"type": "evidence_table", "title": "t", "rows": []any{
+				map[string]any{"label": "幽灵观测", "refs": []any{"c9:o9"}},
+			}},
+		},
+		"news ref in table": {
+			map[string]any{"type": "paragraph", "text": "发生了什么。"},
+			map[string]any{"type": "evidence_table", "title": "t", "rows": []any{
+				map[string]any{"label": "新闻行", "refs": []any{"31"}},
+			}},
+		},
+		"mount undefined chart": {
+			map[string]any{"type": "paragraph", "text": "发生了什么。"},
+			map[string]any{"type": "chart", "chart_id": "ghost"},
+		},
+	}
+	ledger := scFixtureLedger()
+	for name, factsBlocks := range cases {
+		sections := scSectionsWithBlocks(factsBlocks)
+		router := &scStubRouter{replies: []srComposeReply{
+			{content: scDraft(sections, scChart())},
+			{content: scDraft(scSections("c1:o1"), nil)}, // 第二稿走旧段落形状收尾
+		}}
+		raw, err := scCompose(t, router, scInput(ledger))
+		if err != nil {
+			t.Fatalf("%s: retry path failed: %v", name, err)
+		}
+		if payload := scParsePayload(t, raw); payload.GenerationMeta.Attempts != 2 {
+			t.Fatalf("%s: invalid first draft must consume one retry, got %+v", name, payload.GenerationMeta)
+		}
+		feedback := router.calls[1].Messages[len(router.calls[1].Messages)-1].Content
+		if !strings.Contains(feedback, "报告不合格") {
+			t.Fatalf("%s: feedback must aggregate the block problems: %s", name, feedback)
+		}
+	}
+}
+
+// 重复挂载同一 chart → 拒绝（每图最多挂一处）。
+func TestSignalCompose_Schema3DuplicateChartMountRejected(t *testing.T) {
+	ledger := scFixtureLedger()
+	factsBlocks := []any{
+		map[string]any{"type": "paragraph", "text": "发生了什么。"},
+		map[string]any{"type": "chart", "chart_id": "ch1"},
+	}
+	causalBlocks := []any{
+		map[string]any{"type": "chart", "chart_id": "ch1"},
+		map[string]any{"type": "paragraph", "text": "这意味着什么。"},
+	}
+	sections := scSectionsWithBlocks(factsBlocks)
+	sections[2] = map[string]any{"kind": "causal", "blocks": causalBlocks}
+	router := &scStubRouter{replies: []srComposeReply{
+		{content: scDraft(sections, scChart())},
+		{content: scDraft(scSections("c1:o1"), nil)},
+	}}
+	if _, err := scCompose(t, router, scInput(ledger)); err != nil {
+		t.Fatalf("retry path failed: %v", err)
+	}
+	feedback := router.calls[1].Messages[len(router.calls[1].Messages)-1].Content
+	if !strings.Contains(feedback, "重复挂载") {
+		t.Fatalf("duplicate mount must be named in feedback: %s", feedback)
+	}
+}
+
+// schema2 形状（纯文本四段、无 blocks）依旧可compose：归一为单段落块并按
+// schema3 落库——旧形状不炸、新产物单独版本化（design D4）。
+func TestSignalCompose_TextOnlyDraftNormalizesToSchema3(t *testing.T) {
+	ledger := scFixtureLedger()
+	router := &scStubRouter{replies: []srComposeReply{{content: scDraft(scSections("c1:o1"), nil)}}}
+	raw, err := scCompose(t, router, scInput(ledger))
+	if err != nil {
+		t.Fatalf("text-only draft must still compose: %v", err)
+	}
+	payload := scParsePayload(t, raw)
+	if payload.SchemaVersion != 3 {
+		t.Fatalf("normalized draft persists as schema3, got %d", payload.SchemaVersion)
+	}
+	for _, s := range payload.Report.Sections {
+		if len(s.Blocks) != 1 || s.Blocks[0].Type != SignalBlockParagraph || s.Blocks[0].Text != s.Text {
+			t.Fatalf("text-only section must normalize to a single paragraph block: %+v", s)
+		}
+	}
+}
+
+// ── question-v1 分支（add-question-driven-news-research S5/S6）───────────────
+
+// scQuestionInput 在 scInput 基础上把材料标记为 question-v1 并带一份已读证据。
+func scQuestionInput(ledger *signalResearchLedger, withEvidence bool) SignalComposeInput {
+	in := scInput(ledger)
+	in.Material.ResearchContract = SignalResearchContractQuestionV1
+	if withEvidence {
+		ledger.addSourceRecord(&signalResearchSourceRecord{
+			ID: "n1", Kind: signalSourceKindLocal, Title: "报道A", Text: "冻结片段",
+			Hash: "h1",
+		})
+	}
+	return in
+}
+
+func scQuestionDraft(answer map[string]any, thesisText string) string {
+	sections := []map[string]any{
+		{"kind": "thesis", "blocks": []any{map[string]any{"type": "paragraph", "text": thesisText}}},
+		{"kind": "facts", "blocks": []any{map[string]any{"type": "paragraph", "text": "事实：报道口径未统一。"}}},
+		{"kind": "causal", "blocks": []any{map[string]any{"type": "paragraph", "text": "解释仍待核查。"}}},
+		{"kind": "implication", "blocks": []any{map[string]any{"type": "paragraph", "text": "先维持理解，不预测。"}},
+			"verdict": "维持理解", "direction": "conditional", "horizon": "本轮仅解释现状，不预测期限",
+			"trigger_condition": "有新口径则修正", "self_doubt": "原文可能不完整"},
+	}
+	b, _ := json.Marshal(map[string]any{
+		"title": "口径分歧尚无定论", "sections": sections, "charts": []any{}, "answer": answer,
+	})
+	return string(b)
+}
+
+func TestQuestionComposeAnswerAndSourceRefs(t *testing.T) {
+	ledger := scFixtureLedger()
+	router := &scStubRouter{replies: []srComposeReply{{
+		content: scQuestionDraft(map[string]any{"status": "explained", "reason": "原文已解释口径分歧的来源", "unanswered": []string{}}, "结论：分歧来自统计口径 [[source:n1]]。"),
+	}}}
+	raw, err := scCompose(t, router, scQuestionInput(ledger, true))
+	if err != nil {
+		t.Fatalf("question draft must compose: %v", err)
+	}
+	payload := scParsePayload(t, raw)
+	if payload.ResearchContract != SignalResearchContractQuestionV1 {
+		t.Fatalf("payload must carry research_contract, got %q", payload.ResearchContract)
+	}
+	if payload.Answer == nil || payload.Answer.Status != SignalAnswerExplained {
+		t.Fatalf("payload must carry answer, got %+v", payload.Answer)
+	}
+	if len(payload.Appendix.Sources) != 1 || payload.Appendix.Sources[0].ID != "n1" {
+		t.Fatalf("appendix must carry read sources, got %+v", payload.Appendix.Sources)
+	}
+}
+
+func TestQuestionComposeExplainedWithoutEvidenceRejected(t *testing.T) {
+	ledger := newSignalResearchLedger(srCutoff) // 空账本：无观测也无文字证据
+	router := &scStubRouter{replies: []srComposeReply{
+		{content: scQuestionDraft(map[string]any{"status": "explained", "reason": "没有证据也敢说解释了"}, "结论。")},
+		{content: scQuestionDraft(map[string]any{"status": "explained", "reason": "仍无证据"}, "结论。")},
+		{content: scQuestionDraft(map[string]any{"status": "explained", "reason": "依旧无证据"}, "结论。")},
+	}}
+	_, err := scCompose(t, router, scQuestionInput(ledger, false))
+	if err == nil {
+		t.Fatalf("explained without any evidence must be rejected after 3 attempts")
+	}
+	if !strings.Contains(err.Error(), "explained") && !strings.Contains(err.Error(), "证据") {
+		t.Fatalf("rejection must name the evidence gate, got %v", err)
+	}
+}
+
+func TestQuestionComposeMissingAnswerRejected(t *testing.T) {
+	ledger := scFixtureLedger()
+	sections := map[string]any{"title": "t", "sections": []map[string]any{
+		{"kind": "thesis", "text": "a"}, {"kind": "facts", "text": "b"}, {"kind": "causal", "text": "c"},
+		{"kind": "implication", "text": "d", "verdict": "v", "direction": "conditional", "horizon": "h", "trigger_condition": "tc", "self_doubt": "sd"},
+	}, "charts": []any{}}
+	draft, _ := json.Marshal(sections)
+	router := &scStubRouter{replies: []srComposeReply{
+		{content: string(draft)}, {content: string(draft)}, {content: string(draft)},
+	}}
+	_, err := scCompose(t, router, scQuestionInput(ledger, true))
+	if err == nil {
+		t.Fatalf("question-v1 draft without answer must be rejected")
+	}
+}
+
+func TestQuestionComposeLegacyDraftIgnoresAnswer(t *testing.T) {
+	// 旧协议材料：模型即使画蛇添足输出 answer，载荷也不保存（旧协议不带）。
+	ledger := scFixtureLedger()
+	router := &scStubRouter{replies: []srComposeReply{{
+		content: scQuestionDraft(map[string]any{"status": "explained", "reason": "多余"}, "结论 [[data:c1:o1]]。"),
+	}}}
+	raw, err := scCompose(t, router, scInput(ledger))
+	if err != nil {
+		t.Fatalf("legacy draft must compose: %v", err)
+	}
+	payload := scParsePayload(t, raw)
+	if payload.Answer != nil || payload.ResearchContract != "" {
+		t.Fatalf("legacy payload must not carry answer/contract, got %+v/%q", payload.Answer, payload.ResearchContract)
+	}
+}
+
+// TestQuestionComposePromptCarriesAnswerContract：E1 真实样本发现模型无从得
+// 知 answer 契约（unanswered 写成字符串/被拒后丢字段）。system prompt 必须对
+// question-v1 显式给出 answer JSON 形状；旧协议逐字不变（前缀=旧 const）。
+func TestQuestionComposePromptCarriesAnswerContract(t *testing.T) {
+	legacy := signalComposeSystemPromptOf("")
+	question := signalComposeSystemPromptOf(SignalResearchContractQuestionV1)
+	if !strings.Contains(question, `"answer"`) || !strings.Contains(question, "unanswered 是字符串数组") {
+		t.Fatalf("question-v1 system prompt must carry explicit answer JSON shape with array type note")
+	}
+	if !strings.Contains(question, "[[source:n1]]") {
+		t.Fatalf("question-v1 system prompt must teach the [[source:]] citation format（H2 后半：成文是独立 LLM 调用）")
+	}
+	if strings.Contains(legacy, "[[source:") {
+		t.Fatalf("legacy system prompt must not mention source citation")
+	}
+	if strings.Contains(legacy, "answer") {
+		t.Fatalf("legacy system prompt must not mention answer")
+	}
+	if !strings.HasPrefix(question, legacy) {
+		t.Fatalf("question-v1 prompt must be legacy const + appendix only")
+	}
+}
+
+// TestQuestionReportScopesFreezeGapsToCandidate：批次快照共享，本候选的报告
+// 附录与 prompt 不携带其它候选的冻结缺口（E1 发现：候选 18 报告出现候选 17
+// 的美光截断缺口）。非「候选」前缀的普通材料缺口不受影响。
+func TestQuestionReportScopesFreezeGapsToCandidate(t *testing.T) {
+	if !isForeignCandidateGap("候选「美光Q4营收暴增」：有 9 篇关联文章超出 8 篇预算未纳入冻结（预算截断不代表证据不存在）", "AI发债挤压信用市场") {
+		t.Fatalf("foreign candidate freeze gap must be recognized")
+	}
+	if isForeignCandidateGap("候选「AI发债挤压信用市场」：文章 12 发布时间晚于材料截止", "AI发债挤压信用市场") {
+		t.Fatalf("own candidate gap must be kept")
+	}
+	if isForeignCandidateGap("泳道切片读取失败：超时", "AI发债挤压信用市场") {
+		t.Fatalf("non-candidate material gap must be kept")
 	}
 }

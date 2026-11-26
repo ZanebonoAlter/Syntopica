@@ -54,7 +54,7 @@ bash scripts/harness/harness-retro.sh [--db PATH] [--days N] [--change NAME] \
 | ④ 情报型 warn 单列 | 白名单内 reasonCode（`concurrent-mixed` / `concurrent-dirty-tree` / `foreign-breakage`；归属/状态告知，不期待服从动作）的分组计数汇总，不受阈值影响 | 读成**并发频率/成本趋势**：计数持续走高 = 跨 change 并发密度在涨，属记账副产物，**别读成「催了 N 次没用」** | 不进失效判定、不升 block；嫌吵去调 quality-gate 的记账/触发条件，别把并发状态的客观归属当违规罚；白名单与 harness-facts reasonCode 词汇表同步演进（白名单外缺省纠正型，误归类修白名单不放宽缺省） |
 | ⑤ 重复失败热点 | 同会话同命令、归一化 diag 连续重复 ≥ 阈值 | 连续同 diag 重复 = 死循环或试探式改错 | 这类会话需要更强干预（而不是再提醒一次） |
 | ⑥ 注入面健康 | 各文档注入次数/字节 + 窗口内零命中文档 | 零命中 = 死约束（索引声明了却从没被注入）；单文档字节很高 = 注入膨胀 | 死约束：清理或修触发关键词；膨胀：走红线层提取（见 `standard/shared/doc-authoring.md`） |
-| ⑦ 效能看板 | **插件 ROI**（注入负载/注入命中率/pin 复用/门禁催修时距/block 复发）+ **效率基线**（per-session/per-change 的轮次/token/成本/时长分布，`session.rollup` 终值驱动）+ **B' 每任务成本**（task-cost-metrics，见下）+ **返工信号**（跨 session 编辑波次/归档重试）+ **D 测试欠账巡检**（`patrol.check` 流水频次 + `test_debt` 台账 open/fixed/waived 趋势，test-debt-patrol）+ **E 生命周期面**（add-retro-lifecycle-rollup：human-feedback 覆盖有账/无账/未处置 + 归因五类跨 change 聚合 + 漏采信号 = 波次 ≥3 session 且零反馈的 change 名单；清单口径 = 活跃 + 窗口内归档） | rollup 覆盖率 <50% 时 B 组标「数据积累中」（分布仅由已覆盖 session 算，不用小样本冒充）；命中率持续 0 = 注了白注（先看「未识别通道」行：若 N>0 说明注入通道枚举已漂移，须先同步报告口径再下结论，勿把口径漂移误读成完全失效；N=0 且命中率仍低才是真低效）；门禁催修时距按 policy 分派解除信号（quality-gate=转绿/ui-design-gate=pass/quota-gate=成功派发/spec-gate=归档，add-change-lifecycle-retro），信号缺席样本剔除并披露剔除数——剔除数高不是慢，是解除信号没等到（如 quota block 后从未成功派发）；波次高的文件 = 反复返工热点；**`patrol.checks` 连续多天为 0 = 巡检纪律松了**（或压根没跑），`patrol.debt_open` 持续不降 = 台账变成新漂没 | **各指标独立解读，禁止合成总分**；改一条 harness 规则前后用 `--save-baseline`/`--baseline` 对 m7.*/patrol.* 键做准 A/B；注：rollup 数据从部署起积累，历史 session 永久无此维度；无 `test_debt` 表（老库）或窗口内无 `patrol.check` 时该子组降级为「无巡检数据」不报错；E 面漏采信号名单里的 change = 多轮返工却没人建反馈账（采集纪律松了），归因高发层直接映射规范整理去向（frontend→standard/frontend/、backend→standard/backend/+flow/、test-gap→test-design.md、fact-check→探索纪律、process→harness/ 与执行规范），反馈文件缺席不算异常、格式异常单列；改前改后用 `m7.lifecycle_*` 键做准 A/B |
+| ⑦ 效能看板 | **插件 ROI**（注入负载/注入命中率/pin 复用/门禁催修时距/block 复发）+ **效率基线**（per-session/per-change 的轮次/token/成本/时长分布，`session.rollup` 终值驱动）+ **B' 每任务成本**（task-cost-metrics，见下）+ **返工信号**（跨 session 编辑波次/归档重试）+ **D 测试欠账巡检**（`patrol.check` 流水频次 + `test_debt` 台账 open/fixed/waived 趋势，test-debt-patrol）+ **E 生命周期面**（add-retro-lifecycle-rollup：human-feedback 覆盖有账/无账/未处置 + 归因五类跨 change 聚合 + 漏采信号 = 波次 ≥3 session 且零反馈的 change 名单；清单口径 = 活跃 + 窗口内归档）+ **F design 决策落点**（design-anchor-tax：落点率/每决策字数/取舍率，只读准 A/B）+ **G 派发带域比例**（add-dispatch-constraint-digest：`subagent.dispatch` 的 `constraintDigest` present/absent/未知三态，unknown 剔除分母） | rollup 覆盖率 <50% 时 B 组标「数据积累中」（分布仅由已覆盖 session 算，不用小样本冒充）；命中率持续 0 = 注了白注（先看「未识别通道」行：若 N>0 说明注入通道枚举已漂移，须先同步报告口径再下结论，勿把口径漂移误读成完全失效；N=0 且命中率仍低才是真低效）；门禁催修时距按 policy 分派解除信号（quality-gate=转绿/ui-design-gate=pass/quota-gate=成功派发/spec-gate=归档，add-change-lifecycle-retro），信号缺席样本剔除并披露剔除数——剔除数高不是慢，是解除信号没等到（如 quota block 后从未成功派发）；波次高的文件 = 反复返工热点；**`patrol.checks` 连续多天为 0 = 巡检纪律松了**（或压根没跑），`patrol.debt_open` 持续不降 = 台账变成新漂没 | **各指标独立解读，禁止合成总分**；改一条 harness 规则前后用 `--save-baseline`/`--baseline` 对 m7.*/patrol.* 键做准 A/B；注：rollup 数据从部署起积累，历史 session 永久无此维度；无 `test_debt` 表（老库）或窗口内无 `patrol.check` 时该子组降级为「无巡检数据」不报错；E 面漏采信号名单里的 change = 多轮返工却没人建反馈账（采集纪律松了），归因高发层直接映射规范整理去向（frontend→standard/frontend/、backend→standard/backend/+flow/、test-gap→test-design.md、fact-check→探索纪律、process→harness/ 与执行规范），反馈文件缺席不算异常、格式异常单列；改前改后用 `m7.lifecycle_*` 键做准 A/B |
 
 ### ⑦B' 每任务成本子组（task-cost-metrics）
 
@@ -63,6 +63,26 @@ bash scripts/harness/harness-retro.sh [--db PATH] [--days N] [--change NAME] \
 **降级**：存量 rollup 无 `models` 字段 → 「未分模型」桶单列；无 `parentSessionId` 的子会话成本进不可归因（随数据换代自然衰减）；09-17（rollup 上线）前会话无成本维度 → 沿用 B 组覆盖率降级标注；窗口内无归档 change → 分布不产出（不用小样本冒充）。
 
 **回检键名**：`m7.task_cost_p50/p75/avg/count`（分布）、`m7.task_cost_by_model`、`m7.task_cost_by_complexity`（分桶）、`m7.task_unattributed_cost_pct`（不可归因占比）、`m7.task_active_unarchived`（活跃未归档 change 数，幸存者偏差对照——均值只反映活下来归档的任务，烂尾成本不进来）、`m7.task_abandoned` / `m7.task_abandon_conflict`（已放弃/终态冲突，add-change-lifecycle-retro：放弃的 change 用 `change-abandon.sh` 登记，不占活跃口径但成本也不在分布内——完整分母要加回）、`m7.repair_excluded`（催修时距无解除信号剔除数）。smoke fixture 场景 K1~K6 + L1~L11（`harness-retro.smoke.sh`）可独立复算全部数值。
+
+### ⑦F design 决策落点子组（design-anchor-tax）
+
+**口径**：样本 = 活跃 + 窗口内归档 change 的 `design.md`（与 E 面同清单）；Decision = `## Decisions` 下每个 `### ` 块。落点四选一且必须可解析——仓库文件（全路径或仓库内唯一 basename，`:symbol` 须能在文件中检索到）、tasks.md 中存在的任务 id、delta spec 中存在的 Scenario 标题、或「无代码落点：<承接制品>，因为 <理由>」；空泛表述（「见 tasks」「后续补」「待定」）与同名 basename 歧义不计。无「落点」行的旧格式 Decision 回退扫正文（兼容存量）。取舍率 = 显式取舍行 /「无备选：<约束>」/ 正文替代方案表述。
+
+**回检键名**：`m7.design_decisions`、`m7.design_landing_rate`、`m7.design_words_per_decision`（Decision 正文非空白字符 P50）、`m7.design_alt_rate`；JSON 全量在 `effectiveness.design`（含 designs/landed/alt/words_p75）。只读、不写账本、不阻断；模板改动前后用 `--save-baseline`/`--baseline` 做准 A/B，4-6 个 change 后与 review High 发现数一起看（防「为短而短」）。升级判据只看**新模板 change 子集**（或同窗口改前/改后差值），不要对全样本绝对值套 50%——存量旧格式走正文兜底，会永久拉低全量口径。smoke 场景 N1~N4 可独立复算。注意探索期 42% 是宽松计数（路径/编号出现即算），本指标用严格可解析判定（同窗口约 20% 量级（随仓库状态浮动）），A/B 只看同口径改前改后。
+
+### ⑦G 派发带域比例子组（add-dispatch-constraint-digest）
+
+**口径**：样本 = 窗口内全部 `subagent.dispatch`（含失败派发——观察的是「主线程有没有照规范写 brief」，失败派发也付出了 brief 编写成本，过滤掉反而失真）。
+
+**混池提示**：当前样本不区分「主线程派发」与「子线程二次派发」（payload 有 `parent_session_id` 可区分）。子线程内部再派发越多，主线程的带域比例被稀释得越厉害——看比例时同时看 present 绝对数，别只看百分比下结论。三态：`present`（brief 含 `## 约束` 段，`constraintDigest='present'`）／`absent`（明确无约束段）／`unknown`（字段缺失、payload 非法或值越界，主要是改造前的历史记录）。
+
+**比例** = present / (present + absent)；`unknown` 只计数、**不进分母**、不回溯记 absent。可判定数 = 0 时输出「无可判定派发」，不除零。
+
+**注意 `present` 包含两种形态**：① `present + domains 非空`（brief 按 `--brief` 真实带域，正常态）；② `present + domains=[]`（写了 `## 约束` 段但无 `docs/reference/flow/<域>.md` 正规源路径，多为手写自创格式）。两者都进分子，所以看比例时**必须同时看 domains 非空数**：present 高但大多为空 = 格式在漂（快回去看 `--brief` 模板），不是“都带上了”。
+
+**回检键名**：`m7.dispatch_digest_{present,absent,unknown,decidable,ratio}`（扁平，供 `--baseline` 差值）+ `effectiveness.dispatch_digest`（嵌套全量）。改规范/模板前后用 `--save-baseline`/`--baseline` 做准 A/B。
+
+**判据**（design D7）：观察窗口 ≥30 次可判定派发或 2 周。带域比例 ≥70% → 规范引导路线成立，不上插件兜底；<70% → 另开 change 只放开「无档编辑路径 JIT」最小口子并复测。别用改造前的 unknown 记录当分母算比例（那只会得到 0%）。
 
 ## `--lifecycle` 单 change 体检卡怎么读（add-change-lifecycle-retro）
 

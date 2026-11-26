@@ -67,6 +67,13 @@ seed_edit_map() { # $1=dir $2=change（单引号经 '' 转义） $3=payload
 	sqlite3 "$1/.pi/harness/events.db" \
 		"INSERT INTO events(ts,session_id,kind,change,payload) VALUES('2026-09-04T00:00:00Z','s1','edit.map','${2//\'/\'\'}','$3');" 2>/dev/null
 }
+# 阶段记账（stage.set，stage-driven-constraint-injection 写侧）：payload 含 stage/stageFamily/boundChange
+seed_stage_set() { # $1=dir $2=session $3=boundChange $4=stage（缺省 implement）
+	local stage="${4:-implement}"
+	sqlite3 "$1/.pi/harness/events.db" \
+		"INSERT INTO events(ts,session_id,kind,change,payload) VALUES('2026-09-04T00:00:00Z','$2','stage.set','$3','{\"stage\":\"$stage\",\"stageFamily\":\"implementation\",\"boundChange\":\"$3\",\"source\":\"skill\"}');" 2>/dev/null
+}
+# legacy mode.set（改造前既有行；读侧双读回退用）
 seed_mode_set() { # $1=dir $2=session $3=boundChange（payload 形如 quality-gate 落库侧）
 	sqlite3 "$1/.pi/harness/events.db" \
 		"INSERT INTO events(ts,session_id,kind,change,payload) VALUES('2026-09-04T00:00:00Z','$2','mode.set','$3','{\"mode\":\"implementation\",\"boundChange\":\"$3\",\"source\":\"skill\"}');" 2>/dev/null
@@ -203,17 +210,28 @@ expect "suggest-D1 归属轨预勾选只吃本 change 集合（flow 命中+api �
 	"grep -q '归属轨（change=foo）' '$D/suggest.out' && grep -qF '[x] flow' '$D/suggest.out' && ! grep -qF '[x] api' '$D/suggest.out'"
 rm -rf "$D"
 
-# ---- suggest-D2 PI_SESSION_ID → 最新 mode.set boundChange（后写 foo 覆盖先写 bar） ----
+# ---- suggest-D2 PI_SESSION_ID → 最新 stage.set boundChange（后写 foo 覆盖先写 bar） ----
 D=$(mktemp -d); new_fixture "$D" "$NONE_DECL"
 mkdir -p "$D/backend-go/internal/reader/service"
 echo x > "$D/backend-go/internal/reader/service/a.go"
 seed_edit_map "$D" foo '{"paths":["backend-go/internal/reader/service/a.go"],"n":1}'
 seed_edit_map "$D" bar '{"paths":["backend-go/internal/reader/handler/bar.go"],"n":1}'
-seed_mode_set "$D" se0 bar
+seed_stage_set "$D" se0 bar
+seed_stage_set "$D" se0 foo
+suggest_run "$D" se0; ec=$?
+expect "suggest-D2 会话绑定取最新 stage.set（foo 胜出非 bar）" 0 "$ec" \
+	"grep -q '归属轨（change=foo）' '$D/suggest.out' && grep -qF '[x] flow' '$D/suggest.out' && ! grep -qF '[x] api' '$D/suggest.out'"
+rm -rf "$D"
+
+# ---- suggest-D2b 双读回退：只有 legacy mode.set 行（无 stage.set）→ 仍取到 boundChange ----
+D=$(mktemp -d); new_fixture "$D" "$NONE_DECL"
+mkdir -p "$D/backend-go/internal/reader/service"
+echo x > "$D/backend-go/internal/reader/service/a.go"
+seed_edit_map "$D" foo '{"paths":["backend-go/internal/reader/service/a.go"],"n":1}'
 seed_mode_set "$D" se0 foo
 suggest_run "$D" se0; ec=$?
-expect "suggest-D2 会话绑定取最新 mode.set（foo 胜出非 bar）" 0 "$ec" \
-	"grep -q '归属轨（change=foo）' '$D/suggest.out' && grep -qF '[x] flow' '$D/suggest.out' && ! grep -qF '[x] api' '$D/suggest.out'"
+expect "suggest-D2b 仅 legacy mode.set 行时双读回退仍取到 boundChange" 0 "$ec" \
+	"grep -q '归属轨（change=foo）' '$D/suggest.out' && grep -qF '[x] flow' '$D/suggest.out'"
 rm -rf "$D"
 
 # ---- suggest-D3 显式 --change 优先于会话绑定（boundChange=foo 但查 bar） ----

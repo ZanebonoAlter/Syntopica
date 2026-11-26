@@ -8,8 +8,13 @@ database:
   driver: "postgres"
   dsn: "host=127.0.0.1 user=postgres password=postgres dbname=syntopica port=5432 sslmode=disable TimeZone=Asia/Shanghai"
   postgres:
-    max_idle_conns: 5
-    max_open_conns: 25
+    # 连接池（fix-radar-overview-false-zero T1.2）：雷达总览一次要打十几条查询、
+    # 13 个版块并发取数，全部抢这些连接——连接不够就在池里排队（Pi 上每次建连要
+    # fork + 认证，排队 = 白等）。idle 5→25：突发后连接不被销毁，下次突发不必
+    # 重新握手；open 25→40：PG max_connections=100 内安全，给后台任务留余量。
+    # 改动需重启后端才生效。
+    max_idle_conns: 25
+    max_open_conns: 40
     conn_max_lifetime_minutes: 60
     conn_max_idle_time_minutes: 10
   # allow_destructive_migrations is intentionally NOT set here — it is only
@@ -33,7 +38,7 @@ cors:
     - "Authorization"
 
 log:
-  level: "debug"
+  level: "info"
   file:
     enabled: true
     path: "logs/app.log"
@@ -56,3 +61,12 @@ cross_board_rel:
   # 单次 run 总超时。scout plan/extract + resolve + verify 两步都是 LLM 调用，
   # glm-5.3-flash 单步可达 150s+，默认 300s 会在 verify 阶段撞墙 → 900s。
   run_timeout_seconds: 900
+
+# 实体主体归一（normalize-event-subject-entities）
+# off    = 完全关闭：第一轮提示/schema/调用数逐字不变、零二轮调用、零实体层写入
+# shadow = 影子态（实验态，2026-11-10 决策默认 off）：第一轮同次多产出稳定短身份说明，
+#          写入仅限实体层（entity_registry/entity_mentions/entity_aux_links）、
+#          正常 AI 审计、topic_tags.metadata.entity_subject 惰性键
+# active = 本期未实现，显式报错拒绝（不会静默按 shadow 执行）
+entity_subject:
+  mode: off

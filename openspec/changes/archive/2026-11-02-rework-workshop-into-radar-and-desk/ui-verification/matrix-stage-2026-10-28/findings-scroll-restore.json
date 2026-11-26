@@ -1,0 +1,11 @@
+{
+  "finding": "返回上下文滚动恢复在深滚动时被提前钳制，内容加载后不再重应用",
+  "severity": "Medium",
+  "component": "front/app/features/tags/components/console/useConsoleReturnContext.ts（await nextTick() 后 applyScrollTop 仅一次）",
+  "measurements": [
+    {"viewport": "1440x900", "host": "MAIN.console-stage", "url": "/tags/1974?lane=1844&days=30&start=2026-09-28&end=2026-10-27", "before": 382, "maxBefore": 382, "stored": 382, "after": 302, "maxAfter": 382, "note": "等 4s 不自动纠正；150px 中段位置可精确恢复（150→150）"},
+    {"viewport": "1280x800", "host": "window", "url": "/tags/1980?lane=90&days=14", "before": 693, "stored": 693, "after": 414, "docHeightAfter": 1522, "note": "点编年 打开 10-27 日报 → 返回版块矩阵"}
+  ],
+  "repro_steps": "滚动到编年中段/底部 → 打开日报或研究工作台 → 返回版块矩阵 → 读 scrollTop/scrollY",
+  "hypothesis": "恢复时编年详情尚未加载，scrollHeight 不足导致 scrollTop 被钳制；后续内容增高无二次应用"
+}

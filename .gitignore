@@ -62,6 +62,8 @@ analysis-reports/
 .pi/prompts/
 .pi/skills/
 .pi/extensions/tests/.*.cjs
+# 评审证据产物（API 响应快照等）：本地保留，不入库（同截图/原型口径）
+.pi/reviews/
 # 运行时状态：start-dev.sh 的 pidfile（.pi/run/*.pgid）与 pi-subagents 调度状态
 .pi/run/
 .pi/subagents/
@@ -74,3 +76,42 @@ artifacts
 
 # 前端静态构建产物（本地静态托管形态，pnpm generate 生成，不入库）
 backend-go/frontend/
+
+# go build 产物（本地编译，ARM 二进制 30-50MB，不入库）
+backend-go/admin
+backend-go/server
+backend-go/verify-lane-bucketing
+
+# 桌面壳工程：源码入库（desktop/shell），运行时数据与编译产物不入库
+desktop/lab/run/
+# embedded PG 实验台的运行时产物（pgdata/安装目录/下载缓存/备份档/结果）
+desktop/lab/embeddedpg/_tmp/
+desktop/shell/target/
+desktop/**/node_modules/
+
+# SRS 需求文档（同 docs/research / docs/experience 口径：探索期文档不入库）
+docs/srs/
+
+# 误存的临时截图（来路不明的 PNG）
+--clip
+
+# openspec UI 原型与验收截图：本地留存、不入库（2026-10-30 用户决策）
+# 归档门禁 ui-verification-trace.sh 对账的是本地文件存在性，不查 git 追踪，ignore 不影响流程；
+# ui-prototype/ 规范口径本就是「可丢弃原型」。新 clone 仓库不含这些证据图，需要时在本机查看。
+openspec/changes/**/ui-prototype/
+openspec/**/*.png
+openspec/**/*.jpg
+openspec/**/*.jpeg
+openspec/**/*.webp
+openspec/**/*.gif
+openspec/**/*.svg
+openspec/**/*.bmp
+openspec/**/*.ico
+openspec/**/*.avif
+backend-go/backfill-stories
+backend-go/.tmp-entity-resolution-eval/
+
+# 本地构建残留与原型草稿（不入库）：Go 临时二进制 / 静态托管前备份目录 / pi 原型草稿
+backend-go/uvcd-restore-check
+backend-go/.frontend-before-matrix-copy.*/
+.pi/prototypes/

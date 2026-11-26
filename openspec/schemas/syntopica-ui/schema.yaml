@@ -45,7 +45,7 @@ artifacts:
       <!-- ui-impact: none|minor|major -->
       ```
 
-      `complexity` (test-design intensity) and `ui-impact` (UI-design
+      `complexity` (design and review scope) and `ui-impact` (UI-design
       intensity) are INDEPENDENT dimensions: a governance panel may be
       simple logic but major UI; a parser rewrite may be complex logic with
       no user-visible UI. Judge each separately.
@@ -95,11 +95,12 @@ artifacts:
       **minor（复用/状态契约）**
       - 必填内容：入口与入口变更；受影响状态（loading/empty/error/success
         中受影响的逐个交代）；复用组件与布局模式（MUST 复用既有基础组件
-        与 layout mode 枚举，不得另写自由宽度）；验收映射（组件测试 /
-        opencli / 人工验证至少其一）。
+        与 layout mode 枚举，不得另写自由宽度）；验收映射指名道姓（组件测试写出
+        真实存在的测试文件路径 / agent-browser 或人工验证在 ui-verification/
+        report.md 建账，见 ui-verification-trace-gate）。
       - approval=`not-required`；prototype 可为 `none`（不强制可视原型）。
 
-      **major（完整八节设计 + 可丢弃原型）**
+      **major（八节设计 + 三节结构化声明 + 可丢弃原型）**
       - 必填八节（与模板同序）：User Journey / Information Architecture /
         Interaction Contract / State Matrix / Layout Contract /
         Component Reuse / Prototype / Acceptance。
@@ -114,17 +115,29 @@ artifacts:
         MUST 写理由与目标视口。
       - Component Reuse：映射到既有基础组件（AppPageShell / AppDialog /
         AppButton / AppInput 等）；需要新组件时列明。
+      - 三节结构化声明（**用 `##` 标题**，与上述八节平级，不替代任何一节）：
+        `## Interaction Decisions`（决策台账：ID / 决策 / 模式 / forbidden /
+        状态，模式 MUST 取自 `docs/reference/standard/frontend/interaction.md` 词表，pinned
+        不可被实现替换）、`## Data Provenance`（每项用户可见数据一行：
+        api <path> / 表.字段 / 派生 / none，取 none 需 needs-approval）、
+        `## 明确不做`（每条能读成「不出现在本界面里的具体东西」，禁「暂不支持」）。
       - Prototype：在 change 目录 `ui-prototype/` 产出静态可丢弃原型
         （独立 HTML/静态资源，不连接真实 API、不修改产品代码、引用布局
         token 与现有主题方向）；prototype marker 指向 change 根内相对
-        路径（如 `ui-prototype/index.html`）。
+        路径（如 `ui-prototype/index.html`）。**按主模式分流**：主要模式为
+        `canvas` 的界面 MUST 用 `states/` 三态图（空/编辑中/已确认）+
+        `interaction-table.md`，marker 指向 `ui-prototype/states/` 首张图，
+        SHALL NOT 用可点 HTML 模拟；其余模式用可点 HTML。
       - 审批流：major 初始 approval=`pending`。agent 用浏览器向用户展示
-        原型，只有用户在对话中明确确认后才可改为 `approved`；任何改变
+        原型（canvas 类展示逐张状态图 + 操作表走查，无浏览器可交互形态），
+        只有用户在对话中明确确认后才可改为 `approved`；任何改变
         信息架构、主流程或布局模式的修订 MUST 重置 `pending`（颜色微调/
         文案修正记录差异即可，不重审）。
-      - Acceptance：实现后补 opencli 主交互链路断言 + 1440×900 与
-        1920×1080 两档视觉检查证据 + 与批准原型的差异说明；重大差异需
-        重新审批。
+      - Acceptance：实现后补 agent-browser 主交互链路断言 + 1440×900 与
+        1920×1080 两档视觉检查证据 + 与批准原型的差异说明（canvas 类的比对
+        基准为三张状态图逐态对账 + `interaction-table.md` 逐行对账），以
+        ui-verification/report.md 建账（格式契约见 ui-verification-trace-gate）；
+        重大差异需重新审批。
 
       矛盾处理：ui-design marker 与 proposal 声明不一致、major 缺原型、
       审批 pending 或原型路径越界时，specs/design/tasks 与 apply 会被
@@ -252,6 +265,27 @@ artifacts:
       - **Migration Plan**: Steps to deploy, rollback strategy (if applicable)
       - **Open Questions**: Unknowns that can safely be answered later without
         changing the specs, the approach, or the task breakdown. Omit if none.
+
+      Every Decision MUST use the three-line shape (machine-checkable landing):
+
+      ```
+      ### D1. <title>
+      - **结论**: what was chosen
+      - **落点**: one of the four landing types below
+      - **取舍**: rejected alternative + why; or "无备选：<constraint>"
+      ```
+
+      Landing types (must resolve against the repository, not just be written down):
+      1. repo file path (full path or unique basename, optionally `:symbol`;
+         the symbol must be findable in the file; ambiguous basenames = unresolved)
+      2. a task id that exists in this change's tasks.md
+      3. a Scenario title that exists in this change's delta specs
+      4. "无代码落点：<承接制品>，因为 <理由>" for process/docs/review decisions
+         with no code landing (bare "无代码落点" does not pass)
+
+      Vague references ("见 tasks", "后续补", "待定") do NOT count as landings.
+      `取舍` is mandatory: write the rejected option and why it lost; when a hard
+      constraint leaves no alternative, write "无备选：<constraint>".
 
       Open questions are for genuinely deferrable unknowns, not decisions you
       skipped. If a question would change the specs, the chosen approach, or

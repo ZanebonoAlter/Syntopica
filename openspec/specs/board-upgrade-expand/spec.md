@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 ## Purpose
 
 版块扩充方向：用户锁定单一目标版块，系统按相似/共现双路召回相关候选，LLM 以版块画像做二分类裁决，产出挂载建议（单标签 merge / 组合 compose 携带目标）。

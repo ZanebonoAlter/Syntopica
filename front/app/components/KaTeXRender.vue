@@ -23,7 +23,8 @@ const html = computed(() => katex.renderToString(props.latex, {
 
 <style scoped>
 .katex-render {
-  color: rgba(255, 245, 235, 0.88);
+  /* 主题 token：白天（editorial）深字浅底、夜间浅字深底——曾写死近白色导致白天模式公式不可见（2026-11-03 用户实机报障） */
+  color: var(--color-text-primary);
 }
 
 .katex-render--display {

@@ -7,8 +7,11 @@ import (
 	"time"
 
 	"syntopica-backend/internal/models"
+	"syntopica-backend/internal/platform/database"
 	"syntopica-backend/internal/platform/logging"
 	tagging "syntopica-backend/internal/tagmanagement"
+
+	"gorm.io/gorm"
 )
 
 // BoardDailyReport — one report per board per day
@@ -105,16 +108,90 @@ type BoardPersistentTopic struct {
 	// anchor. IsVacuum flags over-broad topics that attract tags without
 	// strong matches; VacuumStrong/VacuumMid snapshot the attraction stats
 	// over vacuum_window for the vacuum_ratio test.
-	Centroid     string    `gorm:"type:vector;default:NULL" json:"-"`
-	IsVacuum     bool      `gorm:"not null;default:false" json:"is_vacuum"`
-	VacuumStrong int       `gorm:"not null;default:0" json:"vacuum_strong"`
-	VacuumMid    int       `gorm:"not null;default:0" json:"vacuum_mid"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	Centroid     string `gorm:"type:vector;default:NULL" json:"-"`
+	IsVacuum     bool   `gorm:"not null;default:false" json:"is_vacuum"`
+	VacuumStrong int    `gorm:"not null;default:0" json:"vacuum_strong"`
+	VacuumMid    int    `gorm:"not null;default:0" json:"vacuum_mid"`
+	// CentroidPendingRecompute marks the topic as "the centroid must be
+	// recomputed in the next daily-report refresh round"
+	// (lane-manual-correction D2). Manual corrections (re-anchoring the 首义 /
+	// detaching / re-attaching a node) set it; a successful centroid refresh
+	// clears it. The refresh scope is 「当日 touched 话题 ∪ 本列为 true 的话题」
+	// — without the flag a lane without new hits that day would never pick up
+	// the correction. The column is owned by explicit migration
+	// 20261113_0001 (history rows stay false, no backfill, no extra recompute).
+	CentroidPendingRecompute bool      `gorm:"not null;default:false" json:"centroid_pending_recompute"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
 }
 
 func (BoardPersistentTopic) TableName() string {
 	return "board_persistent_topics"
+}
+
+// TopicAnchorOverride is an append-only audit row for a manual 首义 rewrite
+// (lane-manual-correction D7 / task 1.4). Every manual re-anchoring appends
+// one row; earlier rows are never updated nor deleted, so "who changed this
+// lane's definition surface, when, and from what" stays answerable.
+//
+// The table is created by explicit migration 20261113_0002 (建表不依赖 gorm
+// AutoMigrate), so this model is deliberately NOT registered for AutoMigrate.
+type TopicAnchorOverride struct {
+	ID uint `gorm:"primarykey" json:"id"`
+	// TopicID points at the rewritten topic. No FK on purpose: the audit
+	// trail must outlive a hard-deleted topic (append-only red line — a
+	// cascade delete would silently drop history).
+	TopicID uint `gorm:"not null;index:idx_topic_anchor_overrides_topic" json:"topic_id"`
+	// OldEmbedding is the pre-rewrite 首义 vector; NULL when the topic had
+	// no usable vector yet. NewEmbedding is the vector the rewrite wrote.
+	OldEmbedding *string `gorm:"type:vector" json:"-"`
+	NewEmbedding string  `gorm:"type:vector" json:"-"`
+	// Source records the input mode. Only "selected_sections" exists today:
+	// the 首义 is defined by a chosen node range, never by free text (D3).
+	Source string `gorm:"size:32;not null" json:"source"`
+	// InputSummary is the JSON array of the chosen section ids.
+	InputSummary string `gorm:"type:text" json:"input_summary"`
+	// Operator records who made the change. The deployment is single-user
+	// without auth (AGENTS.md), so every manual correction is attributed to
+	// the local user.
+	Operator  string    `gorm:"size:64;not null;default:''" json:"operator"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (TopicAnchorOverride) TableName() string {
+	return "topic_anchor_overrides"
+}
+
+// SectionAssignmentOverride is an append-only audit row for one manual lane
+// membership change (review R-2). The three trace columns on
+// daily_report_sections only keep the **latest** change (they are overwritten
+// by the next one), so a 「移除 → 加回」 pair used to erase the detach trail.
+// This table keeps every change: what moved, from which lane to which lane,
+// when and by whom.
+//
+// The table is created by explicit migration 20261113_0004 (建表不依赖 gorm
+// AutoMigrate), so this model is deliberately NOT registered for AutoMigrate.
+type SectionAssignmentOverride struct {
+	ID uint `gorm:"primarykey" json:"id"`
+	// SectionID points at the moved node. No FK on purpose: the audit trail
+	// must outlive a hard-deleted section (append-only red line — a cascade
+	// delete would silently drop history).
+	SectionID uint `gorm:"not null;index:idx_section_assignment_overrides_section" json:"section_id"`
+	// TopicIDFrom is the lane the node came from (NULL = 此前无归属).
+	TopicIDFrom *uint `json:"topic_id_from"`
+	// TopicIDTo is the lane the node went to (NULL = 移除，不再归属任何泳道).
+	TopicIDTo *uint `json:"topic_id_to"`
+	// Action is "detach" or "attach"（同 daily_report_sections 的留痕三列口径）.
+	Action string `gorm:"size:16;not null" json:"action"`
+	// Operator records who made the change. The deployment is single-user
+	// without auth (AGENTS.md), so every manual correction is attributed to
+	// the local user.
+	Operator  string    `gorm:"size:64;not null;default:''" json:"operator"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (SectionAssignmentOverride) TableName() string {
+	return "section_assignment_overrides"
 }
 
 // DailyReportSection — one section per cluster
@@ -139,14 +216,35 @@ type DailyReportSection struct {
 	// layer to tolerate the backfill window and historical rows; the assignment
 	// algorithm guarantees new sections are always assigned (except the
 	// unmatched branch when Embedding is empty).
-	PersistentTopicID    *uint   `gorm:"index" json:"persistent_topic_id,omitempty"`
-	TopicMatchDistance   float64 `json:"topic_match_distance,omitempty"`
+	PersistentTopicID *uint `gorm:"index" json:"persistent_topic_id,omitempty"`
+	// TopicMatchDistance is the anchor distance to the topic centroid. NOT
+	// omitempty: distance 0 is a legal value (perfect anchor), and omitting it
+	// would read as “unknown” on the client side (fix-lane-metric-provenance
+	// D11).
+	TopicMatchDistance   float64 `json:"topic_match_distance"`
 	TopicMatchConfidence string  `gorm:"size:20" json:"topic_match_confidence,omitempty"`
 	TopicStatusAtReport  *string `gorm:"size:20" json:"topic_status_at_report"`
 	// LaneTier records which lane produced this section's topic assignment:
 	// l1_direct (centroid strong match), l2_llm (LLM keep/switch), l3_new
 	// (new candidate). NULL on historical sections (pre-migration).
 	LaneTier string `gorm:"size:16" json:"lane_tier,omitempty"`
+	// Manual assignment trace (lane-manual-correction D7): the last manual
+	// change of this section's lane membership — when it happened, which topic
+	// it came from, and whether the action was detach or attach. All three
+	// columns are nullable: NULL on historical rows and on algorithm-assigned
+	// sections (=「no manual membership change」). Owned by explicit migration
+	// 20261113_0003; never backfilled (历史快照不得回填).
+	ManualAssignmentAt          *time.Time `json:"manual_assignment_at,omitempty"`
+	ManualAssignmentFromTopicID *uint      `json:"manual_assignment_from_topic_id,omitempty"`
+	ManualAssignmentAction      string     `gorm:"size:16" json:"manual_assignment_action,omitempty"`
+	// BucketTitle / BucketIndex describe the intra-lane theme bucket
+	// (add-intra-lane-theme-bucketing): when one cluster's daily content is
+	// split into 2-6 theme directions, the sibling sections share
+	// ClusterIndex and are distinguished by BucketIndex (0-based, group
+	// unique) + a human direction name. Un-bucketed sections keep
+	// BucketIndex=0 / BucketTitle=NULL (historical rows need no backfill).
+	BucketTitle string `gorm:"size:200" json:"bucket_title,omitempty"`
+	BucketIndex int    `gorm:"not null;default:0" json:"bucket_index"`
 	// WatchID persists the owning materialized watch for watch_* sections
 	// (filled at materialization since watch-materialize-llm-adjudication —
 	// needed because the LLM daily title overwrites the parseable fixed
@@ -186,7 +284,12 @@ type DailyReportThread struct {
 	TagIDs            JSON    `gorm:"type:jsonb" json:"tag_ids"`
 	Confidence        float64 `gorm:"default:0" json:"confidence"`
 	RelatedArticleIDs JSON    `gorm:"type:jsonb" json:"related_article_ids,omitempty"`
-	Embedding         string  `gorm:"type:vector" json:"-"`
+	// Articles 是 related_article_ids 的读路径投影（add-ai-generated-article-
+	// detection 4.6）：带上每篇线索文章的标题与判定字段，供展开线索文章时直接
+	// 呈现「疑似 AI 生成」标记。只在详情接口装配、不落库；投影成员与顺序跟
+	// related_article_ids 完全一致，不增删成员（红线 45），条数即「N 篇」口径。
+	Articles  []ThreadArticleRef `gorm:"-" json:"articles,omitempty"`
+	Embedding string             `gorm:"type:vector" json:"-"`
 	// FitDistance is a pointer so that nil ("no signal" — embed failure or
 	// owning section without an embedding) is distinguishable from a real 0.0
 	// ("perfect fit" — thread title embedding identical to its section's).
@@ -194,13 +297,59 @@ type DailyReportThread struct {
 	// field, conflating the best possible fit with no signal. nil is omitted by
 	// omitempty; a non-nil 0.0 is serialized as `"fit_distance":0`. No DB
 	// default so historical rows stay NULL per spec.
-	FitDistance *float64  `json:"fit_distance,omitempty"`
+	FitDistance *float64 `json:"fit_distance,omitempty"`
+	// Story identity (add-event-story-heat) is RETIRED as a read/write field
+	// (retire-story-adopt-event-metrics): StoryID stays as a historical,
+	// read-only column — new/rebuilt reports always write NULL and the API
+	// SHALL NOT expose event-line identity any more (json:"-").
+	// The FK (ON DELETE SET NULL) + index live in migration 20261105_0001.
+	StoryID *uint `gorm:"index:daily_report_threads_story_idx" json:"-"`
+	// Scope derives from the thread's event-tag count: >=2 event tags in
+	// tag_ids => composite (综合稿，不建事件身份), else single. Tag stays
+	// size-less (text) to match migration DDL exactly — a size here makes
+	// AutoMigrate re-ALTER every startup and silently drop the migration-owned
+	// NOT NULL (20261103_0002 incident chain).
+	Scope string `gorm:"default:single" json:"scope"`
+	// IsDevelopment marks "同一事件线的不同阶段（进展）" verdicts (design §5.2
+	// layer 3); drives the dedup 进展 branch, never a heat input.
+	IsDevelopment bool `gorm:"default:false" json:"is_development"`
+	// StoryManual records a human "独立事件" verdict: the thread was manually
+	// detached from its story (story_id forced NULL) and MUST NOT be re-hooked
+	// by any later automatic attribution or backfill (event-story spec 人工拆分
+	// 后不回滚). NOT NULL stays owned by migration 20261105_0001.
+	StoryManual bool `gorm:"not null;default:false" json:"story_manual"`
+	// DisplayTier is the cross-period dedup's display-layer carrier
+	// (add-event-story-heat tasks 6.1-6.3): body=正文（默认）、flash=快讯
+	// （重述降级）、hidden=未展示（预留）。Identity (story_id), signals and
+	// heat NEVER read this column — 降级只改展示层. The read path (report
+	// detail) keeps body-only this cycle (spec 允许快讯或丢弃，本期丢弃);
+	// flash/hidden rows stay queryable for a future flash lane. Size-less
+	// text, same AutoMigrate discipline as Scope (20261103_0002 incident
+	// chain); NOT NULL owned by migration 20261105_0001.
+	DisplayTier string    `gorm:"not null;default:body" json:"display_tier"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 
 func (DailyReportThread) TableName() string {
 	return "daily_report_threads"
 }
+
+// ThreadArticleRef 是日报线索文章的读路径投影项（4.6）：只带列表行需要的
+// id / 标题 / 判定字段，不携带任何正文类内容。
+type ThreadArticleRef struct {
+	ID                uint    `json:"id"`
+	Title             string  `json:"title"`
+	AIDetectionStatus string  `json:"ai_detection_status"`
+	AIDetectionScore  float64 `json:"ai_detection_score"`
+}
+
+// Thread display-tier values (specs/daily-report-system 跨期重复降级；CHECK
+// chk_daily_report_threads_display_tier owned by migration 20261105_0001).
+const (
+	ThreadDisplayTierBody   = "body"   // 正文（默认；进展/新来源/未归组均落这里）
+	ThreadDisplayTierFlash  = "flash"  // 快讯（重述降级；本期读路径丢弃，字段留作未来快讯 UI）
+	ThreadDisplayTierHidden = "hidden" // 未展示（预留位，自动判定不写）
+)
 
 // TopicRecentBrief captures a section's recent content for context injection
 // (Slice D: lane context injection). The content is the section's actual tag
@@ -276,7 +425,10 @@ type TagInput struct {
 	Source       string  `json:"source"`
 	MatchReason  string  `json:"match_reason"`
 	Score        float64 `json:"score"`
-	Downgraded   bool    `json:"downgraded"`
+	// AISuspectRatio 是该标签名下当天文章里判定为「疑似 AI 生成」的比例（0-1）。
+	// 只参与名额竞争截断排序的末位因子（design D9）：占比高者靠后，不改变候选
+	// 成员集合、标签去重与泳道分桶。
+	AISuspectRatio float64 `json:"ai_suspect_ratio,omitempty"`
 	// ArticleContext carries representative article titles + summaries for the LLM prompt so
 	// highlights/threads are grounded in actual event content, not just tag names. Populated in
 	// collectBoardTags from up to 3 representative articles per tag.
@@ -299,10 +451,29 @@ type ClusterGroup struct {
 }
 
 // Highlight represents a key highlight in the daily report.
+//
+// retire-story-adopt-event-metrics：来源从「事件线」改为「当天同事件聚簇」。
+// cluster_id 是聚簇代表标签 id（同版块一跳可解析，无需新表）；article_count /
+// cluster_mode / data_as_of / research_at 都是服务端快照（模型不输出数字）。
+// 旧的 story_id / story_heat / heat_* / is_progress 字段随事件线退役：历史
+// JSON 里的旧键读取时被忽略、写回时不再落库，SHALL NOT 对外透出事件线身份。
 type Highlight struct {
-	Title  string `json:"title"`
-	Reason string `json:"reason"`
-	TagIDs []uint `json:"tag_ids"`
+	// ClusterID is the cluster's representative event-tag id (null on the tag
+	// fallback path / historical rows).
+	ClusterID *uint `json:"cluster_id,omitempty"`
+	// ArticleCount is the content-identity-deduped article count of the
+	// cluster (0 is a legal value; nil means "no snapshot", never fabricated 0).
+	ArticleCount *int `json:"article_count,omitempty"`
+	// ClusterMode is the real 口径 label of the generation run
+	// （向量聚簇 / 语义向量兜底 / 主体近似）.
+	ClusterMode string `json:"cluster_mode,omitempty"`
+	// DataAsOf is the report day the snapshot covers (YYYY-MM-DD).
+	DataAsOf string `json:"data_as_of,omitempty"`
+	// ResearchAt is the generation instant of the snapshot.
+	ResearchAt *time.Time `json:"research_at,omitempty"`
+	Title      string     `json:"title"`
+	Reason     string     `json:"reason"`
+	TagIDs     []uint     `json:"tag_ids"`
 }
 
 // Thread represents a narrative thread within a cluster section.
@@ -336,8 +507,8 @@ type ArticleTagData struct {
 	Score     float64
 }
 
-// ensureSectionEmbeddingDimension sets the daily_report_sections.embedding column to
-// the correct vector dimension and creates the HNSW index if dimension ≤ 2000.
+// ensureSectionEmbeddingDimension keeps daily_report_sections.embedding aligned
+// with the runtime embedding dimension and keeps its float32 HNSW index in place.
 // Called once at startup via tagging.RegisterVectorDimEnsurer.
 func ensureSectionEmbeddingDimension(dim int) {
 	db := Repo.DB()
@@ -345,51 +516,12 @@ func ensureSectionEmbeddingDimension(dim int) {
 		return
 	}
 
-	if err := db.Exec("SET LOCAL lock_timeout = '5s'" /* #nosec G201 */).Error; err != nil {
-		logging.Warnf("Failed to set lock_timeout: %v", err)
-	}
-
-	var typeStr string
-	if err := db.Raw(`
-		SELECT format_type(a.atttypid, a.atttypmod)
-		FROM pg_attribute a
-		JOIN pg_class c ON c.oid = a.attrelid
-		WHERE c.relname = 'daily_report_sections' AND a.attname = 'embedding'
-	`).Row().Scan(&typeStr); err != nil {
-		return // column may not exist yet
-	}
-
-	expected := fmt.Sprintf("vector(%d)", dim)
-	needAlter := typeStr != expected
-	needIndex := true
-
-	if needAlter {
-		logging.Infof("Altering daily_report_sections.embedding from %s to %s", typeStr, expected)
-		_ = db.Exec("DROP INDEX IF EXISTS idx_daily_report_sections_embedding").Error
-		if err := db.Exec(fmt.Sprintf(
-			"ALTER TABLE daily_report_sections ALTER COLUMN embedding TYPE %s", expected,
-		)).Error; err != nil {
-			logging.Warnf("Failed to alter daily_report_sections.embedding to %s: %v", expected, err)
-			return
-		}
-	}
-
-	// pgvector HNSW supports up to 2000 dimensions.
-	if dim > 2000 {
-		logging.Infof("Skipping HNSW index on daily_report_sections.embedding: dimension %d > 2000 limit", dim)
-		needIndex = false
-	}
-
-	if needIndex {
-		if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_daily_report_sections_embedding ON daily_report_sections USING hnsw (embedding vector_cosine_ops)`).Error; err != nil {
-			logging.Warnf("Failed to create HNSW index on daily_report_sections.embedding: %v", err)
-		}
-	}
+	ensureVectorColumnDimensionAndIndex(db, "daily_report_sections", "embedding", "idx_daily_report_sections_embedding", dim)
 }
 
-// ensurePersistentTopicEmbeddingDimension aligns board_persistent_topics.embedding
-// to the active vector dimension and creates the HNSW index when dim ≤ 2000.
-// Mirrors ensureSectionEmbeddingDimension; called at startup via
+// ensurePersistentTopicEmbeddingDimension keeps board_persistent_topics.embedding
+// aligned with the runtime embedding dimension and keeps its float32 HNSW index in
+// place. Mirrors ensureSectionEmbeddingDimension; called at startup via
 // tagging.RegisterVectorDimEnsurer.
 func ensurePersistentTopicEmbeddingDimension(dim int) {
 	db := Repo.DB()
@@ -397,45 +529,84 @@ func ensurePersistentTopicEmbeddingDimension(dim int) {
 		return
 	}
 
-	if err := db.Exec("SET LOCAL lock_timeout = '5s'" /* #nosec G201 */).Error; err != nil {
-		logging.Warnf("Failed to set lock_timeout: %v", err)
-	}
+	ensureVectorColumnDimensionAndIndex(db, "board_persistent_topics", "embedding", "idx_board_persistent_topics_embedding", dim)
+}
 
-	var typeStr string
-	if err := db.Raw(`
-		SELECT format_type(a.atttypid, a.atttypmod)
-		FROM pg_attribute a
-		JOIN pg_class c ON c.oid = a.attrelid
-		WHERE c.relname = 'board_persistent_topics' AND a.attname = 'embedding'
-	`).Row().Scan(&typeStr); err != nil {
+// ensureVectorColumnDimensionAndIndex keeps a vector column's dimension contract
+// and its float32 HNSW index aligned with the runtime embedding dimension.
+//
+// Three branches (unify-vector-column-dimension design D3/D4 + gap B):
+//
+//  1. The column is already a dimensionless vector (target shape): **no ALTER**.
+//     A float32 HNSW index cannot be built on a dimensionless column (pgvector
+//     reports "column does not have dimensions"), and a leftover one pins the
+//     column to its old dimension (new-dimension writes get rejected) — drop it.
+//  2. The column is vector(dim) and matches the runtime dimension: ensure the
+//     index exists (create it when missing).
+//  3. The column is vector(some other N): **migration transition branch** — only
+//     reachable on databases that have not yet run the unification migration; the
+//     original DROP INDEX + ALTER + rebuild self-healing path is kept here.
+//
+// dim > 2000 (pgvector float32 HNSW hard limit): the index is skipped and logged —
+// the semantic path falls back to an exact scan.
+func ensureVectorColumnDimensionAndIndex(db *gorm.DB, table, column, indexName string, dim int) {
+	typeStr, err := database.VectorColumnType(db, table, column)
+	if err != nil {
 		return // column may not exist yet
 	}
 
 	expected := fmt.Sprintf("vector(%d)", dim)
-	needAlter := typeStr != expected
-	needIndex := true
-
-	if needAlter {
-		logging.Infof("Altering board_persistent_topics.embedding from %s to %s", typeStr, expected)
-		_ = db.Exec("DROP INDEX IF EXISTS idx_board_persistent_topics_embedding").Error
-		if err := db.Exec(fmt.Sprintf(
-			"ALTER TABLE board_persistent_topics ALTER COLUMN embedding TYPE %s", expected,
-		)).Error; err != nil {
-			logging.Warnf("Failed to alter board_persistent_topics.embedding to %s: %v", expected, err)
-			return
+	switch typeStr {
+	case "vector":
+		// Branch 1: already dimensionless — never ALTER it back to a fixed
+		// dimension (that would re-introduce the schema/runtime split).
+		if exists, err := database.VectorIndexExists(db, indexName); err == nil && exists {
+			logging.Infof("Dropping legacy float32 HNSW index %s: a dimensionless column cannot host a float32 HNSW index and the stale index pins the column to its old dimension", indexName)
+			_ = db.Exec("DROP INDEX IF EXISTS " + indexName).Error //nolint:gosec // G202: 索引名是包内常量
 		}
+		return
+	case expected:
+		// Branch 2: column dimension matches the runtime dimension.
+		ensureFloat32HNSWIndex(db, table, column, indexName, dim)
+		return
 	}
 
-	// pgvector HNSW supports up to 2000 dimensions.
+	// Branch 3: migration transition — the column still carries an outdated
+	// dimension constraint; keep the original self-healing ALTER.
+	logging.Infof("Altering %s.%s from %s to %s", table, column, typeStr, expected)
+	// The lock guard is a session-level SET + RESET pinned to one connection:
+	// this runs outside a transaction (SET LOCAL outside a transaction block is
+	// a no-op, so the guard would silently fail and the ALTER could block
+	// writes indefinitely).
+	alterErr := db.Connection(func(tx *gorm.DB) error {
+		defer func() {
+			_ = tx.Exec("RESET lock_timeout").Error
+		}()
+		if err := tx.Exec("SET lock_timeout = '5s'").Error; err != nil {
+			return err
+		}
+		_ = tx.Exec("DROP INDEX IF EXISTS " + indexName).Error //nolint:gosec // G202: 索引名是包内常量
+		return tx.Exec(fmt.Sprintf(
+			"ALTER TABLE %s ALTER COLUMN %s TYPE %s", table, column, expected,
+		)).Error
+	})
+	if alterErr != nil {
+		logging.Warnf("Failed to alter %s.%s to %s: %v", table, column, expected, alterErr)
+		return
+	}
+	ensureFloat32HNSWIndex(db, table, column, indexName, dim)
+}
+
+// ensureFloat32HNSWIndex creates the float32 HNSW index when dim ≤ 2000
+// (pgvector float32 HNSW hard limit).
+func ensureFloat32HNSWIndex(db *gorm.DB, table, column, indexName string, dim int) {
 	if dim > 2000 {
-		logging.Infof("Skipping HNSW index on board_persistent_topics.embedding: dimension %d > 2000 limit", dim)
-		needIndex = false
+		logging.Infof("Skipping HNSW index on %s.%s: dimension %d > 2000 limit", table, column, dim)
+		return
 	}
-
-	if needIndex {
-		if err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_board_persistent_topics_embedding ON board_persistent_topics USING hnsw (embedding vector_cosine_ops)`).Error; err != nil {
-			logging.Warnf("Failed to create HNSW index on board_persistent_topics.embedding: %v", err)
-		}
+	stmt := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s USING hnsw (%s vector_cosine_ops)", indexName, table, column) //nolint:gosec // G201: 索引名/表名/列名是包内常量
+	if err := db.Exec(stmt).Error; err != nil {
+		logging.Warnf("Failed to create HNSW index on %s.%s: %v", table, column, err)
 	}
 }
 
@@ -535,10 +706,60 @@ type TopicLaneSnapshot struct {
 	ID                uint      `gorm:"primarykey" json:"id"`
 	PersistentTopicID uint      `gorm:"not null;uniqueIndex:idx_topic_lane_snapshots_topic" json:"persistent_topic_id"`
 	RollingSummary    string    `gorm:"type:text;not null" json:"rolling_summary"` // ≤200字态势句
-	RollingDetail     string    `gorm:"type:text" json:"rolling_detail"`           // ≤1000字长版叙述；空=缺失（存量/生成失败降级）
+	RollingDetail     string    `gorm:"type:text" json:"rolling_detail"`           // 存量历史长版；新结算固定写空（slim-lane-snapshot-trend）
 	AsOfDate          time.Time `gorm:"type:date;not null" json:"as_of_date"`      // 汇总截止（=最近一份已完成报告期）
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 func (TopicLaneSnapshot) TableName() string { return "topic_lane_snapshots" }
+
+// ── 辅助标签约束（topic-lane-auxiliary-label-constraint）──────────────────────
+
+// Lane constraint modes (spec topic-lane-constraint「约束表的列约束与索引」：
+// mode SHALL 受 CHECK 约束为 required/preferred 二态，默认 required).
+const (
+	LaneConstraintModeRequired  = "required"
+	LaneConstraintModePreferred = "preferred"
+)
+
+// LaneConstraintTermMaxLen is the term length ceiling (spec「约束锚向量计算与
+// 向量空间标识」：短词 SHALL 受长度上限约束（100 字符）).
+const LaneConstraintTermMaxLen = 100
+
+// TopicLaneConstraint is one auxiliary-label constraint bound to a persistent
+// topic — the admission gate that stops a wide topic from being colonised by
+// one-sided content.
+//
+// 约束以**向量**承载（Term + TermEmbedding + EmbeddingModel），不存 tag id 集合：
+// 标签边按 tag_edge_retention_days（默认 7 天）回收、孤立标签随之清理，基于 tag
+// id 的约束会在 7 天后自行失效，向量则与 GC 无关（design D1）。
+//
+// Margin / MaxDistance 是**可空的覆写**：为空即取 ai_settings 的全局默认
+// （persistent_topic_constraint_margin_default / ..._max_distance_default），
+// 非空即该约束的显式覆写（design D4）。空值语义让改全局默认对存量约束生效。
+//
+// The table is created by explicit migration 20261124_0001 (建表不依赖 gorm
+// AutoMigrate), so this model is deliberately NOT registered for AutoMigrate —
+// the CHECK constraints, the (topic_id, term) unique index and the ON DELETE
+// CASCADE foreign key all live in the migration.
+type TopicLaneConstraint struct {
+	ID      uint   `gorm:"primarykey" json:"id"`
+	TopicID uint   `gorm:"not null;index:idx_board_persistent_topic_constraints_topic" json:"topic_id"`
+	Term    string `gorm:"size:100;not null" json:"term"`
+	// TermEmbedding is the anchor vector of Term. Never exposed through the API
+	// (spec「读取约束列表」：SHALL NOT 返回 term_embedding 原始向量).
+	TermEmbedding string `gorm:"type:vector" json:"-"`
+	// EmbeddingModel is the vector space of TermEmbedding. Judgement SKIPS tags
+	// whose model differs (design D7：跨空间 tag 既不判满足也不判违反).
+	EmbeddingModel string    `gorm:"size:100;not null" json:"embedding_model"`
+	Mode           string    `gorm:"size:16;not null;default:required" json:"mode"`
+	Margin         *float64  `gorm:"type:numeric" json:"margin"`
+	MaxDistance    *float64  `gorm:"type:numeric" json:"max_distance"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+func (TopicLaneConstraint) TableName() string {
+	return "board_persistent_topic_constraints"
+}

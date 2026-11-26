@@ -1,0 +1,10 @@
+{"marker":"matrix-s9","ts":"2026-10-27T19:15:04.458Z","kind":"ready","url":"ws://127.0.0.1:45143/devtools/browser/31d02199-fb30-42f3-9a40-63f2f2af015c"}
+{"marker":"matrix-s9","ts":"2026-10-27T19:15:04.473Z","kind":"attach","targetType":"page","sessionId":"69465F446498571E68B47E697AC50B2B","ok":true}
+{"marker":"matrix-s9","ts":"2026-10-27T19:15:04.474Z","kind":"attach","targetType":"page","sessionId":"0F0585136F47BA6947A034C3FE5D738D","ok":true}
+{"marker":"matrix-s9","ts":"2026-10-27T19:15:04.477Z","kind":"attach","targetType":"page","sessionId":"F26316D6DBC5AED4D340C6A753AE27B7","ok":true}
+{"marker":"matrix-s9","ts":"2026-10-27T19:15:04.479Z","kind":"attach","targetType":"page","sessionId":"6FC88BC9D4BBFA8E2C5F6D385FF521C5","ok":true}
+{"marker":"matrix-s9","ts":"2026-10-27T19:15:04.482Z","kind":"attach","targetType":"iframe","sessionId":"E54A6D752A2C8CF56BBF41F9B4D22887","ok":true}
+{"marker":"matrix-s9","ts":"2026-10-27T19:15:36.438Z","kind":"blocked","method":"POST","url":"http://localhost:5100/api/__guard_selftest","resourceType":"XHR","frameId":"DE973CE00FDD2BDC2D2D2D7263F4E5E3","hasPostData":true}
+{"marker":"matrix-s9","ts":"2026-10-27T19:18:50.740Z","kind":"blocked","method":"POST","url":"http://localhost:5100/api/reading-behavior/track-batch","resourceType":"XHR","frameId":"DE973CE00FDD2BDC2D2D2D7263F4E5E3","hasPostData":true}
+{"marker":"matrix-s9","ts":"2026-10-27T20:01:23.157Z","kind":"wsError","error":"[object ErrorEvent]"}
+{"marker":"matrix-s9","ts":"2026-10-27T20:01:23.159Z","kind":"closed"}

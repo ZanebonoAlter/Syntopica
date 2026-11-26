@@ -1,0 +1,4 @@
+schema: syntopica-ui
+created: 2026-11-20
+# 纯文档 change（需求基线改写），不改 openspec 主 spec。
+skip_specs: true

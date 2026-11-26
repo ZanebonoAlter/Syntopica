@@ -108,7 +108,7 @@ backend-go/
 │   │   ├── handler/               # board/tag/merge/embedding API
 │   │   ├── repository/
 │   │   ├── models/                # 域独占模型（BoardComposition/EmbeddingConfig 等 11 个）
-│   │   └── service/               # core/auxlabel/board/merge/watched/sourcestats
+│   │   └── service/               # core/auxlabel/auxrepair/board/merge/watched/sourcestats
 │   ├── topicgraph/                # 主题图谱域
 │   │   ├── handler/               # daily_report/watch/margin_notes API
 │   │   ├── repository/
@@ -124,7 +124,7 @@ backend-go/
 │       ├── analysispause/         # 分析暂停总闸
 │       ├── aihealth/ articlerefs/ config/ database/ httpclient/ imageproxy/
 │       ├── jsonutil/ logging/ middleware/ notification/ safefetch/
-│       ├── searxng/ testutil/ textutil/ tracing/ ws/
+│       ├── testutil/ textutil/ tracing/ websearch/ ws/
 ```
 
 每个业务域统一遵循三层结构：
@@ -196,7 +196,7 @@ internal/<domain>/
 
 订阅发现域（feed-discovery，decouple-backend-domains 自 admin 整体迁出；对外 API `/api/discovery/*` 不变）：
 
-- `handler/`：发现/推荐/候选目录/路由参数字典/偏好画像 API（含 `/api/settings` 的 rsshub/proxy/bocha/searxng）
+- `handler/`：发现/推荐/候选目录/路由参数字典/偏好画像 API（含 `/api/settings` 的 rsshub/proxy/bocha/web-search）
 - `service/`：候选召回、精排推荐、可用性检查、RSSHub 目录同步、偏好画像、seed 策略
 - `models/`：域独占模型（DiscoveryRun、FeedCandidate、FeedRecommendation、RSSHubRoute、PreferenceVector 等 12 个，AutoMigrate 自注册）
 - `routes.go` + `wire.go`：路由注册 + root 门面（admin jobs / app runtime 的唯一跨域入口）
@@ -216,6 +216,7 @@ internal/<domain>/
 - `handler/`：board CRUD/match/upgrade、tag 管理、embedding 队列、合并 re-embedding
 - `service/core/`：标签提取、co-tag 扩展、元数据标注
 - `service/auxlabel/`：辅助标签管理
+- `service/auxrepair/`：辅助标签描述修复执行链（持久任务 / 租约执行器 / 事务内原子保存 description+向量 / 匹配刷新）
 - `service/board/`：语义板匹配与概念
 - `service/merge/`：标签合并
 - `service/watched/`：关注标签
@@ -258,6 +259,7 @@ internal/<domain>/
 
 - `service/core/`：主题标签提取、co-tag 扩展、元数据标注
 - `service/auxlabel/`：辅助标签管理与 GC
+- `service/auxrepair/`：描述修复任务执行器（见下「辅助标签描述修复执行链」）
 - `service/board/`：语义板匹配与概念
 - `service/merge/`：标签合并
 - `service/watched/`：关注标签管理
@@ -278,6 +280,17 @@ internal/<domain>/
 3. **L3 新建**：无匹配 → 创建 semantic_label(label_type=auxiliary) + 生成 embedding
 
 禁用标签 (status=disabled) 不参与 L1/L2 匹配。
+
+#### 辅助标签描述修复执行链（`tagmanagement/service/auxrepair`）
+
+版块体检分诊给出「重写描述」建议后，人**明确确认**才进入这条链：一次修复 = 一个持久任务，改的是全局共享辅助标签的 `description` + storage 向量，并刷新全部活跃 `topic_tags` 的版块匹配。四个端点挂在 `/api/auxiliary-labels/:id` 下（`description-repair-context` / `description-repairs` / `description-repairs/:job_id` / `.../retry`）。
+
+- **状态机**（`models/auxiliary_description_repair.go`）：`pending → embedding → saving → matching → completed`；失败/死路为 `embedding_failed | save_failed | matching_failed | conflict | unavailable`，`stage` 三值 `embedding | saving | matching`（pending 时为空）。只有 `completed / conflict / unavailable` 释放同标签创建锁，三个失败态仍持锁。
+- **执行顺序**：向量在**事务外**生成；事务内锁行校验来源版本/类型/状态后原子写 `description` + `embedding` + 阶段（不清空旧向量绕道，不动 `label` / `aliases` / `merge_embedding`），然后把任务转 `matching` 去刷新匹配。
+- **范围冻结**：创建时把当时的**全部**活跃 `topic_tags`（含未归属版块者）逐条落 item 行，执行期不重算范围；`total = processed + failed + not_applicable + remaining` 恒成立，`not_applicable` 是失效/删除跳过项，不算成功、也不缩小 `total`；部分失败保持 `matching_failed` 而不是标完成。
+- **幂等与互斥**：同幂等键同载荷回同任务、同键异载荷 409；同标签有未结束任务时不可再建。失败后必须由用户显式 retry——retry 只续 `matching`，不重嵌、不改描述；`conflict` / `unavailable` 需重新拉最新版本核对。
+- **执行器**（`service/auxrepair/executor.go`，默认单槽）：5s 轮询领取 `pending` 或租约过期任务，60s 租约 + 20s 心跳续租；进程重启后由租约过期回收续跑（进度全在库里，不靠内存 job map）。
+- **只读边界**：修复不改旧体检快照与既有日报，完成只表示匹配已更新，效果待下一轮体检验证。
 
 #### 标签创建流程（`tagmanagement/service/core/findOrCreateTag`）
 

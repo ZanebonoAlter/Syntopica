@@ -17,12 +17,19 @@ interface Props {
   article: Article | null
   articles?: Article[]
   highlightedTagSlugs?: string[]
+  /**
+   * 全屏层（Teleport 到 body）的 z-index。默认 100 = 阅读页原地全屏（不被页面浮层压住即可）；
+   * 在弹窗内全屏时，宿主须传入**高于弹窗遮罩**的值（如 AppDialog 9100 → 9200），
+   * 否则全屏层被遮罩盖住——表现为「点了全屏像没反应」。
+   */
+  fullscreenZIndex?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
   article: null,
   articles: () => [],
   highlightedTagSlugs: () => [],
+  fullscreenZIndex: 100,
 })
 
 const emit = defineEmits<{
@@ -34,7 +41,7 @@ const emit = defineEmits<{
 const {
   viewMode, iframeLoading, isFullscreen,
   selectedContentSource,
-  manualFirecrawlLoading, manualSummaryLoading, manualTaggingLoading,
+  manualFirecrawlLoading, manualSummaryLoading, manualTaggingLoading, manualDetectionLoading, manualRecheckLoading,
   manualActionError, taggingError,
   scrollProgress, scrollTop, contentContainer, fullscreenContentContainer,
   showBackTop,
@@ -45,7 +52,8 @@ const {
   detailLines, renderedStoredSummary,
   activeContentSource,
   onContentScroll, scrollToTop,
-  handleManualFirecrawl, handleManualSummary, handleManualTagging,
+  handleManualFirecrawl, handleManualSummary, handleManualTagging, handleManualAiDetection,
+  handleRecheckAiDetection,
   handleTagWatchToggle, openOriginal, toggleViewMode, toggleFullscreen,
   handleIframeLoad, handleIframeError,
   readingTime, trackEvent, uploadEvents, lastScrollDepth,
@@ -86,10 +94,14 @@ const statusMenuProps = computed<ArticleStatusMenuProps>(() => ({
   showManualFirecrawlAction: Boolean(feed.value?.firecrawlEnabled),
   showManualSummaryAction: Boolean(feed.value?.articleSummaryEnabled),
   showManualTaggingAction: Boolean(isAIEnabled.value),
+  // 人工标记/取消疑似 AI 不依赖 feed 开关与 AI capability（只是写一条人工结论），故常开
+  showManualDetectionAction: true,
   actionBusy: Boolean(actionBusy.value),
   manualFirecrawlLoading: Boolean(manualFirecrawlLoading.value),
   manualSummaryLoading: Boolean(manualSummaryLoading.value),
   manualTaggingLoading: Boolean(manualTaggingLoading.value),
+  manualDetectionLoading: Boolean(manualDetectionLoading.value),
+  manualRecheckLoading: Boolean(manualRecheckLoading.value),
   manualFirecrawlLabel: manualFirecrawlLabel.value,
   manualSummaryLabel: manualSummaryLabel.value,
   manualTaggingLabel: manualTaggingLabel.value,
@@ -145,7 +157,8 @@ const previewProps = computed(() => ({
       @toggle-fullscreen="toggleFullscreen" @navigate-prev="handleNavigatePrev"
       @navigate-next="handleNavigateNext" @open-original="openOriginal"
       @manual-firecrawl="handleManualFirecrawl" @manual-summary="handleManualSummary"
-      @manual-tagging="handleManualTagging" @set-content-source="setContentSource"
+      @manual-tagging="handleManualTagging" @manual-ai-detection="handleManualAiDetection" @recheck-ai-detection="handleRecheckAiDetection"
+      @set-content-source="setContentSource"
     />
 
     <div v-if="viewMode === 'preview'" class="reading-progress-bar">
@@ -170,7 +183,7 @@ const previewProps = computed(() => ({
 
   <!-- Fullscreen mode -->
   <Teleport v-else to="body">
-    <div class="fullscreen-article fixed inset-0 z-[100] flex flex-col" style="background: var(--color-bg-base)">
+    <div class="fullscreen-article fixed inset-0 flex flex-col" :style="{ zIndex: fullscreenZIndex, background: 'var(--color-bg-base)' }">
       <ArticleContentToolbar
         :feed="feed"
         :article-title="article.title ?? ''" :article-favorite="article.favorite ?? false"
@@ -181,7 +194,8 @@ const previewProps = computed(() => ({
         @toggle-fullscreen="toggleFullscreen" @navigate-prev="handleNavigatePrev"
         @navigate-next="handleNavigateNext" @open-original="openOriginal"
         @manual-firecrawl="handleManualFirecrawl" @manual-summary="handleManualSummary"
-        @manual-tagging="handleManualTagging" @set-content-source="setContentSource"
+        @manual-tagging="handleManualTagging" @manual-ai-detection="handleManualAiDetection" @recheck-ai-detection="handleRecheckAiDetection"
+        @set-content-source="setContentSource"
       />
 
       <div v-if="viewMode === 'preview'" class="reading-progress-bar">

@@ -323,7 +323,7 @@ import '~/components/layout/ArticleListPanel.css'
       </div>
 
       <div v-else-if="props.articles.length > 0" class="articles-list">
-        <div v-bind="containerProps" class="virtual-list">
+        <div v-bind="containerProps" class="virtual-list scroll-thin">
           <div v-bind="wrapperProps">
             <div v-for="{ data: article, index } in list" :key="article.id" class="virtual-item">
               <ArticleCard
@@ -365,24 +365,6 @@ import '~/components/layout/ArticleListPanel.css'
 .virtual-list {
   flex: 1;
   overflow-y: auto;
-}
-
-.virtual-list::-webkit-scrollbar {
-  width: 0.375rem;
-}
-
-.virtual-list::-webkit-scrollbar-track {
-  background: transparent;
-  border-radius: 4px;
-}
-
-.virtual-list::-webkit-scrollbar-thumb {
-  background: rgba(26, 26, 26, 0.1);
-  border-radius: 4px;
-}
-
-.virtual-list::-webkit-scrollbar-thumb:hover {
-  background: rgba(26, 26, 26, 0.18);
 }
 
 .virtual-item {

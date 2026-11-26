@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -122,6 +123,20 @@ func (s *MergeReembeddingQueueService) GetTasks(status string, limit, offset int
 }
 
 func (s *MergeReembeddingQueueService) RetryFailed() (int64, error) {
+	// Drop failed tasks whose target tag no longer exists first — they can
+	// never succeed and would bounce between failed/pending forever.
+	orphan := s.db.Where(
+		"status = ? AND NOT EXISTS (SELECT 1 FROM topic_tags t WHERE t.id = merge_reembedding_queues.target_tag_id)",
+		tagmodels.MergeReembeddingQueueStatusFailed,
+	).Delete(&tagmodels.MergeReembeddingQueue{})
+	if orphan.Error != nil {
+		s.logger.Error("failed to delete orphan failed merge re-embedding tasks", zap.Error(orphan.Error))
+		return 0, orphan.Error
+	}
+	if orphan.RowsAffected > 0 {
+		s.logger.Info("deleted failed merge re-embedding tasks with missing target tag", zap.Int64("count", orphan.RowsAffected))
+	}
+
 	result := s.db.Model(&tagmodels.MergeReembeddingQueue{}).
 		Where("status = ?", tagmodels.MergeReembeddingQueueStatusFailed).
 		Updates(map[string]interface{}{
@@ -249,6 +264,18 @@ func (s *MergeReembeddingQueueService) processNext() {
 
 	var target models.TopicTag
 	if err := s.db.First(&target, task.TargetTagID).Error; err != nil {
+		// A missing target tag is permanent: drop the task instead of failing
+		// it — a retry would never succeed.
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if delErr := s.db.Delete(&tagmodels.MergeReembeddingQueue{}, task.ID).Error; delErr != nil {
+				s.logger.Error("failed to drop merge re-embedding task for missing target tag",
+					zap.Uint("task_id", task.ID), zap.Uint("target_tag_id", task.TargetTagID), zap.Error(delErr))
+				return
+			}
+			s.logger.Warn("dropped merge re-embedding task: target tag no longer exists",
+				zap.Uint("task_id", task.ID), zap.Uint("target_tag_id", task.TargetTagID))
+			return
+		}
 		s.markFailed(task.ID, "failed to load target tag: "+err.Error())
 		return
 	}

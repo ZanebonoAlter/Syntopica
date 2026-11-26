@@ -8,9 +8,10 @@
  * concurrency-status.sh 按此判定「树上脏文件归属哪个 change」。
  *
  * 语义要点：
- *   - boundChange 取同 session 最近一条 mode.set（档位绑定语义），非目录 mtime 启发式
- *     （detectActiveChange 语义太弱，不适合归属判定）；无 mode.set / boundChange=null
- *     → 无档会话，零事件不计入任何 change
+ *   - boundChange 取同 session 最近一条 stage.set（阶段绑定语义；**双读**：先 stage.set，
+ *     无该类行时回退 legacy mode.set——stage-driven-constraint-injection D7 过渡期），
+ *     非目录 mtime 启发式（detectActiveChange 语义太弱，不适合归属判定）；
+ *     无 stage.set / boundChange=null → 未绑定会话，零事件不计入任何 change
  *   - 跨 session 并集：落库侧合并（非查询侧）——首次绑定（或档位切换）时从库读该
  *     change 名下最新一条 edit.map 的 paths 作 base，之后每回合 base ∪= trigger 后
  *     落全量快照；「取最新一条即完整集合」因此成立
@@ -71,8 +72,13 @@ function loadSqliteReadonly(): new (
 	return cachedSqliteCtor;
 }
 
-/** 从一条 mode.set 行解析 boundChange；行缺失/payload 损坏/无绑定 → null（跳过不落） */
-export function parseModeSetPayload(
+/**
+ * 从一条 stage.set（payload {stage, stageFamily, boundChange, source}）行解析 boundChange；
+ * 行缺失/payload 损坏/无绑定 → null（跳过不落）。
+ * ⚠ payload 形状与 legacy mode.set 一致（都含 boundChange）——本消费点**只用 boundChange 名**，
+ * 故两种 kind 通用（D7：读方过渡期双读）。
+ */
+export function parseStageSetPayload(
 	row: Pick<HarnessEventRow, "payload"> | null | undefined,
 ): string | null {
 	if (!row || typeof row.payload !== "string") return null;
@@ -84,6 +90,24 @@ export function parseModeSetPayload(
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * 本会话绑定的 change 名（**双读**：先查 stage.set；该类行存在则以其最新一条为准
+ * ——含「最新一行无绑定 → 未绑定」的语义，MUST NOT 回退到更早的 legacy 行；
+ * 完全无 stage.set 行时回退 legacy mode.set）。
+ * 无记录 / boundChange=null → null（未绑定会话，零事件不计入任何 change）。
+ */
+export function latestBoundChange(cwd: string, sessionId: string): string | null {
+	const stageRows = queryBySession(cwd, sessionId, ["stage.set"]);
+	if (stageRows.length) {
+		return parseStageSetPayload(stageRows[stageRows.length - 1]);
+	}
+	const legacyRows = queryBySession(cwd, sessionId, ["mode.set"]);
+	if (legacyRows.length) {
+		return parseStageSetPayload(legacyRows[legacyRows.length - 1]);
+	}
+	return null;
 }
 
 /** 并集 + 字典序排序去重（快照确定性：同集合任何时序产出相同 payload） */
@@ -110,7 +134,35 @@ export function isToolManagedPath(p: string): boolean {
 		/^openspec\/changes\/[^/]+\/\.openspec\.yaml$/.test(p)
 	)
 		return true;
+	// 构建 / 部署产物（fix-editmap-deploy-artifact-pollution）：`deploy-frontend.sh`
+	// 会写静态托管目录与 .frontend-before-* 备份目录，被当成「本次编辑过的文件」记进
+	// 归属集后，doc-impact 的启发式就会对每个 change 误报 api/database/architecture/
+	// standard「疑似遗漏」（实测混入 1195 条 backend-go 路径）。
+	if (
+		p.startsWith("backend-go/frontend/") ||
+		p.startsWith("backend-go/.frontend-before-") ||
+		p.startsWith("front/.output/") ||
+		p.startsWith("front/.nuxt/") ||
+		p.startsWith("front/dist/")
+	)
+		return true;
 	return false;
+}
+
+/**
+ * 「不是文件路径」的采集噪声剔除（fix-editmap-deploy-artifact-pollution）。
+ *
+ * 触发集合来自 shell 命令解析，CLI 开关（`--full-page`、`-f`）会被当成路径混进来：
+ * 实测 `edit.map` 归属集里出现过裸 `--full-page`——它不属于任何 change，却会让
+ * doc-impact 的归属轨判定凭空多出一个「改动文件」。
+ */
+export function isNonPathToken(p: string): boolean {
+	return typeof p === "string" && /^-[A-Za-z-]/.test(p);
+}
+
+/** 归属集合的采集/读取统一过滤点：工具自管路径 + 非路径 token。 */
+export function isExcludedPath(p: string): boolean {
+	return isToolManagedPath(p) || isNonPathToken(p);
 }
 
 /** edit.map payload 构造（白盒直测点：结构契约 { paths, n }） */
@@ -142,9 +194,8 @@ export function syncEditMap(
 	trigger: Iterable<string>,
 ): boolean {
 	try {
-		const rows = queryBySession(cwd, sessionId, ["mode.set"]);
-		const bound = parseModeSetPayload(rows[rows.length - 1]);
-		if (!bound) return false; // 无档会话不计入任何 change
+		const bound = latestBoundChange(cwd, sessionId);
+		if (!bound) return false; // 未绑定会话不计入任何 change
 		if (editMapBound !== bound) {
 			// 首次绑定或档位切换：从库读该 change 最新快照作 base（跨 session 并集）。
 			// 存量污染条目（工具自管路径）在读入时即剔除——append-only 不改历史事件，
@@ -157,7 +208,7 @@ export function syncEditMap(
 				if (Array.isArray(p.paths))
 					base = p.paths.filter(
 						(x): x is string =>
-							typeof x === "string" && !isToolManagedPath(x),
+							typeof x === "string" && !isExcludedPath(x),
 				);
 			}
 			editMapBase = base;
@@ -165,7 +216,7 @@ export function syncEditMap(
 		}
 		// 采集侧黑名单：本回合 trigger 剔除工具自管路径后再聚合（fix 后新路径零污染）
 		const triggerFiltered = [...trigger].filter(
-			(p) => typeof p === "string" && !isToolManagedPath(p),
+			(p) => typeof p === "string" && !isExcludedPath(p),
 		);
 		const merged = mergePaths(editMapBase, triggerFiltered);
 		if (merged.length === 0) return false; // 全工具自管/空集：零事件不落库
@@ -212,7 +263,7 @@ export function latestEditMapByChange(cwd: string): Map<string, string[]> {
 						r.change,
 						p.paths.filter(
 							(x): x is string =>
-								typeof x === "string" && !!x && !isToolManagedPath(x),
+								typeof x === "string" && !!x && !isExcludedPath(x),
 						),
 					);
 				} catch {

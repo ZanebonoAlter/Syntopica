@@ -1,3 +1,5 @@
+<!-- domain: harness -->
+
 # agent-quota-gate Specification
 
 ## Purpose

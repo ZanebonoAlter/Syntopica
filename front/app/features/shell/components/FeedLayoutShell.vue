@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { nextTick, provide, watch } from 'vue'
 import { Icon } from '@iconify/vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import AppSidebarDrawer from '~/components/ui/AppSidebarDrawer.vue'
 import { useIsNarrowViewport } from '~/composables/useMediaQuery'
 import AppSidebarView from '~/features/shell/components/AppSidebarView.vue'
 import { FEED_LIST_SCROLL_BRIDGE, type FeedListScrollBridge } from './feedListScrollBridge'
+import { applyArticleDeepLink } from '../composables/useArticleDeepLink'
 import LayoutAppHeader from '~/features/shell/components/AppHeaderShell.vue'
 import LayoutAppSidebar from '~/features/shell/components/AppSidebarShell.vue'
 import LayoutArticleListPanel from '~/features/shell/components/ArticleListPanelShell.vue'
@@ -110,6 +111,7 @@ function exitReadingMode() {
 }
 
 const router = useRouter()
+const route = useRoute()
 
 const editCategoryId = ref<string | null>(null)
 
@@ -191,6 +193,14 @@ onMounted(async () => {
     loadWatchedTags(),
     fetchGlobalUnreadCount(),
   ])
+
+  // 深链 /?article=<id>（add-article-search D1）：初始数据就绪后按 id 详情直取进阅读态，
+  // 不依赖列表成员资格（搜索结果多为归档文章）；缺参/失败静默忽略。
+  // route 在无 router 上下文（单测直挂）时为 undefined → 缺参早退。
+  await applyArticleDeepLink(route?.query, {
+    getArticle: id => articlesApi.getArticle(id),
+    onArticle: article => handleArticleClick(article),
+  })
 
   // 首次访问自动启动已移除（默认关闭：引导遮罩会盖住全屏，干扰窄屏验收与日常使用）；
   // 手动入口：顶栏「新手引导」按钮（AppHeaderView → useOnboarding().startTour）
