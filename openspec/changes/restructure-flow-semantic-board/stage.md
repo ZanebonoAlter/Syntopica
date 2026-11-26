@@ -1,2 +1,2 @@
-<!-- stage: propose -->
+<!-- stage: verify -->
 <!-- constraint-domains: semantic-board -->

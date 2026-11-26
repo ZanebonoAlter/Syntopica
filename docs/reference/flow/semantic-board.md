@@ -58,6 +58,8 @@ flowchart TD
   P2 --> REL[topic_tag_semantic_labels 记录关联]
 ```
 
+> **事务边界（现行约束，MUST 遵守）**：慢 I/O（缓存加载、批量 embedding、LLM 短语生成）MUST 在事务外完成，事务内只做纯写；全有或全无原子性由阶段二保留（任一写失败整体回滚）。`ConfirmSuggestion` MUST 同模式——板向量与 composite 短语在事务前预计算、事务内只 `ApplyCompositeLabel` 纯写。PG 侧另有 `idle_in_transaction_session_timeout=60s` 防呆（`docker-compose.pg.yml`，recreate 生效）。slug TOCTOU 与旧事务内「查后插入」一致，靠 `idx_semantic_labels_slug` 唯一索引兑底：冲突冒泡由打标 job 记 warn 跳过。批内重复 label（同 slug/normalizeKey）在阶段一去重共享首个决策；批内语义近似但文本不同的标签各自新建（旧串行路径靠缓存回灌 L2 归并，属罕见场景，后续手动合并治理）。
+
 > **缓存失效增量维护（同 change）**：L2 去重依赖包级 `packageAuxLabelCache`（17.5k 行 merge 向量 ≈ 216MB 文本传输 + 解析，TTL 10 分钟），历史「一写全清」使批量打标每个新标签炸一次缓存再全量拉。现在 L3 新建直接把 merge 向量塞进 map + activeLabels append 轻量副本（列集合对齐、不含向量列）；disable/alias 合并源按行删除；alias 变更仍只清轻量的 activeLabels；时间戳不重置 → 批量打标零全量重拉，仅冷启动 1 次。handler 直改 status 的路径不经 service 失效，由 TTL 兑底（窗口与历史一致）。
 
 > **L2 不会形成「合并黑洞」**：与主标签路径不同（`findOrCreateTag` 的 embedding 命中曾覆盖 label/slug → text_hash 变 → 重生成 embedding → 恶性循环，见 `v1.3.1/fix-tag-blackhole-embedding-match`），aux 的 L2 命中只 `addAlias`（append alias + ref_count++），**不改 Label、不重算 MergeEmbedding**（MergeEmbedding 仅 L3 新建时生成一次，之后恒定）。既有 aux 的「吸引力」= 固定 embedding 的 cosine，不随 alias 增多 / ref_count 升高而自我放大，无循环根因。阈值 `auxiliary_label_dedupe_sim` 可配（默认 0.95）。
@@ -137,8 +139,7 @@ Event 类标签不随入库立即向量化，而是等描述与关键词生成�
 
 **`辅助标签入库（L1/L2/L3）`**
 
-> **两阶段事务边界（fix-aux-label-idle-tx-cache，2026-10-06）**：历史实现在单事务内逐标签调外部 AI embedding API，是生产 `idle in transaction` 4–40s 的元凶（事务持 xmin 阻塞 vacuum，与 autovacuum 调优对抗）。现在 `AttachAuxiliaryLabels` 先在事务外完成全部慢 I/O（缓存加载、批量 embedding——`airouter.Embed` 原生 `[]string` 输入，N 个新标签恰好 2 次调用），再用一个短事务完成全部纯写；全有或全无原子性由阶段二保留（任一写失败整体回滚）。同模式已清理 `ConfirmSuggestion`（板向量/composite 短语 LLM 均事务前预计算，事务内 `ApplyCompositeLabel` 纯写）。规划与写入之间的 slug TOCTOU 与旧事务内「查后插入」一致，靠 `idx_semantic_labels_slug` 唯一索引兑底：冲突冒泡由打标 job 记 warn 跳过。批内重复 label（同 slug/normalizeKey）在阶段一去重共享首个决策；批内语义近似但文本不同的标签各自新建（旧串行路径靠缓存回灌 L2 归并，属罕见场景，后续手动合并治理）。PG 侧另有 `idle_in_transaction_session_timeout=60s` 防呆（`docker-compose.pg.yml`，recreate 生效）。
-
+> **两阶段事务边界（fix-aux-label-idle-tx-cache，2026-10-06）**：历史实现在单事务内逐标签调外部 AI embedding API，是生产 `idle in transaction` 4–40s 的元凶——事务持 xmin 阻塞 vacuum，与 autovacuum 调优对抗。改法：`AttachAuxiliaryLabels` 先在事务外完成全部慢 I/O（缓存加载、批量 embedding——`airrouter.Embed` 原生 `[]string` 输入，N 个新标签恰好 2 次调用），再用一个短事务完成全部纯写；全有或全无原子性由阶段二保留。现行约束见上方「事务边界」。
 
 ### 二、版块匹配
 
@@ -173,6 +174,8 @@ semantic_board_matching.go
 #### 当前规则
 
 ##### 升级建议生命周期（四格矩阵）
+
+> 事务边界见「一、标签体系」的「事务边界（现行约束）」：`ConfirmSuggestion` 的慢 I/O（板向量 / composite 短语 LLM）MUST 在事务外完成，事务内只 `ApplyCompositeLabel` 纯写。
 
 ###### 四格矩阵与 LLM 决策空间
 
@@ -269,7 +272,7 @@ sequenceDiagram
 
 ### 四、泳道与工作面
 
-> spec: `lane-ops` + `workshop-board-console`
+> spec: `lane-ops` + `workshop-board-console` + `workshop-lane-compose`
 
 #### 当前规则
 
@@ -460,7 +463,7 @@ DailyReportJob 定时主轮成功（failedCount==0）
 
 ### 六、版块治理
 
-> spec: `board-api` + `lane-correction-surface`
+> spec: `board-api` + `board-concept-management` + `tagging`（related-events 的方言部分）
 
 #### 当前规则
 
