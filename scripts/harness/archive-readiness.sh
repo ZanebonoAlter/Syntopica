@@ -20,7 +20,7 @@
 # 不计入 fails、不影响退出码（提醒层，区别于七项硬检查，不进 spec-gate 硬门禁）。
 # 只读判定：不修改仓库文件、不执行测试或编译命令。
 #
-# 退出码：0 八项全绿；1 存在红项；2 用法错误或 change 目录不存在（⑦ 恒不影响）。
+# 退出码：0 九项全绿；1 存在红项；2 用法错误或 change 目录不存在（⑦ 恒不影响）。
 # 测试缝：ARCHIVE_READINESS_BIN_DIR 指向含同名脚本的目录时从该目录解析（七项硬检查 + feedback.sh）
 # （仅 smoke 注入用，判定逻辑与真实脚本零差异）；ARCHIVE_READINESS_CHANGES_DIR
 # 替换 changes 目录位置（smoke fixture 注入用，缺省 openspec/changes）。
@@ -77,7 +77,7 @@ run_item() { # $1=检查名 剩余=命令；输出 ✓/✗ + 红项尾部 20 行
 
 fails=0
 
-echo "归档就绪自查：$CHANGE_DIR（与 spec-gate 归档门禁同口径八项）"
+echo "归档就绪自查：$CHANGE_DIR（与 spec-gate 归档门禁同口径九项）"
 echo ""
 
 run_item "① doc-impact verify" bash "$BIN_DIR/doc-impact.sh" verify "$CHANGE_DIR" || true
@@ -119,14 +119,21 @@ else
 	echo "— ⑦ human-feedback 处置对账跳过（feedback.sh 缺席）"
 fi
 
+#   ⑨ 原型可操作性下限（ui-prototype-mechanics：EC-1–EC-4，major 档 + 有原型才查）
 # ---------- ⑧ diagrams marker 与图/理由一致性（change-diagram-convention） ----------
 # 编号 ⑧ 但放在 ⑦ 之后输出，保证终端顺序为 ①②③④⑤⑥⑦⑧ 连续；本项是 block 级。
 run_item "⑧ diagrams marker 与图/理由一致性" bash "$BIN_DIR/diagrams-trace.sh" "$CHANGE_DIR" || true
 [ "$item_rc" -ne 0 ] && fails=$((fails + 1))
 
+# ---------- ⑨ 原型可操作性下限（ui-prototype-mechanics） ----------
+# 只对 major 档 + 有 ui-prototype/ + 新 schema 的 change 生效；判定逻辑在脚本里，
+# 与 spec-gate 检查⑨ 共用同一份（ISS-01 教训：判定分散必然漂）。
+run_item "⑨ 原型危险操作二次确认" bash "$BIN_DIR/ui-prototype-check.sh" "$CHANGE_DIR" || true
+[ "$item_rc" -ne 0 ] && fails=$((fails + 1))
+
 echo ""
 if [ "$fails" -eq 0 ]; then
-	echo "✓ 八项全绿，可以 openspec archive $name（树上并发脏文件时门禁还会 warn 提醒，不阻断）"
+	echo "✓ 九项全绿，可以 openspec archive $name（树上并发脏文件时门禁还会 warn 提醒，不阻断）"
 	if [ "$fb_remind" -eq 1 ]; then
 		echo "⚠ 反馈对账提醒见上——转新 change 或更新条目状态后再归档更干净（不阻断）"
 	fi

@@ -57,10 +57,10 @@ printf '# stub proposal\n' >"$FIXC/live-stub/proposal.md"
 
 # ① 全绿通过（stub 只接管六项判定 + feedback stub；目录存在性走 fixture）
 S1="$TMP/bin-ok"
-for s in doc-impact.sh check-standards.sh check-tasks-tail.sh review-trace.sh ui-verification-trace.sh constraint-read-trace.sh diagrams-trace.sh feedback.sh; do mkstub "$S1" "$s" 0; done
+for s in doc-impact.sh check-standards.sh check-tasks-tail.sh review-trace.sh ui-verification-trace.sh constraint-read-trace.sh diagrams-trace.sh ui-prototype-check.sh feedback.sh; do mkstub "$S1" "$s" 0; done
 out="$(ARCHIVE_READINESS_BIN_DIR="$S1" ARCHIVE_READINESS_CHANGES_DIR="$FIXC" "$READY" live-stub 2>&1)"
 rc=$?
-[ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -Ec '^✓ (①|②|③|④|⑤|⑥|⑧) ' | grep -q '^7$' && printf '%s\n' "$out" | grep -Fq '✓ ⑤ UI 验收痕迹对账' && printf '%s\n' "$out" | grep -Fq '✓ ⑥ 约束文档读取对账' && printf '%s\n' "$out" | grep -Fq '✓ ⑧ diagrams marker' && printf '%s\n' "$out" | grep -Fq '✓ ⑦ human-feedback 处置对账'; check "① stub 全绿 → exit 0 + 7×✓（含⑤⑥⑧）+ ⑦ 反馈对账绿" $?
+[ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -Ec '^✓ (①|②|③|④|⑤|⑥|⑧|⑨) ' | grep -q '^8$' && printf '%s\n' "$out" | grep -Fq '✓ ⑤ UI 验收痕迹对账' && printf '%s\n' "$out" | grep -Fq '✓ ⑥ 约束文档读取对账' && printf '%s\n' "$out" | grep -Fq '✓ ⑧ diagrams marker' && printf '%s\n' "$out" | grep -Fq '✓ ⑦ human-feedback 处置对账'; check "① stub 全绿 → exit 0 + 8×✓（含⑤⑥⑧⑨）+ ⑦ 反馈对账绿" $?
 
 # ② 多项红一次性汇总（doc-impact 与 review-trace 红，另两项绿）
 S2="$TMP/bin-mixed"
@@ -107,7 +107,7 @@ rc=$?
 # ⑥ ⑦ 反馈对账：fixture 未处置条目 → ⚠ 提醒 + 透传 + 不阻断（add-change-lifecycle-retro 8.4）
 # 六项 stub 全绿 + 真实 feedback.sh（其自有 smoke 覆盖词表/解析；此处测透传与不阻断语义）
 S3="$TMP/bin-fb"
-for s in doc-impact.sh check-standards.sh check-tasks-tail.sh review-trace.sh ui-verification-trace.sh constraint-read-trace.sh diagrams-trace.sh; do mkstub "$S3" "$s" 0; done
+for s in doc-impact.sh check-standards.sh check-tasks-tail.sh review-trace.sh ui-verification-trace.sh constraint-read-trace.sh diagrams-trace.sh ui-prototype-check.sh; do mkstub "$S3" "$s" 0; done
 ln -s "$SCRIPT_DIR/feedback.sh" "$S3/feedback.sh"
 FBC="$TMP/fbchanges"
 mkdir -p "$FBC/fb-red"
@@ -118,7 +118,7 @@ cat >"$FBC/fb-red/human-feedback.md" <<'FBRED'
 FBRED
 out="$(ARCHIVE_READINESS_BIN_DIR="$S3" ARCHIVE_READINESS_CHANGES_DIR="$FBC" "$READY" fb-red 2>&1)"
 rc=$?
-[ "$rc" -eq 0 ] && printf '%s' "$out" | grep -Fq '⚠ ⑦ human-feedback 处置对账' && printf '%s' "$out" | grep -Fq 'FB-1 待处理' && printf '%s' "$out" | grep -Fq '提醒不阻断' && printf '%s' "$out" | grep -Fq '✓ 六项全绿'; check "⑥ fixture 未处置反馈条目 → ⚠ 提醒行 + 透传 verify 输出 + exit 0 不阻断" $?
+[ "$rc" -eq 0 ] && printf '%s' "$out" | grep -Fq '⚠ ⑦ human-feedback 处置对账' && printf '%s' "$out" | grep -Fq 'FB-1 待处理' && printf '%s' "$out" | grep -Fq '提醒不阻断' && printf '%s' "$out" | grep -Fq '✓ 九项全绿'; check "⑥ fixture 未处置反馈条目 → ⚠ 提醒行 + 透传 verify 输出 + exit 0 不阻断" $?
 
 # ⑦ feedback.sh 缺席 → 跳过提示（兼容老环境/部分部署；不影响六项判定与退出码）
 out="$(ARCHIVE_READINESS_BIN_DIR="$S2" ARCHIVE_READINESS_CHANGES_DIR="$FIXC" "$READY" live-stub 2>&1)"
@@ -128,7 +128,7 @@ rc=$?
 # ⑧ review 痕迹红项聚合（add-review-trace-gate）：仅 review-trace 红 → exit 1，
 # 透传真实 review-trace.sh 的失败原因与修复路径，其余项绿（真跑真判定，不 stub）
 S4="$TMP/bin-rt"
-for s in doc-impact.sh check-standards.sh check-tasks-tail.sh feedback.sh constraint-read-trace.sh; do mkstub "$S4" "$s" 0; done
+for s in doc-impact.sh check-standards.sh check-tasks-tail.sh feedback.sh constraint-read-trace.sh ui-prototype-check.sh; do mkstub "$S4" "$s" 0; done
 ln -s "$SCRIPT_DIR/review-trace.sh" "$S4/review-trace.sh"
 ln -s "$SCRIPT_DIR/ui-verification-trace.sh" "$S4/ui-verification-trace.sh"
 RTC="$TMP/rtchanges"
@@ -141,7 +141,7 @@ rc=$?
 # ⑨ ⑤ UI 验收痕迹对账参与汇总（add-ui-verification-trace-gate 2.4）：真脚本红项
 # （major 零痕迹 fixture）→ ✗ ⑤ 透传修复路径；旧 schema fixture 走 fail-open 绿
 S5="$TMP/bin-uiv"
-for s in doc-impact.sh check-standards.sh check-tasks-tail.sh review-trace.sh feedback.sh constraint-read-trace.sh; do mkstub "$S5" "$s" 0; done
+for s in doc-impact.sh check-standards.sh check-tasks-tail.sh review-trace.sh feedback.sh constraint-read-trace.sh ui-prototype-check.sh; do mkstub "$S5" "$s" 0; done
 ln -s "$SCRIPT_DIR/ui-verification-trace.sh" "$S5/ui-verification-trace.sh"
 UIC="$TMP/uichanges"
 mkdir -p "$UIC/ui-zero"
@@ -154,7 +154,7 @@ rc=$?
 # ⑩ ⑥ 约束文档读取对账参与汇总（stage-driven-constraint-injection D6）：真脚本红项
 # （声明域 flow 文档未读）→ ✗ ⑥ 透传未读域清单与取数指引；legacy change → ✓ ⑥ 豁免
 S6="$TMP/bin-crt"
-for s in doc-impact.sh check-standards.sh check-tasks-tail.sh review-trace.sh ui-verification-trace.sh diagrams-trace.sh feedback.sh; do mkstub "$S6" "$s" 0; done
+for s in doc-impact.sh check-standards.sh check-tasks-tail.sh review-trace.sh ui-verification-trace.sh diagrams-trace.sh ui-prototype-check.sh feedback.sh; do mkstub "$S6" "$s" 0; done
 ln -s "$SCRIPT_DIR/constraint-read-trace.sh" "$S6/constraint-read-trace.sh"
 CRC="$TMP/crtchanges"
 mkdir -p "$CRC/crt-red" "$CRC/crt-legacy"

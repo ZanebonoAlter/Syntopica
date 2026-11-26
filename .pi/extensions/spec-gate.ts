@@ -304,6 +304,29 @@ async function gateArchive(
 		failedChecks.push("diagrams");
 	}
 
+	// 2.9 检查⑨：原型可操作性下限（ui-prototype-mechanics）——四项机械检查
+	//     EC-1 热区声明 ≥24px / EC-2 :focus / EC-3 :hover / EC-4 危险操作确认。
+	//     判定逻辑单一事实源在 scripts/harness/ui-prototype-check.sh（含 legacy 豁免、
+	//     ui-impact 档位、data-ui-mechanics-skip 显式豁免）；扩展内不二次实现。
+	//     只查 major + 有原型目录的 change，其余脚本内 exit 0；spawn 失败沿 fail-open。
+	const mechanicsCheck = await runScript(pi, ctx, [
+		"scripts/harness/ui-prototype-check.sh",
+		changeDir,
+	]);
+	if (
+		mechanicsCheck.code === -1 ||
+		mechanicsCheck.code === 126 ||
+		mechanicsCheck.code === 127
+	) {
+		console.warn(
+			`[spec-gate] 检查⑨ 原型机械项脚本执行失败（exit ${mechanicsCheck.code}），fail-open 放行该项（不阻断）：${mechanicsCheck.detail}`,
+		);
+	} else if (!mechanicsCheck.ok) {
+		const body = mechanicsCheck.stdout.trim() || mechanicsCheck.detail;
+		failures.push(`[ui-prototype-mechanics] ${body}`);
+		failedChecks.push("ui-prototype-mechanics");
+	}
+
 	// 3. 检查⑤：验收措辞扫描（warn 级——仅留痕，不进 failures、不改下方裁决；
 	//    豁免/无名 fail-open 已在上文 return 短路，天然不跑）
 	await warnAcceptanceWording(pi, ctx, changeDir);

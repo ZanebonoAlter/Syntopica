@@ -92,9 +92,47 @@ doc-impact-applies: front/app/features/, front/app/pages/, front/app/components/
 
 缺任一行的，判定 V3–V5 不完整。
 
-**三段式裁决**：颜色取值与间距刻度 → [theming.md](theming.md)；可读性与可操作性下限 → 本节 V1–V6；**发现 token 组合达不到 V1/V2 时，原型 MUST 换用达标 token；token 本身不达标则报 `theming.md` 修订，SHALL NOT 在原型里私自调色绕过。**
+**三段式裁决**：颜色取值与间距刻度 → [theming.md](theming.md)；可读性与可操作性下限 → 本节 V1–V6 + EC-1–EC-4；**发现 token 组合达不到 V1/V2 时，原型 MUST 换用达标 token；token 本身不达标则报 `theming.md` 修订，SHALL NOT 在原型里私自调色绕过。**
 
 > `—` 作为数据占位符属「诚实占位」档，不受任何文案禁令约束。
+
+### Requirement: 原型类别与可操作性下限
+
+原型分**两类**，规则与检查口径不同——混为一谈会让视觉探索被功能开发的规则误伤：
+
+| 类别 | 特征 | 产物形态 | 机械检查 |
+|---|---|---|---|
+| **功能原型** | 状态/交互/组件，用于驱动功能开发 | `index.html` + `skeleton/` + `fixture.json` | 适用（见下方 WC） |
+| **视觉探索原型** | three.js 首页改版、品牌/动效实验 | 多版本实验页、渲染截图、导出资源，产物量天然巨大（现存某 change 顶层 20 个平级 HTML、整目录 504 文件/98M） | **不适用**——状态不闭环、多版本并存是常态 |
+
+类别在 proposal 头部声明：
+
+```html
+<!-- ui-prototype-kind: functional -->                    默认值，可省略
+<!-- ui-prototype-kind: exploratory(理由，大白话) -->      视觉探索，跳过原型机械检查
+```
+
+**未声明按 functional 处理**（失败方向安全：功能原型该被查）。
+
+#### 设计下限（人核）
+
+下列四条是**设计下限**，由设计者与 review 人眼核，**不做机器检查**——静态扫 CSS 只能看「字样在不在」，实测连 `outline: none` 都能过关、而用浏览器默认焦点环的反被判红，属于形式主义：
+
+| 项 | 下限 |
+|---|---|
+| 热区 | 可点元素 ≥ **24×24**（WCAG 2.2 AA；桌面鼠标场景，不照搬移动端 44px） |
+| 焦点 | Tab 到任何可交互元素看得见 focus（同 V3） |
+| 悬停 | 可点元素有 hover 反馈（画布类按载体分流豁免） |
+| 键盘 | 主链路 Tab / Enter / Esc 通（同 V4） |
+
+#### WC 危险操作确认（唯一机器检查项）
+
+**破坏性操作 MUST 有二次确认。** 这是唯一被机器化的项，理由：它不依赖 CSS 解析，是「有没有这个机制」的事实判断。
+
+- 机器判据：`scripts/harness/ui-prototype-check.sh`（`spec-gate` 检查⑨ + archive-readiness ⑨）
+- 破坏性识别（双通道，任一命中）：可点元素文本含 删除/清空/重置/移除/彻底/销毁；或带 `data-destructive`；或 `<input type=submit|button value="删除…">`
+- 确认机制（满足任一）：同一标签有 `data-confirm` 或 `onclick` 含 `confirm(`；文件内有 `<dialog>`；元素邻近 3 行内有「确认」
+- 豁免：`<html>` 或 `<body>` 上 `data-ui-mechanics-skip="<理由>"`——**理由非空才生效**，子元素上的标记无效（否则等于一键全免）
 
 #### Scenario: 原型画成无焦点环
 - **WHEN** 可点 HTML 原型把按钮/链接的 focus 样式写成 `outline: none` 且无替代焦点样式
