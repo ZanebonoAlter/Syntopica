@@ -31,18 +31,18 @@
 - [x] 4.0 写 `.openspec.yaml`（`retire_capabilities: true`）
 - [x] 4.1 生成 2 个族的 `## ADDED Requirements`
 - [x] 4.2 生成 4 个旧 capability 的 `## REMOVED Requirements`
-- [ ] 4.3 归档前摘掉 **5 个**被退役 spec 的 `<!-- domain: -->`（upgrade-expand / time-window / management-api / article-api / editing-ui；board-upgrade 就地扩容不退役）；与 8.2 同一提交
-- [ ] 4.4 **归档后**断言 5 个目录已自动退役
-- [ ] 4.5 **归档后** `openspec validate --specs` → 152 全过（156 − 4 + 1 = 153，见下）
+- [x] 4.3 归档前摘掉 **5 个**被退役 spec 的 `<!-- domain: -->`（upgrade-expand / time-window / management-api / article-api / editing-ui；board-upgrade 就地扩容不退役）；与 8.2 同一提交
+- [x] 4.4 **归档后**断言 5 个目录已自动退役
+- [x] 4.5 **归档后** `openspec validate --specs` → **152** 全过（156 − 5 退役 + 1 新建 = 152）
 
-> 修正：156 − 4（退役）+ 1（board-api 新建）= **153**（board-upgrade 就地扩容不新增）
+> 修正：156 − 5（退役）+ 1（board-api 新建）= **152**（board-upgrade 就地扩容不新增）
 
 ## 5. 验证
 
-- [ ] 5.1 `domain-history.sh semantic-board` → 第 6 段列出指向 5 个旧 capability 的孤儿 delta（实测记数）
-- [ ] 5.2 `check-standards.sh` → 153 个 spec marker 全合法
-- [ ] 5.3 抽查 6 条来源注释，grep archive 确认属实
-- [ ] 5.4 确认 `board-concept-management` 未被触碰（git diff 为空）
+- [x] 5.1 `domain-history.sh semantic-board` → 第 6 段列出指向 5 个旧 capability 的孤儿 delta（实测记数）
+- [x] 5.2 `check-standards.sh` → 152 个 spec marker 全合法
+- [x] 5.3 抽查 6 条来源注释，grep archive 确认属实
+- [x] 5.4 确认 `board-concept-management` 未被触碰（git diff 为空）
 
 ## 6. review
 
@@ -51,20 +51,20 @@
 
 ## 7. 文档
 
-- [ ] 7.1 `docs/reference/flow/semantic-board.md` 变更溯源表加本 change 一行
-- [ ] 7.2 `docs/research/process-arch-rework/issues.md` 回填 ISS-04（第三族）
+- [x] 7.1 `docs/reference/flow/semantic-board.md` 变更溯源表加本 change 一行
+- [x] 7.2 `docs/research/process-arch-rework/issues.md` 回填 ISS-04（第三族）
 - [x] 7.3 旧 capability 名引用扫描：路径引用 0 处；**能力名引用 3 处**（`board-diagnostics:222` → `board-upgrade-expand`；`board-concept-management:5,26` → `board-management-api`）
 - [ ] 7.4 **登记「跨族引用清扫」change**（R-5 + 上族遗留）：统一修所有族合并后残留的旧 capability 名引用——本 change 的 3 处、上族的 `tag-matching`「详见 board-direction-check」1 处；改 main spec 需 MODIFIED delta，且会打破各族的守恒账，故集中一批做
 - [ ] 7.5 **登记「升级建议跨族收口」change**（R-3）：把 `board-api` 里越界的生成侧描述降为指针（只留端点/DTO/面板行为），把 `board-upgrade` 的「手动回填队列」并入接口族；顺带修 R-4 的两条矛盾端点路径（`/upgrade/suggest` vs `/upgrade-suggest`）、R-11 的重复 Scenario、R-6 的红线 6/7 独立条款
 
 ## 8. 归档
 
-- [ ] 8.1 `archive-readiness.sh merge-board-upgrade-api-specs` 六项全绿
-- [ ] 8.2 `openspec archive merge-board-upgrade-api-specs`
+- [x] 8.1 `archive-readiness.sh merge-board-upgrade-api-specs` 六项全绿
+- [x] 8.2 `openspec archive merge-board-upgrade-api-specs`
 - [ ] 8.3 归档后：
-  - [ ] 8.3a `board-api` 补 `<!-- domain: semantic-board, api, ui -->`（成员并集正好 3 域，见 design D6）
-  - [ ] 8.3b `board-upgrade` **手改 Purpose**为族级文案（就地扩容时 delta Purpose 被忽略）
-  - [ ] 8.3c `board-api` 的 Purpose 由 delta 带入，核验非空
+  - [x] 8.3a `board-api` 补 `<!-- domain: semantic-board, api, ui -->`（成员并集正好 3 域，见 design D6）
+  - [x] 8.3b `board-upgrade` **手改 Purpose**为族级文案（就地扩容时 delta Purpose 被忽略）
+  - [x] 8.3c `board-api` 的 Purpose 由 delta 带入，核验非空
 
 ## 9. 测试
 
@@ -73,11 +73,11 @@
 | 验证点 | 命令 | 期望 |
 | --- | --- | --- |
 | delta 结构 | `openspec validate merge-board-upgrade-api-specs` | valid |
-| 全仓 spec | `openspec validate --specs` | 153 passed |
+| 全仓 spec | `openspec validate --specs` | 152 passed |
 | 条数守恒 | ADDED 32 = REMOVED 32；48 = 32 + 16 | 恒等 |
 | Scenario 守恒 | 74 + 70 = 144 | 恒等 |
 | REMOVED 标题匹配 | 5 个 delta vs main spec 逐字 | 32/32 |
-| 归档退役 | 归档后 spec 目录数 | 153，无空壳 |
+| 归档退役 | 归档后 spec 目录数 | 152，无空壳 |
 | board-concept-management 不动 | `git diff` | 空 |
 
 ## 10. 文档
@@ -89,6 +89,6 @@
 
 ## 11. 验收
 
-- [ ] A `board-upgrade` 23 req（16 保留 + 7 新增）、`board-api` 25 req
-- [ ] B 每条新搬入的 Requirement 带 `<!-- from: -->`，可 grep archive 验证
-- [ ] C 5 个旧 capability 已退役；`board-upgrade` 与 `board-concept-management` 原样保留
+- [x] A `board-upgrade` 23 req（16 保留 + 7 新增）、`board-api` 25 req
+- [x] B 每条新搬入的 Requirement 带 `<!-- from: -->`，可 grep archive 验证
+- [x] C 5 个旧 capability 已退役；`board-upgrade` 与 `board-concept-management` 原样保留
