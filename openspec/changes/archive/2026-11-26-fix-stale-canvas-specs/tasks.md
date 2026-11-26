@@ -44,20 +44,20 @@
 
 ## 5. review
 
-- [ ] 5.1 派 review（`minimax-cn/MiniMax-M3.1-Flash:max`；GLM 额度 20:20 后才恢复）
-- [ ] 5.2 处置 review 发现
+- [x] 5.1 派 review（`minimax-cn/MiniMax-M3.1-Flash:max`；GLM 额度 20:20 后才恢复）
+- [x] 5.2 处置 review 发现
 
 ## 6. 归档
 
-- [ ] 6.1 `archive-readiness.sh fix-stale-canvas-specs` 六项全绿
-- [ ] 6.2 `openspec archive fix-stale-canvas-specs --yes`
-- [ ] 6.3 归档后确认两个 spec 仍是 33 / 19 条 Requirement、marker 未丢
-- [ ] 6.4 `openspec validate --specs` → 146 全过
+- [x] 6.1 `archive-readiness.sh fix-stale-canvas-specs` 六项全绿
+- [x] 6.2 `openspec archive fix-stale-canvas-specs --yes`
+- [x] 6.3 归档后确认两个 spec 仍是 33 / 19 条 Requirement、marker 未丢
+- [x] 6.4 `openspec validate --specs` → 146 全过
 
 ## 7. 文档
 
-- [ ] 7.1 `docs/research/process-arch-rework/issues.md` 回填 ISS-04（拆巨型前的过期清理已完成；拆分另开）
-- [ ] 7.2 记一条经验进 ledger：**spec 里的推导数值（`40+4=44`）会随常量漂移，应写约束 + 当前取值 + 唯一出处**
+- [x] 7.1 `docs/research/process-arch-rework/issues.md` 回填 ISS-04（拆巨型前的过期清理已完成；拆分另开）
+- [x] 7.2 记一条经验进 ledger：**spec 里的推导数值（`40+4=44`）会随常量漂移，应写约束 + 当前取值 + 唯一出处**
 
 ## 8. 测试
 
@@ -79,6 +79,6 @@
 
 ## 10. 验收
 
-- [ ] A 9 条过期条款全部与代码一致（每条有 `file:line` 证据）
-- [ ] B 未引入新条款（只修不增），条数守恒
-- [ ] C 拆分 / 缺写 / 重复 / 死代码四项已明确登记为「不做」，各有去处
+- [x] A 9 条过期条款全部与代码一致（每条有 `file:line` 证据）
+- [x] B 未引入新条款（只修不增），条数守恒
+- [x] C 拆分 / 缺写 / 重复 / 死代码四项已明确登记为「不做」，各有去处
