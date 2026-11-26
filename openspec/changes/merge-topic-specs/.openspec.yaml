@@ -1,0 +1,5 @@
+schema: syntopica-ui
+created: 2026-11-26
+# 2 个旧 capability 的 Requirement 分别迁入 persistent-topic 与 topic-watch（均为就地扩容）。
+# 空 spec 校验失败会整次中止归档，必须显式授权退役。
+retire_capabilities: true

@@ -106,6 +106,18 @@ PURPOSE = {
         "④前端编辑对话框（字段、direction_mismatch 默认隐藏、MatchDetailPanel 展示）。"
         "本族只规定「接口长什么样」；聚类与判定算法见 `board-upgrade`。"
     ),
+    "persistent-topic": (
+        "持久叙事话题层：在 SemanticBoard（版块）与 DailyReportSection（当天聚类）之间引入 PersistentTopic，"
+        "让「同名话题隔天换一个」不再成为问题。本族定义话题的数据模型、section 强制 1:N 归属、自动升级生命周期"
+        "（累计命中门禁、单成员不建）、质心表示与归属判定、生命线 API、泳道节点呈现（高亮/可读性/就地详情/计数口径），"
+        "以及用户在泳道上标记关键事件的交互与来源语义。"
+    ),
+    "topic-watch": (
+        "用户声明「我在追踪什么」，每期日报以两种形态兑现：**提示轨**（label/keyword 只读命中判定，日报顶部独立栏位，"
+        "不改任何 section 归属与话题生命周期）与**物化轨**（关键字轨聚合当天含关键字的文章为固定名称 section；"
+        "一句话轨用向量检索当天相关辅助标签、联动持久话题）。两轨并排出现在日报中，物化失败必须降级不阻断日报。"
+        "本族含关注标记实体模型、管理 API 与删除联动。"
+    ),
 }
 
 
@@ -143,7 +155,10 @@ lines = [
     "",
     "## Purpose",
     "",
-    PURPOSE.get(fam, "TODO: 补族级 Purpose（本族解决什么问题、边界在哪）"),
+    PURPOSE.get(fam) or sys.exit(
+        f"!! 族 '{fam}' 没有族级 Purpose 文案——归档后新主 spec 会落成 TBD 占位。"
+        f"请先在 scripts/harness/merge-spec-family.sh 的 PURPOSE 字典里补上（就地扩容族可忽略此项）"
+    ),
     "",
     "## Requirements",
     "",
