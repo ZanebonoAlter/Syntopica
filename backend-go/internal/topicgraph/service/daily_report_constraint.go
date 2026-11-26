@@ -95,7 +95,58 @@ var laneConstraintEmbedFn EmbedFn = func(ctx context.Context, req airouter.Embed
 // ErrLaneConstraintAnchor is the sentinel for anchor computation failures
 // (embedding unavailable / unparseable / dimension mismatch). The write path
 // answers 5xx and MUST NOT persist a row (spec「计算失败不落库」).
+//
+// 具体失败一律包成 LaneConstraintAnchorError 返回，调用方用 errors.As 取
+// 可读原因；errors.Is 仍然命中本 sentinel（多链 Unwrap）。
 var ErrLaneConstraintAnchor = errors.New("lane constraint anchor failed")
+
+// LaneConstraintAnchorError is a structured anchor failure: which short term
+// failed and a **用户可照做的中文原因**（不含内部 URL / provider 原文——原始
+// 错误只进日志）。
+//
+// 为什么要结构体而不是裸 fmt.Errorf：写端点要把这类失败答成 503 并直接展示
+// 原因（2026-11-25 事故：embedding 服务挂了只回 "failed to compute constraint
+// anchors"，用户无从判断是短词填错还是服务不可用）。
+type LaneConstraintAnchorError struct {
+	Term   string
+	Reason string
+	// Cause 是原始错误（网络错误 / 维度不符等），仅用于日志与诊断。
+	Cause error
+}
+
+// Error keeps the log line greppable: the sentinel prefix plus term, reason
+// and the raw cause.
+func (e *LaneConstraintAnchorError) Error() string {
+	if e.Cause == nil {
+		return fmt.Sprintf("%v: %q: %s", ErrLaneConstraintAnchor, e.Term, e.Reason)
+	}
+	return fmt.Sprintf("%v: %q: %s: %v", ErrLaneConstraintAnchor, e.Term, e.Reason, e.Cause)
+}
+
+// Unwrap exposes two chains: the sentinel (errors.Is back-compat) and the raw
+// cause (errors.Is / diagnostics on the underlying network error).
+func (e *LaneConstraintAnchorError) Unwrap() []error {
+	if e.Cause == nil {
+		return []error{ErrLaneConstraintAnchor}
+	}
+	return []error{ErrLaneConstraintAnchor, e.Cause}
+}
+
+// UserMessage is the client-facing text: 前端原样展示（toast / 行内提示），
+// 所以只说「哪个短词、什么原因、下一步做什么」，不夹内部地址。
+func (e *LaneConstraintAnchorError) UserMessage() string {
+	return fmt.Sprintf("约束「%s」锚向量计算失败：%s", e.Term, e.Reason)
+}
+
+// Anchor failure reasons. 每个都写成「现象 + 下一步」，因为这是用户唯一能
+// 看到的说明；改动时保持不含内部主机名/URL。
+const (
+	laneConstraintReasonEmbedFailed    = "embedding 服务不可用或调用失败，请确认 embedding 服务已启动后重试"
+	laneConstraintReasonEmptyVector    = "embedding 服务返回了空向量，请稍后重试"
+	laneConstraintReasonNonFinite      = "embedding 服务返回的向量含非法数值，请检查 embedding 服务"
+	laneConstraintReasonNoModel        = "embedding 服务未返回模型名，请检查 embedding 服务配置"
+	laneConstraintReasonDimensionSpace = "向量维度 %d 与既有向量空间 %q 的 %d 维不一致（更换 embedding 模型后需重算该话题的全部约束）"
+)
 
 // LaneConstraintValidationError marks a client-side payload problem (400).
 type LaneConstraintValidationError struct {
@@ -127,19 +178,23 @@ func ComputeLaneConstraintAnchor(ctx context.Context, term string) (vector []flo
 		},
 	}, airouter.CapabilityEmbedding)
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: embed %q: %v", ErrLaneConstraintAnchor, term, err)
+		return nil, "", &LaneConstraintAnchorError{Term: term, Reason: laneConstraintReasonEmbedFailed, Cause: err}
 	}
 	if result == nil || len(result.Embeddings) == 0 || len(result.Embeddings[0]) == 0 {
-		return nil, "", fmt.Errorf("%w: empty embedding for %q", ErrLaneConstraintAnchor, term)
+		return nil, "", &LaneConstraintAnchorError{Term: term, Reason: laneConstraintReasonEmptyVector}
 	}
 	vec := result.Embeddings[0]
 	for i, v := range vec {
 		if math.IsNaN(v) || math.IsInf(v, 0) {
-			return nil, "", fmt.Errorf("%w: non-finite component %d for %q", ErrLaneConstraintAnchor, i, term)
+			return nil, "", &LaneConstraintAnchorError{
+				Term:   term,
+				Reason: laneConstraintReasonNonFinite,
+				Cause:  fmt.Errorf("non-finite component %d", i),
+			}
 		}
 	}
 	if strings.TrimSpace(result.Model) == "" {
-		return nil, "", fmt.Errorf("%w: provider returned no model name for %q", ErrLaneConstraintAnchor, term)
+		return nil, "", &LaneConstraintAnchorError{Term: term, Reason: laneConstraintReasonNoModel}
 	}
 	return vec, result.Model, nil
 }
@@ -413,8 +468,10 @@ func ReplaceTopicLaneConstraints(ctx context.Context, topicID uint, reqs []LaneC
 		if dErr != nil {
 			logging.Warnf("daily-report: sample tag embedding dimension for %q failed (skipping dimension check): %v", model, dErr)
 		} else if expectedDim > 0 && expectedDim != len(vec) {
-			return nil, fmt.Errorf("%w: term %q produced a %d-dim vector but the %q space stores %d-dim vectors",
-				ErrLaneConstraintAnchor, in.Term, len(vec), model, expectedDim)
+			return nil, &LaneConstraintAnchorError{
+				Term:   in.Term,
+				Reason: fmt.Sprintf(laneConstraintReasonDimensionSpace, len(vec), model, expectedDim),
+			}
 		}
 		in.TermEmbedding = repository.FloatsToPgVector(vec)
 		in.EmbeddingModel = model
@@ -453,8 +510,10 @@ func PrepareManualLaneConstraints(ctx context.Context, reqs []LaneConstraintRequ
 		if dErr != nil {
 			logging.Warnf("daily-report: sample tag embedding dimension for %q failed (skipping dimension check): %v", model, dErr)
 		} else if expectedDim > 0 && expectedDim != len(vec) {
-			return nil, fmt.Errorf("%w: term %q produced a %d-dim vector but the %q space stores %d-dim vectors",
-				ErrLaneConstraintAnchor, in.Term, len(vec), model, expectedDim)
+			return nil, &LaneConstraintAnchorError{
+				Term:   in.Term,
+				Reason: fmt.Sprintf(laneConstraintReasonDimensionSpace, len(vec), model, expectedDim),
+			}
 		}
 		out = append(out, repository.ManualTopicConstraint{
 			Term:        in.Term,

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -80,6 +81,31 @@ func getTopicLaneConstraints(c *gin.Context) {
 	}})
 }
 
+// respondLaneConstraintError maps a constraint write failure onto HTTP: client
+// payload problems answer 400 with the message verbatim, anchor computation
+// failures answer 503 with the actionable Chinese reason, everything else stays
+// a generic 500 (details only in the log).
+//
+// 为什么锤算不出来给 503 而不是 500：这条链路的失败源几乎总在 embedding 侧
+// （服务没起 / 断网 / 换模型导致维度不符），客户端处置一致——修好 embedding
+// 再重试（PUT 幂等、重试安全）。带原因的文案避免用户对着
+// "failed to compute constraint anchors" 猜是短词填错还是服务挂了。
+func respondLaneConstraintError(c *gin.Context, err error, logPrefix, fallback string) {
+	var badRequest *service.LaneConstraintValidationError
+	if errors.As(err, &badRequest) {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": badRequest.Error()})
+		return
+	}
+	var anchorErr *service.LaneConstraintAnchorError
+	if errors.As(err, &anchorErr) {
+		logging.Errorf("%s: %v", logPrefix, err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"success": false, "error": anchorErr.UserMessage()})
+		return
+	}
+	logging.Errorf("%s: %v", logPrefix, err)
+	c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": fallback})
+}
+
 // putTopicLaneConstraints handles PUT /api/daily-reports/topics/:id/constraints.
 // Body: {"constraints":[{"term":"以色列","mode":"required","margin":null,"max_distance":null}]}
 // — full replacement (omit an entry to delete it), idempotent.
@@ -107,15 +133,9 @@ func putTopicLaneConstraints(c *gin.Context) {
 
 	rows, err := service.ReplaceTopicLaneConstraints(c.Request.Context(), topicID, req.Constraints)
 	if err != nil {
-		var badRequest *service.LaneConstraintValidationError
-		if errors.As(err, &badRequest) {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": badRequest.Error()})
-			return
-		}
-		// Anchor computation failed (embedding unavailable / unparseable /
-		// dimension mismatch): nothing was written, so the previous set is intact.
-		logging.Errorf("replace topic %d constraints: %v", topicID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "failed to persist constraints"})
+		// 校验错 → 400（不落库）；锚算不出（embedding 不可达 / 维度不符）→ 503
+		// 且原文不变（什么都没写）。
+		respondLaneConstraintError(c, err, fmt.Sprintf("replace topic %d constraints", topicID), "failed to persist constraints")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{

@@ -41,11 +41,11 @@
 - **落点**：`backend-go/internal/tagmanagement/service/core/embedding.go:buildTagEmbeddingText`
 - **取舍**：实测分离度排序 V1_prod×event 64.4% > V1_prod×keyword 53.6% > V2_bare×keyword 46.8% > V1_prod×裸词 26.2%；裸词锚最差（两锚间距仅 0.139，判别力坍塌）。
 
-### D4. `margin` 默认 0.05、`max_distance` 默认 0.55，均可按约束覆写
+### D4. `margin` 与 `max_distance` 默认值走 `ai_settings`，约束行只存覆写
 
-- **结论**：两个参数都存于约束行，per-constraint 可调；默认值作为起点，最终值以真库标定为准。
-- **落点**：`specs/topic-lane-constraint/spec.md` — Scenario「添加约束写入完整行」
-- **取舍**：margin 取 0.05 而非 0.10——margin=0.10 时正样本放行率从 64.4% 掉到 25.2%；margin=0.15 起正样本基本清零。`max_distance` 保留绝对上限是为了剔除离锚过远、相对偏好不具判别意义的 tag（实测纯以色列 tag 到「黎巴嫩」锚 p50=0.593）。
+- **结论**：两个参数的全局默认值存于 `ai_settings`（`persistent_topic_constraint_margin_default` 默认 0.05、`persistent_topic_constraint_max_distance_default` 默认 0.55），约束行内同名字段**可空**——为空即取全局默认，非空即为该约束的显式覆写。
+- **落点**：`backend-go/internal/topicgraph/repository/daily_report_topic_repository.go:LoadPersistentTopicConfig`
+- **取舍**：否决「行内 NOT NULL 写死默认值」——那样改全局默认对存量约束无效，违反 daily-report 红线「lane 阈值默认参数必须可经 `ai_settings` 在线覆盖」的口径一致性；与既有 `persistent_topic_lane_l1_threshold` / `persistent_topic_lane_l2_threshold` 同模式（`postgres_migrations.go:1701-1702`）。margin 取 0.05 而非 0.10——margin=0.10 时正样本放行率从 64.4% 掉到 25.2%，margin=0.15 起正样本基本清零。绝对上限 `max_distance` 保留是为了剔除离锚过远、相对偏好不具判别意义的 tag（实测纯以色列 tag 到「黎巴嫩」锚 p50=0.593）。
 
 ### D5. 闸门落在 lane group 级（`assembleLaneGroups` 之后、`planTopicAssignments` 之前）
 
@@ -77,16 +77,38 @@
 - **落点**：`specs/topic-lane-constraint/spec.md` — Scenario「添加约束写入完整行」
 - **取舍**：否决「在 `board_persistent_topics` 上加约束字段」——约束是集合（一条话题可绑多条），塞不进单行；且存量话题无约束行时闸门天然直通，改既有表会带来无谓的迁移面。
 
-### D10. 前端配置区依赖 `lane-manual-correction-loop` 的编辑面
+### D10. 前端配置块落在修正工作面左栏，形态复用 `LaneAnchorScope`
 
-- **结论**：本 change 只交付数据模型、后端闸门、API 与独立组件；编辑面的接线待前置 change 就绪。
-- **落点**：无代码落点：`ui-design.md` 的「入口与入口变更」节，因为编辑容器由 `lane-manual-correction-loop` 提供，本 change 不新建编辑入口
-- **取舍**：不与前置 change 合并实现——该 change 尚未开工（0/60 任务）且 `ui-impact=major`，合并会让两个 change 的 ui-design 审批互相阻塞；后端部分不依赖它，可先行。
+- **结论**：约束配置作为修正模式左栏的一个可折叠 `panel` 块，紧接 `LaneAnchorScope` 之后；不新增入口、不改布局模式、不新建弹窗档位。新建模式不提供约束配置（话题尚未存在）。
+- **落点**：`front/app/features/tags/components/console/BoardComposeOverlay.vue:481`（`</aside>` 之前）+ 新组件 `console/LaneConstraintScope.vue`
+- **取舍**：否决弹窗（`dialog`）——约束与首义同属「人工改写话题定义面」，配置时需同时看见左栏成员、首义范围与中央画布，弹窗会遮住上下文并因多条约束退化为串行弹窗（同时违反 `interaction.md` P4 与 P5）；否决顶部工具条——`.bco__range` / `.bco__tools` 承载跨三栏的窗口与工具，时间视窗已占满一条。默认折叠是为了不把左栏推到第 5 块常态内滚（`unify-lane-workbench` 曾因左栏堆叠过多而加右栏）。
+
+### D11. `preferred` 只作 L2 提示，不引入打分机制
+
+- **结论**：`preferred` 约束不参与拦截、不计入 required 条数、也不作 required 相对偏好的参照锤；它只作为偏好提示出现在 L2 裁决提示词中。
+- **落点**：`backend-go/internal/topicgraph/service/daily_report_lane.go:laneConstraintPreferredTerms`
+- **取舍**：否决「不实现、只落库」——UI 会多出一个无效果的开关，且 spec 「仅作加权信号」无从落地（归档时属 spec-实现不一致）；否决「真做加权打分」——当前归属是阈值型二分门（L1/L2/L3），加打分需重塑整条链路，与「不改质心公式与阈值」的非目标冲突；提示词提示是零新增机制的最小真实效果。
+
+### D12. 建话题与约束同事务，锚向量在事务外预计算
+
+- **结论**：`POST /semantic-boards/:id/persistent-topics/manual` 接受可选 `constraints`；锚向量在建事务**之前**算完，随后在同一个事务里写 topic + 首义留痕 + 约束行。
+- **落点**：`backend-go/internal/topicgraph/repository/daily_report_manual_topic.go:CreateManualTopicWithConstraints`
+- **取舍**：否决「前端先建话题再 PUT 约束」——两次调用非原子，失败会留下「有泳道、无约束」的半成品，而且中间的首次日报生成不受约束保护（正是要消除的空窗）；否决「事务内算锚」——embedding 是网络调用，事务内发起会在上游慢/挂时长时间占事务与行锁；与红线「手动建话题 SHALL 在建话题同一事务内追加首义留痕」同一纪律。
+
+### D13. 锚算失败答 503 + 可读原因，前端在保存现场展示
+
+- **结论**：`ComputeLaneConstraintAnchor` / `ReplaceTopicLaneConstraints` / `PrepareManualLaneConstraints` 的失败一律返回 `*LaneConstraintAnchorError{Term, Reason, Cause}`（`Unwrap() []error` 同时暴露 `ErrLaneConstraintAnchor` 与原始 `Cause`，保留 `errors.Is` 兼容）；handler 层两个写端点共用一个 `respondLaneConstraintError`：校验错 400 / 锚失败 503（`UserMessage()` = “约束「英伟达」锚向量计算失败：<原因>”）/ 其余 500。原因文案写成“现象 + 下一步”，不夹内部主机名与 URL。
+- **落点**：`backend-go/internal/topicgraph/service/daily_report_constraint.go`、`backend-go/internal/topicgraph/handler/daily_report_constraint_handler.go`、`backend-go/internal/topicgraph/handler/daily_report_handler.go:createManualTopic`、`front/app/features/tags/components/console/BoardComposeOverlay.vue`（命名弹窗 `compose-save-error`）
+- **取舍**：否决“保留 500 但换中文串”——语义上这是依赖不可用而非未知错误，503 让客户端与监控能区分；否决“把原始 `airouter` 错误直接透给客户端”——含内部地址与 provider 细节；也否决“只改前端文案”——前端无法区分网络/维度/空向量，猜错了反而误导；否决“失败时允许建无约束泳道”——会破坏本 change 的核心不变量（D12：SHALL NOT 留半成品），用户裁决（2026-11-25）保持严格拒绝。
+- **代价**：维度不符也归入 503（严格说属于配置错误而非瞬时不可用），但客户端处置与可重试性一致（修好 embedding 后重试），故不再细分状态码。
 
 ## Risks / Trade-offs
 
-- **[margin 的最终值未经真库标定]** → 本地模拟的正样本仅 3 个（黎巴嫩侧 tag 库被 7 天 GC 削减），统计力弱 → 实现阶段必须做真库效果核对（见 `test-cases.md` 效果核对节），核对前 margin 视为起点而非定值；核对结论若显示误判不可接受，先调 margin/max_distance，仍不达标则转人工纠正（`lane-manual-correction-loop` 的移除能力）。
-- **[远程 embedding 不可用时锚与 tag 向量不同空间]** → 跨空间 tag 被跳过（D7），表现为「约束看起来没生效」而非「误判」；远程恢复（用户计划当晚恢复）后需重算受影响的约束锚 → 提供约束的重算入口（复用 `RecomputeTopicCentroids` 的异步幂等范式）。
+- **[锚算不出来时错误文案不可操作]** → 2026-11-25 事故：建泳道响应 `failed to compute constraint anchors` 只告诉用户“失败”，不告诉“哪个短词”与“为什么”（当时是 Windows 上 llama-server 未启动，端口拒连）；用户无从判断是短词填错还是服务挂了，前端还只把它写进 `error` ref、界面上什么都不显示 → 处置见 D13：结构化 `LaneConstraintAnchorError`（Term + 中文原因，原始网络错误只进日志）+ 503 可读文案 + 命名弹窗行内展示。
+
+- **[margin 的最终值未经真库标定]** → 本地模拟的正样本仅 3 个（黎巴嫩侧 tag 库被 7 天 GC 削减），统计力弱 → 实现阶段必须做真库效果核对（见 `test-cases.md` 效果核对节），核对前 margin 视为起点而非定值；核对结论若显示误判不可接受，先调 `ai_settings` 的全局默认值，仍不达标则转人工纠正（修正工作面的移除能力）。
+- **[远程 embedding 不可用时锚与 tag 向量不同空间]** → 跨空间 tag 被跳过（D7），表现为「约束看起来没生效」而非「误判」。远程恢复后需把降级期算的锚换回远程空间。**本版没有专用重算端点**：PUT 语义是「短词未变则复用已落库锚向量」（幂等且不依赖 embedding 可用），所以重算靠在 PUT 中**省略该条再重新提交**（先删后加 → 新行必重算锚）。前端配置块落地时 SHOULD 把「重新计算」做成删除+重加的等价动作，或在后续 change 里加 `reanchor` 标志；此处不自行新增端点，避免超出本 change 范围。
+- **[闸门只作用于新生成路径]** → 历史已错挂的 section 不回改（proposal 明确为非目标），需人工在修正工作面移出。
 - **[违例 group 触发额外 LLM 调用]** → 仅违例时触发，量级受约束效果限制；LLM 调用有成本与延迟 → 闸门在无约束话题上零开销，且违例降级沿用既有 L2 通道，不新增调用路径。
 - **[约束话题的 hit_count 增长放缓]** → 这是预期效果（避免单边内容殖民），但会改变话题的活跃度指标 → 在变更说明中明确；「今日重点」「泳道关注度」等依赖命中计数的口径 SHALL NOT 因本 change 改动。
 - **[section 的 tag 集合在 `daily_report_sections.cluster_tag_ids` 中 92.8% 悬空]** → 闸门不能用该列做判定输入 → 判定输入改用 `article_topic_tags`（悬空率 0%）经 section→article 关联取得，或在 section 生成时物化当时有效的 tag id 快照。

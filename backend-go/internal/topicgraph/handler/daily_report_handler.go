@@ -1618,15 +1618,12 @@ func createManualTopic(c *gin.Context) {
 	}
 
 	// 锚向量必须在开事务前算完（embedding 是网络调用，不能进 DB 事务）。
+	// 失败分三类：载荷非法 400 / 锚算不出 503（带可读原因）/ 其余 500。
 	constraints, err := service.PrepareManualLaneConstraints(c.Request.Context(), req.Constraints)
 	if err != nil {
-		var badRequest *service.LaneConstraintValidationError
-		if errors.As(err, &badRequest) {
-			c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": badRequest.Error()})
-			return
-		}
-		logging.Errorf("prepare manual lane constraints: board=%d label=%q: %v", boardID, req.Label, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": "failed to compute constraint anchors"})
+		respondLaneConstraintError(c, err,
+			fmt.Sprintf("prepare manual lane constraints: board=%d label=%q", boardID, req.Label),
+			"failed to compute constraint anchors")
 		return
 	}
 

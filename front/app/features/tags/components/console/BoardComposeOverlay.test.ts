@@ -697,6 +697,28 @@ describe('BoardComposeOverlay — 保存与命名（S7）', () => {
     expect(w.emitted('close')).toHaveLength(1)
   })
 
+  it('保存失败：后端可读原因在命名弹窗内可见，成员不丢', async () => {
+    persistentMock.createManualLane.mockResolvedValueOnce({
+      success: false,
+      error: '约束「英伟达」锚向量计算失败：embedding 服务不可用或调用失败，请确认 embedding 服务已启动后重试',
+    })
+    const w = await mountOverlay()
+    await w.find('[data-testid="lane-title-1984:1"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="compose-save"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="compose-name-input"] input').setValue('新泳道')
+    await w.find('[data-testid="compose-name-confirm"]').trigger('click')
+    await flushPromises()
+
+    const alert = w.find('[data-testid="compose-save-error"]')
+    expect(alert.exists()).toBe(true)
+    expect(alert.attributes('role')).toBe('alert')
+    expect(alert.text()).toContain('embedding 服务不可用')
+    expect(w.find('[data-testid="lane-compose-member-count"]').text()).toContain('3')
+    expect(w.emitted('saved')).toBeUndefined()
+  })
+
   it('自动预填名跟随来源组；人工写过的名字不被覆盖', async () => {
     const w = await mountOverlay()
     await w.find('[data-testid="lane-title-1984:1"]').trigger('click')

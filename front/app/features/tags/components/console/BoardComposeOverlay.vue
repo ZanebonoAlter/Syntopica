@@ -86,6 +86,8 @@ function openNaming(): void {
   if (!compose.memberCount.value) return
   nameDraft.value = compose.laneName.value
   compose.nameError.value = null
+  // 上一次保存失败的原因只对上一次尝试有效，重开弹窗时清掉（失败会在弹窗内重显）。
+  compose.error.value = null
   namingOpen.value = true
 }
 
@@ -664,6 +666,13 @@ onBeforeUnmount(() => {
           />
           <p v-if="compose.nameError.value" class="bco__error" role="alert" data-testid="compose-name-error">
             {{ compose.nameError.value }}
+          </p>
+          <!--
+            保存失败（含后端 503「约束锚算不出来」的带因文案）必须在这里可见：
+            弹窗是保存动作的唯一现场，此前失败只写进 error ref、界面上什么都不显示。
+          -->
+          <p v-if="compose.error.value" class="bco__error" role="alert" data-testid="compose-save-error">
+            {{ compose.error.value }}
           </p>
           <p class="bco__dialog-text">
             {{ compose.memberCount.value }} 条事件 · 起始向量取全部有效已选成员的平均值，不要求已有算法连线。

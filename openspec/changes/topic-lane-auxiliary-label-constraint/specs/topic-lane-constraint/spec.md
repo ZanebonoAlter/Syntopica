@@ -6,16 +6,18 @@
 
 ### Requirement: 话题辅助标签约束数据模型
 
-系统 SHALL 维护 `board_persistent_topic_constraints` 表，持久化每个话题的辅助标签约束。每行 SHALL 包含：`topic_id`（外键到 `board_persistent_topics`，ON DELETE CASCADE）、`term`（用户输入的主体短词，VARCHAR(100)，SHALL NOT 为空）、`term_embedding`（约束锚向量，**无维度限定 `vector`**——维度只活在运行时与数据里，不由 schema 承载）、`embedding_model`（计算该锚向量所用模型的标识，作为向量空间标识）、`mode`（`required`｜`preferred`）、`margin`（相对偏好严格度，NUMERIC，取值范围 [0, 1]）、`max_distance`（该约束的绝对距离上限，可空 NUMERIC，取值范围 [0, 1]）、`created_at`、`updated_at`。
-
-`mode` SHALL 受 CHECK 约束为 required/preferred 二态，默认 required。`margin` SHALL 受 CHECK 约束限定在 [0, 1]，表示**相对偏好严格度**（见「约束覆盖判定语义」）；`max_distance` SHALL 为可空的 NUMERIC（取值范围 [0, 1]），表示该约束的**绝对距离上限**。同一话题内同一 `term` SHALL 唯一。表 SHALL 在 `topic_id` 上建 BTree 索引。建表 SHALL 通过显式数据库迁移完成，不依赖 gorm AutoMigrate。
+系统 SHALL 维护 `board_persistent_topic_constraints` 表，持久化每个话题的辅助标签约束。每行 SHALL 包含：`topic_id`（外键到 `board_persistent_topics`，ON DELETE CASCADE）、`term`（用户输入的主体短词，VARCHAR(100)，SHALL NOT 为空）、`term_embedding`（约束锚向量，**无维度限定 `vector`**）、`embedding_model`（锚向量的向量空间标识）、`mode`（`required`｜`preferred`）、`margin`（相对偏好严格度，可空）、`max_distance`（绝对距离上限，可空）、`created_at`、`updated_at`。
 
 约束 SHALL NOT 通过新增列的方式挂在 `board_persistent_topics` 上——既有表结构 SHALL 保持不变，存量话题在无约束行时行为与现状逐字一致。
 
 #### Scenario: 添加约束写入完整行
 
-- **WHEN** 用户为话题 #2 添加辅助标签「以色列」，mode=required，margin=0.05，max_distance=0.55，锚向量由模型 `qwen3-embedding` 计算得到
-- **THEN** 系统 SHALL 写入一行，`topic_id`=2、`term`="以色列"、`embedding_model`="qwen3-embedding"、`mode`=required、`margin`=0.05、`max_distance`=0.55
+- **WHEN** 用户为话题 #2 添加辅助标签「以色列」，mode=required，不指定 margin 与 max_distance，锚向量由模型 `qwen3-embedding` 计算得到
+- **THEN** 系统 SHALL 写入一行，`topic_id`=2、`term`="以色列"、`embedding_model`="qwen3-embedding"、`mode`=required、`margin` 为空、`max_distance` 为空
+
+### Requirement: 约束表的列约束与索引
+
+`mode` SHALL 受 CHECK 约束为 required/preferred 二态，默认 required。`margin` 与 `max_distance` 为非空时 SHALL 受 CHECK 约束限定在 [0, 1]。同一话题内同一 `term` SHALL 唯一。表 SHALL 在 `topic_id` 上建 BTree 索引。建表 SHALL 通过显式数据库迁移完成，不依赖 gorm AutoMigrate。
 
 #### Scenario: 模式取值受约束
 
@@ -46,6 +48,8 @@
 
 锚向量计算失败时（embedding 服务不可用、返回不可解析、维度与既有向量不一致），系统 SHALL 返回错误并 SHALL NOT 落库，SHALL NOT 写入空向量或零向量。
 
+失败响应 SHALL 是 503 且 `error` 文案 SHALL 同时给出**失败的短词**与**可操作的中文原因**（如“embedding 服务不可用或调用失败，请确认 embedding 服务已启动后重试”）。SHALL NOT 只回内部哨兵英文串（如 `failed to compute constraint anchors`），SHALL NOT 在客户端文案里暴露内部主机名 / URL（原始错误只进日志）。理由：这条链路的失败源几乎总在 embedding 侧，而用户唯一能看到的就是这句话，不报原因就只能猜是短词填错还是服务挂了。
+
 `embedding_model` SHALL 随约束行一同持久化，使判定方能够识别该约束锚所属的向量空间。
 
 #### Scenario: 短词计算锚向量并记录模型标识
@@ -63,27 +67,38 @@
 - **WHEN** 锚向量计算失败
 - **THEN** 系统 SHALL 返回错误，SHALL NOT 写入约束行
 
+#### Scenario: 计算失败返回可操作原因
+
+- **GIVEN** embedding 服务不可达，话题用锚点+约束建泳道请求中约束短词为「英伟达」
+- **WHEN** 系统处理该请求
+- **THEN** 响应 SHALL 为 503，`error` SHALL 包含「英伟达」与“embedding 服务不可用”这类可操作原因，SHALL NOT 只返回 `failed to compute constraint anchors` 之类无信息的英文串，也 SHALL NOT 含内部 URL
+
 ### Requirement: 约束覆盖判定语义
 
-对某个待归属 section 与其候选话题，系统 SHALL 按 section 的标签集合逐条判定约束覆盖。
+对某个待归属 section 与其候选话题，系统 SHALL 按 section 的标签集合逐条判定约束覆盖。判定 SHALL 基于「相对偏好」而非单一绝对距离阈值（理由见 `design.md` D2）。
 
-**判定 SHALL 基于「相对偏好」而非单一绝对距离阈值**：向量的绝对距离无法区分「双主体」与「单主体」——实测「以色列」与「黎巴嫩」两个主体锚的余弦距离仅 0.14~0.36，纯单侧内容到「另一侧」锚的距离与双侧内容到同侧锚的距离高度重叠，绝对阈值下正负样本分布不分离；而**同一个 tag 相对更靠近哪一侧锚**这一信号是稳定的。
-
-- **相对偏好**：对每条约束 `i` 与其余约束 `j`，tag `t` 满足约束 `i` 的条件为 `d(t, A_i) + margin_i < d(t, A_j)`，其中 `d` 为余弦距离、`A_i` 为该约束的锚向量、`margin_i` 为该约束的相对偏好严格度。约束 `i` 被覆盖 SHALL 意为 section 的标签集合中**存在至少一个** tag 满足该条件。
-- **绝对上限**：`max_distance` 非空时，命中 tag SHALL 同时满足 `d(t, A_i) < max_distance_i`；为空时该项不参与判定。绝对上限用于剔除离锚过远、相对偏好不具判别意义的 tag。
-- **单约束退化**：话题只有一条约束（无其它约束锚可比）时，相对偏好无参照，SHALL 仅以 `max_distance` 判定；`max_distance` 为空时该约束 SHALL 视为无法判定，SHALL NOT 参与拦截。
-- **多条 required 约束**：SHALL **全部**被覆盖时，约束判定为「满足」；任一 required 约束未被覆盖时，判定为「违反」。不同约束 SHALL 可由标签集合中的**不同标签**分别满足（分腿覆盖）。
-- **`preferred` 约束**：SHALL NOT 参与拦截判定，仅作加权信号。
-- **跨向量空间**：标签向量与约束锚的 `embedding_model` 不一致时，该标签 SHALL 被跳过——SHALL NOT 计入覆盖，也 SHALL NOT 判为违反（无法判定不等于违反）。
-- **无标签的 section**：SHALL 跳过约束检查，SHALL NOT 判为违反。
+- **相对偏好**：对每条约束 `i` 与其余约束 `j`，tag `t` 满足约束 `i` 的条件为 `d(t, A_i) + margin_i < d(t, A_j)`，其中 `d` 为余弦距离、`A_i` 为该约束的锚向量。约束 `i` 被覆盖 SHALL 意为 section 的标签集合中**存在至少一个** tag 满足该条件。
+- **多条 required 约束**：SHALL **全部**被覆盖时判定为「满足」；任一未被覆盖时判定为「违反」。不同约束 SHALL 可由标签集合中的**不同标签**分别满足（分腿覆盖）。
+- **`preferred` 约束**：SHALL NOT 参与拦截判定，SHALL NOT 计入 required 条数，也 SHALL NOT 成为 `required` 相对偏好的参照锚（防止偏好项反向抬高 required 的门槛）；它 SHALL 只作为 L2 裁决提示词中的偏好提示出现（不构成任何归属条件）。
 
 未覆盖 required 约束时，section SHALL NOT 锚定到该话题。
 
 #### Scenario: 双侧 required 被不同标签分腿覆盖
 
-- **GIVEN** 话题 #2 有 required 约束「以色列」与「黎巴嫩」（margin 各 0.05，max_distance 各 0.55），其 section 的标签集合含 tag「以色列空袭加沙」——该 tag 到「以色列」锚距离 0.31、到「黎巴嫩」锚距离 0.52（相对偏好 0.21 > margin），以及 tag「真主党与以军交火」——该 tag 到「黎巴嫩」锚距离 0.38、到「以色列」锚距离 0.60
+- **GIVEN** 话题 #2 有 required 约束「以色列」与「黎巴嫩」（均未覆写 margin/max_distance，取全局默认 margin=0.05、max_distance=0.55），其 section 的标签集合含 tag「以色列空袭加沙」——该 tag 到「以色列」锚距离 0.31、到「黎巴嫩」锚距离 0.52（相对偏好 0.21 > margin），以及 tag「真主党与以军交火」——该 tag 到「黎巴嫩」锚距离 0.38、到「以色列」锚距离 0.60
 - **WHEN** 系统判定该 section 对话题 #2 的约束覆盖
 - **THEN** 两条 required 约束 SHALL 均被覆盖，判定结果 SHALL 为「满足」
+
+### Requirement: 约束判定对不可判情况一律放行
+
+绝对上限、单约束退化与跨向量空间三种不可判情况 SHALL 一律放行（不拦截）：
+
+- **绝对上限**：`max_distance` 非空时，命中 tag SHALL 同时满足 `d(t, A_i) < max_distance_i`；为空时该项不参与判定。
+- **单约束退化**：话题只有一条约束（无其它约束锚可比）时相对偏好无参照，SHALL 仅以 `max_distance` 判定；`max_distance` 也为空时该约束 SHALL 视为无法判定。
+- **跨向量空间**：tag 的 `embedding_model` 与约束锚不一致时 SHALL 被跳过，SHALL NOT 计入覆盖，也 SHALL NOT 判为违反。
+- **无标签的 section**：SHALL 跳过约束检查，SHALL NOT 判为违反。
+
+上述任一情况下，若其它 required 约束本身均已覆盖，约束判定 SHALL NOT 被这些不可判项阻断而使正样本被拒。
 
 #### Scenario: 单侧 required 未覆盖判违反
 
@@ -102,6 +117,12 @@
 - **GIVEN** 话题 #2 只有 preferred 约束「真主党」，section 标签集合无标签满足其覆盖条件
 - **WHEN** 系统判定约束覆盖
 - **THEN** 判定结果 SHALL 为「满足」（preferred 不参与拦截）
+
+#### Scenario: preferred 作为偏好提示进入 L2 提示词
+
+- **GIVEN** 话题 #2 有 required 约束「以色列」「黎巴嫩」与 preferred 约束「真主党」，其 lane group 违例触发 L2 复裁
+- **WHEN** 系统构造约束状态块
+- **THEN** 该话题行 SHALL 同时列出 required 术语与偏好术语，并明确标注偏好不参与拦截；无 preferred 约束的话题 SHALL NOT 出现偏好标签
 
 #### Scenario: 跨向量空间的标签被跳过
 
@@ -189,6 +210,31 @@
 
 - **WHEN** 客户端请求话题 #99999 的约束列表
 - **THEN** 系统 SHALL 返回 404
+
+### Requirement: 手动建泳道可同时创建约束
+
+手动建泳道接口 SHALL 接受可选的 `constraints` 字段，并在**创建话题的同一个事务**内写入约束行。
+
+- 锚向量 SHALL 在开启事务**之前**计算完成（embedding 是网络调用，SHALL NOT 在数据库事务内发起）。
+- 任一约束非法（重复 `term`、非法 `mode`、越界 `margin` / `max_distance`）或锚向量计算失败时，系统 SHALL 拒绝整个建话题请求，SHALL NOT 留下「有话题、无约束」的半成品。前者答 400，后者答 503 并带可操作原因（与「约束锚向量计算与向量空间标识」同一文案口径）。
+- 请求未携带 `constraints` 或其为空数组时，行为 SHALL 与引入本机制前逐字一致。
+
+#### Scenario: 新建泳道时同事务写入约束
+
+- **GIVEN** 用户新建泳道「以黎冲突升级」，提交 `constraints=[{term:"以色列",mode:"required"},{term:"黎巴嫩",mode:"required"}]`
+- **WHEN** 系统创建该话题
+- **THEN** 话题行与两条约束行 SHALL 在同一个事务内提交，约束行的 `topic_id` 指向新话题
+
+#### Scenario: 约束写入失败则话题不创建
+
+- **GIVEN** 新建泳道请求携带的约束中有一条非法 `mode`
+- **WHEN** 系统处理该请求
+- **THEN** 系统 SHALL 拒绝整个请求，话题 SHALL NOT 被创建，SHALL NOT 留下「有话题、无约束」的半成品
+
+#### Scenario: 不传约束时行为不变
+
+- **WHEN** 建话题请求未携带 `constraints` 字段
+- **THEN** 系统 SHALL 只创建话题与首义留痕，SHALL NOT 写入任何约束行，且行为与引入本机制前逐字一致
 
 ### Requirement: 约束不参与话题生命周期
 

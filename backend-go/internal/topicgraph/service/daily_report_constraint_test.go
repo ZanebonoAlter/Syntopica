@@ -334,35 +334,41 @@ func TestConstraint_ComputeAnchorPassesTextAndModel(t *testing.T) {
 // TestConstraint_AnchorFailuresReturnError covers Scenario「计算失败不落库」的
 // 纯函数半边：embedding 报错 / 返回不可解析（空） / 模型名缺失 一律返回错误，
 // SHALL NOT 返回零向量。
+// 同时锁定「失败带可读原因」：每个分支必须是 *LaneConstraintAnchorError，
+// Reason 指向具体现象（写端点把它当 503 文案展示给用户）。
 func TestConstraint_AnchorFailuresReturnError(t *testing.T) {
 	cases := []struct {
-		name  string
-		stub  func(context.Context, airouter.EmbeddingRequest, airouter.Capability) (*airouter.EmbeddingResult, error)
-		empty bool
+		name   string
+		stub   func(context.Context, airouter.EmbeddingRequest, airouter.Capability) (*airouter.EmbeddingResult, error)
+		reason string
 	}{
 		{
 			name: "embedding error",
 			stub: func(context.Context, airouter.EmbeddingRequest, airouter.Capability) (*airouter.EmbeddingResult, error) {
 				return nil, errors.New("network_error")
 			},
+			reason: laneConstraintReasonEmbedFailed,
 		},
 		{
 			name: "empty embedding",
 			stub: func(context.Context, airouter.EmbeddingRequest, airouter.Capability) (*airouter.EmbeddingResult, error) {
 				return &airouter.EmbeddingResult{Embeddings: [][]float64{{}}, Model: "qwen3-embedding"}, nil
 			},
+			reason: laneConstraintReasonEmptyVector,
 		},
 		{
 			name: "missing model name",
 			stub: func(context.Context, airouter.EmbeddingRequest, airouter.Capability) (*airouter.EmbeddingResult, error) {
 				return &airouter.EmbeddingResult{Embeddings: [][]float64{{0.1, 0.2}}, Model: "  "}, nil
 			},
+			reason: laneConstraintReasonNoModel,
 		},
 		{
 			name: "non-finite component",
 			stub: func(context.Context, airouter.EmbeddingRequest, airouter.Capability) (*airouter.EmbeddingResult, error) {
 				return &airouter.EmbeddingResult{Embeddings: [][]float64{{math.NaN()}}, Model: "qwen3-embedding"}, nil
 			},
+			reason: laneConstraintReasonNonFinite,
 		},
 	}
 	for _, tc := range cases {
@@ -376,6 +382,15 @@ func TestConstraint_AnchorFailuresReturnError(t *testing.T) {
 			assert.ErrorIs(t, err, ErrLaneConstraintAnchor)
 			assert.Empty(t, vec, "SHALL NOT 返回零向量")
 			assert.Empty(t, model)
+
+			var anchorErr *LaneConstraintAnchorError
+			require.ErrorAs(t, err, &anchorErr, "失败必须是结构化错误，携可读原因")
+			assert.Equal(t, "黎巴嫩", anchorErr.Term)
+			assert.Equal(t, tc.reason, anchorErr.Reason)
+			msg := anchorErr.UserMessage()
+			assert.Contains(t, msg, "黎巴嫩")
+			assert.Contains(t, msg, tc.reason)
+			assert.NotContains(t, msg, "http://", "客户端文案 SHALL NOT 带内部地址")
 		})
 	}
 }

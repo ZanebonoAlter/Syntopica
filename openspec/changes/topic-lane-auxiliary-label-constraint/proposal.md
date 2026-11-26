@@ -17,15 +17,17 @@
 ## What Changes
 
 - **新增话题约束数据模型**：`board_persistent_topic_constraints`（`topic_id` / `term` 用户输入短词 / `term_embedding` 约束锚向量 / `embedding_model` 向量空间标识 / `mode`（`required`｜`preferred`）/ `threshold` / `created_at` / `updated_at`）。约束以**向量**为载体而非 tag id 集合——`article_topic_tags` 边按 `tag_edge_retention_days`（默认 7 天）回收、孤立 tag 随之清理，任何基于 tag id 的约束会在 7 天后自行失效，向量则与 GC 无关。
-- **新增约束锚向量计算**：用户在话题编辑面输入短词（如「以色列」），后端用**当前 embedding 顺位**（`ai_routes` id=4 `ordered_failover`，priority 1 = 远程 `qwen3-embedding`、priority 2 = 本地 gguf）计算向量并落库，同时记录 `embedding_model` 作为向量空间标识。用户**只输入短词**，不输入 description——描述由用户补齐的心智负担过高，约束锚的语义由短词本身承载。
+- **新增约束锚向量计算**：用户在泳道修正工作面输入短词（如「以色列」），后端用**当前 embedding 顺位**（`ai_routes` id=4 `ordered_failover`，priority 1 = 远程 `qwen3-embedding`、priority 2 = 本地 gguf）计算向量并落库，同时记录 `embedding_model` 作为向量空间标识。用户**只输入短词**，不输入 description——描述由用户补齐的心智负担过高，约束锚的语义由短词本身承载。
 - **新增归属闸门**：section 锚定到话题前，逐个 tag 与该话题的约束锚比对距离。`required` 约束要求 section 的标签集合**覆盖全部** required 约束（AND 语义，`preferred` 仅加权不拦截）。不满足时该 section **不得** `l1_direct` 直挂，改走 L2 交 LLM 重新裁决（复用 `candidate-topic-l2-gate` 的 candidate 降级范式）；LLM 若仍 keep 到约束不满足的话题，按 `parseL2Response` 既有「switch 到候选集外 → 降级为 new」的范式处理。
-- **新增约束管理 API**：话题约束的读取与批量替换（幂等），供话题编辑面调用。
-- **新增前端配置区**：话题编辑面内新增「辅助标签」区（输入短词、选 `required`/`preferred`、调整阈值、展示已绑定约束）。
+- **新增约束管理 API**：话题约束的读取与批量替换（幂等），供前端修正工作面调用。
+- **新增前端配置块**：泳道修正工作面的左栏（`aside.bco__left`，`LaneAnchorScope` 之后）新增一个可折叠「辅助标签」panel——输入短词、选 `required`/`preferred`、展示已绑定约束与模型标识。**不新增入口、不改布局模式**（入口沿用 E2/E3 进修正工作面）。
+- **新建泳道时也可配约束**：手动建话题接口接受可选 `constraints`，与话题**同事务**创建（锚向量在事务外预计算）；前端新建模式左栏底部提供同一配置块的**草稿模式**（不落库，保存时随建话题一并提交）。避免「先建泳道、再重新打开修正面配约束」的两步流程，以及新泳道首次日报无约束保护的空窗。
 - **约束语义按话题配置**：`required`（硬性 AND）与 `preferred`（软性加权）可逐条配置，适配「以黎冲突」这类双边话题与「以色列安全焦虑」这类单边话题。
+- **锚算失败可诊断**（2026-11-25 事故补丁，design D13）：约束写入的锚算失败答 **503** 并给出**具体短词 + 可操作中文原因**（原始网络错误只进日志、不向客户端泄露地址），两个写端点（PUT 约束 / 带约束建泳道）同一口径；前端把创建失败原因行内展示在命名弹窗（此前只写进内部 `error` ref，界面什么都不显示）。严格拒绝语义不变：失败仍不建话题、不落约束行。
 
 ### 依赖
 
-本 change 的**前端配置区依赖 `lane-manual-correction-loop`** 的泳道修正工作面（话题编辑入口）。该 change 尚未开工（0/60 任务），其 `topic_anchor_overrides`（人工重设首义）与本 change 的约束向量是同一族「人工主权改写话题定义面」的机制。数据模型、后端闸门与 API 不依赖该 change，可先行；前端配置区待其就绪后接线。
+本 change 的**前端配置块依赖泳道修正工作面**——该工作面由 `lane-manual-correction-loop`（已于 **2026-11-16 归档**）交付，并在其后 6 个 change 中重构为当前形态：`unify-lane-workbench`（三栏）、`rework-lane-compose-swimlane-canvas`（泳道行画布）、`clarify-lane-correction-effect-timing`（生效时机徽标）等。工作面由 `front/app/features/tags/components/console/BoardComposeOverlay.vue`（全屏 `Teleport` 模态，非 `AppDialog`）承载，修正模式为三栏；本 change 在左栏 `LaneAnchorScope` 之后追加一个可折叠 panel，**不新增入口、不改布局模式**。数据模型、后端闸门与 API 与前端互不阻塞，可并行实施。
 
 ### 非目标
 
@@ -54,7 +56,7 @@
 - `internal/platform/database/postgres_migrations.go` — 显式迁移建表
 
 **前端**（`front/app/features/tags/`）：
-- 话题编辑面「辅助标签」配置区（组件落点待 `lane-manual-correction-loop` 的编辑面确定）
+- 泳道修正工作面左栏的「辅助标签」配置块（`console/LaneConstraintScope.vue` + `composables/useLaneConstraint.ts`，挂在 `BoardComposeOverlay.vue:481` 的 `LaneAnchorScope` 之后）
 - `app/api/dailyReports.ts` — 约束读写 API 客户端
 
 **API**：
@@ -67,8 +69,8 @@
 - 用户需手动为话题绑定辅助标签才生效；不绑定即维持现状
 
 **需要用户手动执行的操作**：
-- 绑定约束：在话题编辑面为「以黎冲突升级：停火破裂与军事打击」绑定「以色列」与「黎巴嫩」两条 `required` 约束
-- 存量纠正：本 change **不改历史归属**。已错挂到 id=2 的 2026-10~11 共 32 条 section 仍留在该话题名下，需通过 `lane-manual-correction-loop` 的「移除泳道窗口内的误入节点」能力人工纠正，或等约束生效后由后续日报不再吸入
+- 绑定约束：在泳道修正工作面为「以黎冲突升级：停火破裂与军事打击」绑定「以色列」与「黎巴嫩」两条 `required` 约束
+- 存量纠正：本 change **不改历史归属**。已错挂到 id=2 的 2026-10~11 共 32 条 section 仍留在该话题名下，需在泳道修正工作面人工移出（画布拖出或左栏取消勾选），或等约束生效后由后续日报不再吸入
 
 **风险与已知限制**：
 - **向量空间一致性**：约束锚向量由当前顺位计算，而库内 `topic_tag_embeddings` 绝大多数由远程 `qwen3-embedding` 计算（43154/43159）。实测远程与本地 gguf 的同文本余弦仅 **0.74**（而本地 Q6_K ↔ 本地 Q4_K_M 为 0.98，说明差异不来自量化本身）。因此约束锚**必须与 tag 向量同空间**计算——本 change 在计算锚向量时记录 `embedding_model`，并在判定时**只与同 `embedding_model` 的 tag 向量比对**；跨空间的 tag 一律跳过（不计入约束覆盖，也不判违反）。远程顺位不可用时降级到本地算出的约束锚将无法与既有 tag 向量比对，需重算该约束——此为已知限制，不在本 change 内解决。

@@ -1457,9 +1457,10 @@ func TestTopicLaneConstraints_UnknownTopic404(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
 }
 
-// TestPutTopicLaneConstraints_AnchorFailureWritesNothing covers tasks 5.3：锤
-// 向量计算失败时返回错误码且表内无新增行（测试库没有 embedding 路由 → 天然失败）。
-func TestPutTopicLaneConstraints_AnchorFailureWritesNothing(t *testing.T) {
+// TestPutTopicLaneConstraints_AnchorFailureReturns503 covers tasks 5.3：锤
+// 向量计算失败时不落库，并返回**带原因**的 503（而不是笼统英文 500）。
+// 测试库没有 embedding 路由 → 天然失败（原因＝embedding 服务不可用）。
+func TestPutTopicLaneConstraints_AnchorFailureReturns503(t *testing.T) {
 	r, db := setupAnchorHandlerPGTest(t)
 	boardID := seedAnchorBoard(t, db, "constraint-anchor-fail-board")
 	topic := seedAnchorTopicRow(t, db, boardID, "以黎冲突升级", repository.TopicStatusActive)
@@ -1469,9 +1470,49 @@ func TestPutTopicLaneConstraints_AnchorFailureWritesNothing(t *testing.T) {
 		strings.NewReader(`{"constraints":[{"term":"以色列","mode":"required"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
-	require.GreaterOrEqual(t, w.Code, 400, w.Body.String())
+	require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
+
+	var resp struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.False(t, resp.Success)
+	assert.Contains(t, resp.Error, "以色列", "失败文案 SHALL 指出哪个短词")
+	assert.Contains(t, resp.Error, "embedding 服务不可用", "失败文案 SHALL 给出可操作原因")
+	assert.NotContains(t, resp.Error, "failed to persist constraints")
 
 	var count int64
 	require.NoError(t, db.Model(&repository.TopicLaneConstraint{}).Where("topic_id = ?", topic.ID).Count(&count).Error)
 	assert.Zero(t, count, "锤计算失败 SHALL NOT 落库")
+}
+
+// TestCreateManualTopic_AnchorFailureReturns503 covers the manual lane endpoint:
+// 带约束建泳道时 embedding 不可用 → 503 + 可读原因，且话题 SHALL NOT 创建
+// （spec「约束写入失败则话题不创建」）。
+func TestCreateManualTopic_AnchorFailureReturns503(t *testing.T) {
+	r, db := setupAnchorHandlerPGTest(t)
+	boardID := seedAnchorBoard(t, db, "constraint-manual-anchor-fail-board")
+
+	w := httptest.NewRecorder()
+	body := `{"label":"英伟达风波、发布以及股价新闻","section_ids":[1],"constraints":[{"term":"英伟达","mode":"preferred"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/semantic-boards/"+strconv.FormatUint(uint64(boardID), 10)+"/persistent-topics/manual",
+		strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
+
+	var resp struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.False(t, resp.Success)
+	assert.Contains(t, resp.Error, "英伟达")
+	assert.Contains(t, resp.Error, "embedding 服务不可用")
+	assert.NotContains(t, resp.Error, "failed to compute constraint anchors")
+
+	var count int64
+	require.NoError(t, db.Model(&repository.BoardPersistentTopic{}).Where("semantic_board_id = ?", boardID).Count(&count).Error)
+	assert.Zero(t, count, "锚算不出时 SHALL NOT 留下「有话题、无约束」的半成品")
 }
