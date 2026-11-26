@@ -10,6 +10,8 @@
 #   ④ review-trace（add-review-trace-gate：review.md 建账或 proposal 头部 waived 声明）
 #   ⑤ UI 验收痕迹对账（add-ui-verification-trace-gate：ui-verification/ 实物对账，
 #      判定单一事实源 ui-verification-trace.sh，与门禁检查⑥' 同源）
+#   ⑧ diagrams marker 与图/理由一致性（change-diagram-convention：二值 marker + none 需理由
+#      + full 需 design-diagram.md 且含 mermaid 块；不判图类型/语法/理由成立性；legacy 不追溯）
 #   ⑥ 约束文档读取对账（stage-driven-constraint-injection D6：声明域的 flow 文档是否在
 #      实现期内被 read 过，判定单一事实源 constraint-read-trace.sh，与门禁检查⑦' 同源）
 # 逐项输出 ✓/✗，红项透传该脚本输出尾部 20 行（与门禁 runScript 的 tail 口径一致）。
@@ -94,6 +96,9 @@ run_item "⑤ UI 验收痕迹对账" bash "$BIN_DIR/ui-verification-trace.sh" "$
 [ "$item_rc" -ne 0 ] && fails=$((fails + 1))
 
 run_item "⑥ 约束文档读取对账" bash "$BIN_DIR/constraint-read-trace.sh" "$CHANGE_DIR" || true
+[ "$item_rc" -ne 0 ] && fails=$((fails + 1))
+
+run_item "⑧ diagrams marker 与图/理由一致性" bash "$BIN_DIR/diagrams-trace.sh" "$CHANGE_DIR" || true
 [ "$item_rc" -ne 0 ] && fails=$((fails + 1))
 
 # ---------- ⑦ human-feedback 处置对账（add-change-lifecycle-retro 8.4：提醒不阻断） ----------

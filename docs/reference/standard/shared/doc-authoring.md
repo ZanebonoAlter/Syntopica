@@ -38,6 +38,19 @@ doc-impact-applies: docs/reference/ | section=注册点速查
 
 **flow 节名红线**：flow 文档的注入按「业务约束与不变量」节名**硬编码抓取**——节名写成「业务红线」「约束」等别名，域声明注入静默取不到节（A 段五段式校验也会 FAIL）。
 
+## diagrams marker 与伪代码节
+
+**marker**（`proposal.md` 头部，与 `ui-impact` 同层）：
+
+```
+<!-- diagrams: full(白话理由) -->     有图；design-diagram.md 必须存在且含 mermaid 块
+<!-- diagrams: none(白话理由) -->     无图；理由必填，写清为什么不需要
+```
+
+机器只查「有没有 marker / 理由空不空 / 图文件在不在」，**不判理由是否成立**——那是 review 与看图人的事（详见 `开发执行规范.md` §13）。
+
+**伪代码节**（`design.md`）：必须有 `## 核心逻辑（伪代码）`，覆盖数据结构、主控制流、失败与边界分支；粒度到「看伪代码能发现问题」为止。无控制流变化时写 `N/A：<理由>`。
+
 ## 族级 capability 与来源注释
 
 capability **按功能族划，不按 change 划**。每来一个 change 就新建一个 capability，会让同一套规矩碎成十几个文件（实测：标签体系曾碎成 23 个 spec / 2771 行，改一次要开 21 个文件）。
