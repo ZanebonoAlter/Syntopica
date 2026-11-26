@@ -389,7 +389,9 @@ describe('ObservationMatrixGrid — 覆盖组（窗口内未进日报）', () =>
     // 身份由组标题表达，行内不重复小标（不挤占窄标签列的名字）
     expect(row.text()).toContain('以色列内部选举')
     expect(row.text()).not.toContain('未进日报')
-    expect(row.attributes('title')).toContain('窗口内未进日报')
+    // 覆盖行是静态标签（非 button）：身份与「未进日报」只在 aria-label，不挂原生 title。
+    expect(row.attributes('title')).toBeUndefined()
+    expect(row.attributes('aria-label')).toContain('窗口内未进日报')
     expect(wrapper.find('[data-testid="matrix-cell-20-2026-10-23"]').text()).toBe('—')
   })
 

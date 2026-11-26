@@ -248,10 +248,12 @@ describe('ObservationMatrix — 名单稳定与三态', () => {
     expect(legend.text()).not.toContain('事件线')
     expect(legend.text()).not.toContain('兜底')
     const header = wrapper.find('[data-testid="matrix-lane-10"]')
-    expect(header.attributes('title')).toContain('11 条线索')
-    expect(header.attributes('title')).toContain('4 个主题桶')
-    expect(header.attributes('title')).not.toContain('事件线')
-    expect(header.attributes('aria-label')).toBe(header.attributes('title'))
+    // 名称看全契约（2026-11-26）：不再挂原生 title（延迟 1s、键盘不出、长名照样截），
+    // 全名与指标只留在 aria-label；悬停/聚焦卡是视觉冗余。
+    expect(header.attributes('title')).toBeUndefined()
+    expect(header.attributes('aria-label')).toContain('11 条线索')
+    expect(header.attributes('aria-label')).toContain('4 个主题桶')
+    expect(header.attributes('aria-label')).not.toContain('事件线')
   })
 
   it('重复口径说明段退役：矩阵区只剩一条图例，不再另写第二条说明行', () => {
