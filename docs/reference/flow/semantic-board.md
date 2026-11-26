@@ -32,7 +32,18 @@ SemanticBoard（语义版块）解决「把散装 event 标签组织成持久主
 
 ## 链路设计
 
-### 辅助标签入库（L1/L2/L3）
+> 本节按**功能族**组织：一族一节 = 该能力的当前链路 + 决策记录。
+> 每族两层——**当前规则**（现在什么规矩，必读）与**决策记录**（规矩怎么来的、
+> 踩过什么坑；这类内容 spec 里没有，考古与排障时看）。
+> 族划分与 `openspec/specs/` 对齐；重排自 change `restructure-flow-semantic-board`（2026-11-26）。
+
+### 一、标签体系
+
+> spec: `tagging`
+
+#### 当前规则
+
+##### 辅助标签入库（L1/L2/L3）
 
 ```mermaid
 flowchart TD
@@ -47,30 +58,13 @@ flowchart TD
   P2 --> REL[topic_tag_semantic_labels 记录关联]
 ```
 
-> **两阶段事务边界（fix-aux-label-idle-tx-cache，2026-10-06）**：历史实现在单事务内逐标签调外部 AI embedding API，是生产 `idle in transaction` 4–40s 的元凶（事务持 xmin 阻塞 vacuum，与 autovacuum 调优对抗）。现在 `AttachAuxiliaryLabels` 先在事务外完成全部慢 I/O（缓存加载、批量 embedding——`airouter.Embed` 原生 `[]string` 输入，N 个新标签恰好 2 次调用），再用一个短事务完成全部纯写；全有或全无原子性由阶段二保留（任一写失败整体回滚）。同模式已清理 `ConfirmSuggestion`（板向量/composite 短语 LLM 均事务前预计算，事务内 `ApplyCompositeLabel` 纯写）。规划与写入之间的 slug TOCTOU 与旧事务内「查后插入」一致，靠 `idx_semantic_labels_slug` 唯一索引兑底：冲突冒泡由打标 job 记 warn 跳过。批内重复 label（同 slug/normalizeKey）在阶段一去重共享首个决策；批内语义近似但文本不同的标签各自新建（旧串行路径靠缓存回灌 L2 归并，属罕见场景，后续手动合并治理）。PG 侧另有 `idle_in_transaction_session_timeout=60s` 防呆（`docker-compose.pg.yml`，recreate 生效）。
-
 > **缓存失效增量维护（同 change）**：L2 去重依赖包级 `packageAuxLabelCache`（17.5k 行 merge 向量 ≈ 216MB 文本传输 + 解析，TTL 10 分钟），历史「一写全清」使批量打标每个新标签炸一次缓存再全量拉。现在 L3 新建直接把 merge 向量塞进 map + activeLabels append 轻量副本（列集合对齐、不含向量列）；disable/alias 合并源按行删除；alias 变更仍只清轻量的 activeLabels；时间戳不重置 → 批量打标零全量重拉，仅冷启动 1 次。handler 直改 status 的路径不经 service 失效，由 TTL 兑底（窗口与历史一致）。
 
 > **L2 不会形成「合并黑洞」**：与主标签路径不同（`findOrCreateTag` 的 embedding 命中曾覆盖 label/slug → text_hash 变 → 重生成 embedding → 恶性循环，见 `v1.3.1/fix-tag-blackhole-embedding-match`），aux 的 L2 命中只 `addAlias`（append alias + ref_count++），**不改 Label、不重算 MergeEmbedding**（MergeEmbedding 仅 L3 新建时生成一次，之后恒定）。既有 aux 的「吸引力」= 固定 embedding 的 cosine，不随 alias 增多 / ref_count 升高而自我放大，无循环根因。阈值 `auxiliary_label_dedupe_sim` 可配（默认 0.95）。
 
 > **空结果是合法结论，泛词进不了池**（fix-tagging-pollution，2026-09-25）：LLM 返回空 `keyword_tags` / 空双数组 / 零候选都是「宁缺毋滥」提示词下的合法输出——不再用规则词回填（旧回填把分类名「新闻」与 HTML 属性子串误命的「Coding」以 llm 来源写库），也**不降级 heuristic**（retire-heuristic-tag-fallback，2026-11-12 起规则词兜底打标整体退役——提取失败即失败：文章不写任何标签，打标任务标失败并进既有队列退避重试）；零候选文章保持无标签等待重打。**响应形态容错**（tolerate-schema-envelope-extraction-output，2026-11-12）：小模型在 JSON-schema 引导下可能把 **schema 骨架本身**当输出（数组塞在 `properties` 下，形如 `{"type":"object","properties":{...},"required":[...]}`），解析器 SHALL 识别该外壳并取 `properties` 内对象继续解析（判定须同时满足：顶层是对象 ∧ `properties` 是对象 ∧ 含 `type` 或 `required`；幂等；非外壳原样返回）；解包后目标键仍缺 SHALL 报解析错误触发重试，MUST NOT 当合法结果。**纪律：提取 prompt 的输出格式指令 MUST 与下发 schema 一致**——merged 路径指双数组 `event_person_tags`/`keyword_tags`，section 路径指单数组 `tags`，两边不可互相串用。入库前另有泛词黑名单（新闻/论坛/要闻/快讯/文章/内容/技术/发展，Slugify 后完整匹配）在 `persistArticleTags` 入口拦截，跨 feed reuse 复制路径在 siblingLinks 查询处同滤——任何来源的泛词标签不落库、不进辅助标签池。
 
-### SemanticBoard 匹配（add-composite-labels 后五级优先）
-
-```text
-semantic_board_matching.go
-  → 读取 tag 辅助标签 + tag 组合标签 + active Board composition（aux + composite）
-  → composite_hit（组合交集 ≠ ∅，score=1.0，免方向校验）
-  > direct_hit（aux 交集 ≥ min_overlap，score=direct_hit_score_factor 默认 0.7，强制方向校验）
-  > hit_rate / max_sim / weighted（三间接规则，不变）
-  → 写入 topic_tag_board_labels（最多 3 个 Board）
-```
-
-- **composite_hit**：tag 挂的组合标签（显式关联 ∪ **推导命中**：tag 挂齐某 active 组合的全部组件 aux 即视为挂该组合——确认组合后重算即生效的闭环来源）∩ board composition 挂的组合标签 ≠ ∅ 即命中，score 恒 1.0、`direction_mismatch=false`（组合命中即指向一致）；同 tag-board 同时满足单标签重叠时只记 composite_hit。组合 embedding 为 NULL（disabled/历史缺失）的组合不参与判定；全量组合组件集进匹配缓存（随 InvalidateBoardData 失效）。
-- **direct_hit 降级**：单 aux 重叠是「话题域相同」的弱证据，score 从 1.0 降为 `semantic_board_match_direct_hit_score_factor`（默认 0.7，可配 1.0 恢复旧分数），且与间接规则一样强制方向校验（全库 gap 豁免+绝对+相对三层，见下方红线 4，前端默认隐藏）。0.7 让 direct_hit 仍强于典型 weighted 但弱于组合命中与高质量 hit_rate。
-- 只挂组合（无 aux）的 board 不被 aux 数量预过滤拦下，仍可被 composite_hit 命中；board 组合数据进 board match cache（与 auxiliaries/embeddings 同失效语义，composition 变更即失效）。
-
-### 组合标签（composite label，add-composite-labels）
+##### 组合标签（composite label）
 
 ```text
 创建（手动 / 升级建议确认，同一服务）：
@@ -94,11 +88,93 @@ semantic_board_matching.go
 
 冷启动序列：迁移 → 跑一轮 compose 建议 → 用户确认一批组合标签 → 一次性 `mode="all"` 匹配重算（direct_hit 存量降级重写、组合命中重算为 composite_hit）。
 
-### 升级建议生命周期（split-board-upgrade-directions 四格矩阵）
+##### Event 标签延迟 embedding
 
-> **split-board-upgrade-directions 变更**：生成入口从「discover_new/expand_existing 双模式（LLM 全决策空间混跑 + watch 观察池 + 高置信自动合并）」重构为「方向 × 来源四格矩阵 + 锁定单版块 + LLM 单一决策空间」。背景：旧模式 LLM 一次背三种决策，merge 目标产出不可信（实测 17 条全不在算法 shortlist、经常缺 target），前端被迫兜底成人工全量挑目标。watch 观察池与高置信自动合并退役；旧内存探索 UI（candidates/clusters/内存建议）退役，持久化建议为唯一数据源。
+```text
+Event 标签延迟 embedding: 描述+关键词生成后入队
+  → 多行 embedding (semantic + event_keyword)
+```
 
-#### 四格矩阵与 LLM 决策空间
+Event 类标签不随入库立即向量化，而是等描述与关键词生成后才入队，产出 semantic 与 event_keyword 两路 embedding。
+
+##### 标签合并预览（scan → evaluate → 分组 → 合并）
+
+> 该工作流替代了已废弃的「标签自动合并 scheduler」（见 `flow/scheduler.md`，旧 scheduler 已不存在）。合并不再由定时任务自动执行，而是由用户驱动的 scan → evaluate → 分组 → dismiss/merge 流水线完成。
+
+路由（`tagmanagement/handler/tag_merge_preview_handler.go` + `service/merge/` + `service/core/`，挂在 `/api/topic-tags` 下）：
+
+| 端点 | 语义 |
+| ---- | ---- |
+| `POST /api/topic-tags/merge-preview/scan` | 启动异步全量扫描（`StartFullScan` 单例锁，已在跑返回 409） |
+| `GET /api/topic-tags/merge-preview/scan/stream` | SSE 流式推送扫描进度 |
+| `POST /api/topic-tags/merge-preview/evaluate` | 启动异步 LLM 评估（`StartEvaluation`，对候选对逐个裁决） |
+| `GET /api/topic-tags/merge-preview/evaluate/stream` | SSE 流式推送评估进度 |
+| `GET /api/topic-tags/merge-preview` | 读 pending 的 `TagMergeSuggestion`，过滤 `should_merge=false`，按目标标签分组返回 |
+| `GET /api/topic-tags/merge-preview/status` | 返回 scan/eval 是否在跑 |
+| `POST /api/topic-tags/merge-preview/add-to-group` | 手动把标签加入某合并组（`source=manual`，`OnConflict DoNothing`） |
+| `POST /api/topic-tags/merge-preview/dismiss` | 标记候选对 `status=dismissed` |
+| `POST /api/topic-tags/merge-with-name` | 真正执行硬合并：事务内 `FOR UPDATE` 锁两端 → 可选 rename + slug 冲突检测 → `HardMergeTags` → 提交后 `EnqueueMergeReembedding` 入重算队列 → 相关 suggestion 标 `merged` |
+
+工作流：**scan**（全量扫描候选对，SSE 进度）→ **evaluate**（LLM 评估每对，SSE 进度）→ **merge-preview** 列表（按 target 分组）→ 用户对每组 **dismiss** / **add-to-group** / **merge-with-name**。合并后源标签的文章/关系迁移到目标标签，并触发 `merge-reembedding` 队列重算 embedding（见下「队列与回填运维」）。
+
+前端（`features/tags/components/`）：`TagMergePreview.vue`、`TagMergeGroup.vue`、`composables/useTagMergePreview.ts`、`api/tagMergePreview.ts`。后端 service：`service/merge/tag_merge_suggest.go`、`service/core/merge_suggestions.go`、`service/core/hard_merge.go`、`service/core/merge_reembedding_queue.go`。
+
+##### 标签级 watched tags
+
+用户可在标签管理里关注（watch）任意标签，用于按标签筛选文章/日报。这与 `flow/daily-report.md` / `flow/topic-graph.md` 的**话题级** topic-watch（watch 持久话题 → 日报评估命中）是两套独立机制：一个 watch 的是**标签**，一个 watch 的是**持久话题**。
+
+路由（`tagmanagement/handler/watched_tags_handler.go` + `service/watched/watched_tags_service.go`，挂在 `/api/topic-tags` 下）：
+
+| 端点 | 语义 |
+| ---- | ---- |
+| `GET /api/topic-tags/watched` | 列出所有 `is_watched && status=active` 的标签，附 abstract 元信息（`is_abstract` + `child_slugs`，查 `topic_tag_relations`） |
+| `POST /api/topic-tags/:tag_id/watch` | 标记 `is_watched=true`、`watched_at=now` |
+| `POST /api/topic-tags/:tag_id/unwatch` | 取消关注（`is_watched=false`、`watched_at=NULL`） |
+
+`GetWatchedTagIDsExpanded` 递归展开被关注标签（含抽象标签）的全部子标签 ID，供下游按 watched 标签集合做文章/日报筛选时使用。前端：`api/watchedTags.ts`。
+
+#### 决策记录
+
+**`辅助标签入库（L1/L2/L3）`**
+
+> **两阶段事务边界（fix-aux-label-idle-tx-cache，2026-10-06）**：历史实现在单事务内逐标签调外部 AI embedding API，是生产 `idle in transaction` 4–40s 的元凶（事务持 xmin 阻塞 vacuum，与 autovacuum 调优对抗）。现在 `AttachAuxiliaryLabels` 先在事务外完成全部慢 I/O（缓存加载、批量 embedding——`airouter.Embed` 原生 `[]string` 输入，N 个新标签恰好 2 次调用），再用一个短事务完成全部纯写；全有或全无原子性由阶段二保留（任一写失败整体回滚）。同模式已清理 `ConfirmSuggestion`（板向量/composite 短语 LLM 均事务前预计算，事务内 `ApplyCompositeLabel` 纯写）。规划与写入之间的 slug TOCTOU 与旧事务内「查后插入」一致，靠 `idx_semantic_labels_slug` 唯一索引兑底：冲突冒泡由打标 job 记 warn 跳过。批内重复 label（同 slug/normalizeKey）在阶段一去重共享首个决策；批内语义近似但文本不同的标签各自新建（旧串行路径靠缓存回灌 L2 归并，属罕见场景，后续手动合并治理）。PG 侧另有 `idle_in_transaction_session_timeout=60s` 防呆（`docker-compose.pg.yml`，recreate 生效）。
+
+
+### 二、版块匹配
+
+> spec: `tag-matching`
+
+#### 当前规则
+
+##### SemanticBoard 匹配（五级优先）
+
+```text
+semantic_board_matching.go
+  → 读取 tag 辅助标签 + tag 组合标签 + active Board composition（aux + composite）
+  → composite_hit（组合交集 ≠ ∅，score=1.0，免方向校验）
+  > direct_hit（aux 交集 ≥ min_overlap，score=direct_hit_score_factor 默认 0.7，强制方向校验）
+  > hit_rate / max_sim / weighted（三间接规则，不变）
+  → 写入 topic_tag_board_labels（最多 3 个 Board）
+```
+
+- **composite_hit**：tag 挂的组合标签（显式关联 ∪ **推导命中**：tag 挂齐某 active 组合的全部组件 aux 即视为挂该组合——确认组合后重算即生效的闭环来源）∩ board composition 挂的组合标签 ≠ ∅ 即命中，score 恒 1.0、`direction_mismatch=false`（组合命中即指向一致）；同 tag-board 同时满足单标签重叠时只记 composite_hit。组合 embedding 为 NULL（disabled/历史缺失）的组合不参与判定；全量组合组件集进匹配缓存（随 InvalidateBoardData 失效）。
+- **direct_hit 降级**：单 aux 重叠是「话题域相同」的弱证据，score 从 1.0 降为 `semantic_board_match_direct_hit_score_factor`（默认 0.7，可配 1.0 恢复旧分数），且与间接规则一样强制方向校验（全库 gap 豁免+绝对+相对三层，见下方红线 4，前端默认隐藏）。0.7 让 direct_hit 仍强于典型 weighted 但弱于组合命中与高质量 hit_rate。
+- 只挂组合（无 aux）的 board 不被 aux 数量预过滤拦下，仍可被 composite_hit 命中；board 组合数据进 board match cache（与 auxiliaries/embeddings 同失效语义，composition 变更即失效）。
+
+#### 决策记录
+
+（暂无）
+
+
+### 三、升级建议
+
+> spec: `board-upgrade`
+
+#### 当前规则
+
+##### 升级建议生命周期（四格矩阵）
+
+###### 四格矩阵与 LLM 决策空间
 
 | 方向 | 来源 | LLM 只答 | 确认动作 |
 | ------ | ------ | ------ | ------ |
@@ -113,7 +189,7 @@ semantic_board_matching.go
 - 版块画像 prompt：版块描述 + 构成标签（组合带标记）+ ≤8 条近期 section 标题（查询失败降级为名称+描述，不阻断）。
 - days 时间窗四格恒携（expand-upgrade-days-window）：create×aux 按文章活动过滤候选；expand 相似路要求近 days 天文章中引用过、共现/compose 路窗口取 days 与 CoTagWindowDays 更严者；create×composite 携带但后端忽略；`0`=不过滤（与无时间窗现状一致）。
 
-#### 建议状态机
+###### 建议状态机
 
 ```mermaid
 stateDiagram-v2
@@ -126,7 +202,7 @@ stateDiagram-v2
 
 > watch 状态已退役（split-board-upgrade-directions）：存量 pending watch 行由迁移 20260905_0002 一次性清理；decision 枚举保留 watch 值仅为存量行 DTO 兼容，生成侧不再产生。
 
-#### 生成链路
+###### 生成链路
 
 ```mermaid
 flowchart TD
@@ -141,12 +217,12 @@ flowchart TD
   PERSIST --> EVI[快照 evidence<br/>cotag_events / source=expand 等]
 ```
 
-#### 触发方式
+###### 触发方式
 
 - **定时**：scheduler `job_board_upgrade_suggest`，默认每日 06:30（`semantic_board_upgrade_suggest_time` 可配），**仅创建方向两段**（{create,aux} → {create,composite}），段失败仅记日志继续兄弟段不阻塞；版块扩充纯手动（必须选版块触发，spec：定时生成仅创建方向）。
 - **手动**：前端生成入口（方向两选 → 来源两选 → 扩充时版块单选）→ `POST /api/semantic-boards/upgrade-suggestions/generate?direction=&source=&target_board_id=&days=` → `GenerateAndPersist`，返回 `{inserted, skipped, cooldown_blocked}`。参数校验：expand 缺 target / create 带 target / target 非活跃版块 / 旧 mode 参数 → 400。
 
-#### 跨端协作
+###### 跨端协作
 
 ```mermaid
 sequenceDiagram
@@ -167,13 +243,13 @@ sequenceDiagram
   end
 ```
 
-#### 前端面板分区（UpgradeSuggestionPanel）
+###### 前端面板分区（UpgradeSuggestionPanel）
 
 - **生成入口（顶部）**：方向两选（创建版块 / 版块扩充）→ 来源两选（单标签 / 组合标签）→ 扩充时版块单选下拉（可搜索，仅活跃版块）+ days 下拉（四格恒显恒携，expand-upgrade-days-window）；未选版块时生成禁用；生成错误行内提示；空态区分「未生成过（引导）」与「本轮无建议（扩充方向附覆盖提示）」。
 - **持久化建议列表（唯一数据源）**：决策过滤 tab（全部 / 合并 / 新建 / 组合，观察池 tab 已删）+ evidence 展示（泳道标题 / 共现事件 / 组合证据，缺 key 降级不渲染）+ per-row aux 勾选子集 + 确认执行（带 suggestion_id）/ dismiss。扩充建议卡片展示锁定版块徽标（「→ 美债」），merge 行确认按钮直接合并进锁定版块（无「合并到...」改目标下拉——目标不合适应 dismiss 后换版块重新生成）；compose 建议带 target 时按钮为「创建并挂载」。
 - **旧内存探索区（candidates/clusters/内存建议/「获取 LLM 建议」）已整体退役**。
 
-#### 配置项（ai_settings，均可缺省）
+###### 配置项（ai_settings，均可缺省）
 
 | key | 默认 | 说明 |
 | ----- | ------ | ------ |
@@ -184,48 +260,24 @@ sequenceDiagram
 
 > 已退役配置键（残留行无害，代码不再读取）：`semantic_board_upgrade_watch_gc_days`、`semantic_board_upgrade_merge_confidence_margin`。suggestion_hash 的 mode 维度值改为 `direction:source`（create:aux / create:composite / expand:aux / expand:composite），新旧建议 hash 空间天然隔离。
 
-### SemanticBoard 管理 / 回填
+#### 决策记录
 
-```text
-SemanticBoard 管理面板
-  → 辅助标签入库: L1 slug匹配 → L2 embedding合并 → L3 新建
-  → SemanticBoard 匹配: 三规则挂载 → topic_tag_board_labels
-  → 升级建议: 见上「升级建议生命周期」（持久化 + 双签名 + 观察池 + 定时生成）
-  → 辅助标签治理: 禁用、alias合并、composition移除、suggest-auxiliaries、clusters、gc
-  → 回填: all / unassigned / board 三种模式 + backfill-embeddings + rematch-all
-```
+**`升级建议生命周期（四格矩阵）`**
 
-#### 版块运维端点（`board_crud_handler.go` / `board_match_handler.go` / `board_upgrade_handler.go`）
+> **split-board-upgrade-directions 变更**：生成入口从「discover_new/expand_existing 双模式（LLM 全决策空间混跑 + watch 观察池 + 高置信自动合并）」重构为「方向 × 来源四格矩阵 + 锁定单版块 + LLM 单一决策空间」。背景：旧模式 LLM 一次背三种决策，merge 目标产出不可信（实测 17 条全不在算法 shortlist、经常缺 target），前端被迫兜底成人工全量挑目标。watch 观察池与高置信自动合并退役；旧内存探索 UI（candidates/clusters/内存建议）退役，持久化建议为唯一数据源。
 
-| 端点 | 业务用途 |
-| ---- | -------- |
-| `POST /api/semantic-boards/backfill` | 入队一个 backfill job（`SemanticBoardBackfillRequest`，all/unassigned/board 三模式），返回 job 对象 |
-| `GET /api/semantic-boards/backfill/:id` | 查询 backfill job 状态/进度（前端 `BackfillProgress.vue` 轮询） |
-| `POST /api/semantic-boards/backfill-embeddings` | 为 `embedding IS NULL` 的版块生成 embedding（一次性补齐；`board-direction-check` 引入版块向量后的回填入口） |
-| `POST /api/semantic-boards/rematch-all` | 取所有已挂载 `topic_tag`，逐个重跑 `MatchTopicTag`，返回 `{success, failed, total}`（匹配阈值调整后全量重算） |
-| `GET/PUT /api/semantic-boards/matching-config` | 读/写匹配阈值（`ai_settings` 中 13 个 `semantic_board_match_*` key；PUT 后调 `InvalidateMatchingConfigCache` 失效缓存）。前端 `MatchingConfigDialog.vue` |
 
-#### 辅助标签治理与建议（`board_crud_handler.go` + `service/auxlabel/`）
+### 四、泳道与工作面
 
-| 端点 | 业务用途 |
-| ---- | -------- |
-| `GET /api/semantic-boards/suggest-auxiliaries?label=&description=` | 全局建议：embed 查询文本 → 与 active aux cosine 排序，分页返回候选 |
-| `GET /api/semantic-boards/:id/suggest-auxiliaries` | 版块级建议：以版块 `label+description` 为查询，排除已在该版块 composition 里的 aux |
-| `GET /api/auxiliary-labels/clusters` | 聚类：cosine 距离 < 0.2 的连通分量（size≥2），10 分钟缓存，`?refresh=true` 强制重算 |
-| `POST /api/auxiliary-labels/gc` | GC 回收，`mode` ∈ `dry_run/disable/delete/recalculate`，可选 `grace_days` |
-| `POST /api/auxiliary-labels/merge-alias` | alias 合并（source→target） |
-| `POST /api/auxiliary-labels/:id/disable` | 禁用单个 aux |
-| `GET/POST /api/semantic-boards/:id/composition`、`DELETE /:id/composition/:aux` | 版块 composition 增删查 |
+> spec: `lane-ops` + `workshop-board-console`
 
-前端治理 UI（`features/tags/components/`）：`AuxiliaryLabelPool.vue`（辅助标签池）、`AuxiliaryLabelPicker.vue`（选择器，双模式：版块推荐/手动指定）、治理工作面 `console/BoardWideWorkface.vue`（单级宽工作面，页签 构成/组合/候选/来源/设置——体检依据与处置 `console/board-health/BoardHealthWorkspace.vue`、构成明细 `console/BoardHealthDetail.vue`、来源 `BoardSourcePanel.vue`、设置 `console/BoardSettingsForm.vue`）、右轨体检摘要 `console/RailHealthBrief.vue`、`composables/useAuxiliaryLabels.ts`。
+#### 当前规则
 
-### 泳道动态（board-lane-dynamics，取代已退役的话题态势版图）
+##### 泳道动态（矩阵主舞台与观察窗）
 
 版块态势页 `/tags/:boardId` 当前是**观察窗 A 路线（名单稳定）**：独立 7/14/30/365 档只由档按钮/显式 URL `days` 改变，决定 A 档名单、前端 source 全轴行序（线索合计 DESC → 分区数 DESC → topicId）与休眠分组（≤2 分区，只展示不写 status）；自由 `start/end` 只裁切显示，恰 7/14/30/365 也不换档。365 池（B）在 A 数据到位且锚点已知即**预取**（顶部时间视窗背景曲线首屏即需整条 365 池曲线，不得只画当前档窗那几天、等用户拖出档窗才补历史；可见日跨出档窗只是复用已取到的池），B **只补 A 名单内同 topic ID 的历史内容**，不参与名单/排序/休眠/候选；池未取到/失败时历史日显示 `?`（不补 0），池提示与「重试历史池」无条件出现（A 侧照常可读、名单/排序不动）。
 
 主舞台：矩阵行=泳道、列=可见日期；日格数字=**当日事件线数（story_count，同日多主题桶合并计数，不取桶峰值）**，无分区 `—` 禁用、有分区 0 事件 `0` 可开（零事件是合法结果）、历史未取到 `?` 不补 0，无行尾合计列；格颜色=当日最热事件线的独立参与者数（max_participant_count，按内容身份去重——同 link 的多 feed 副本算 1 个来源，与 `participant_count` 同源）分档，title/aria 同时给出事件线数/最热来源数/未归组事件数/主题桶数（颜色不是唯一信息载体），表头/footnote 有图例（「数字 = 当日事件线数；颜色 = 最热事件线的来源数」）与「事件身份未回填」降级说明。选中泳道演进节点=**当日事件线数（day story_count）**，点径随数值增大；>31 日切趋势图+折叠逐日索引。下方当日编年默认标题收束，单条就地展开真实 summary，相关文章按需，稳定 report/section/thread ID 关联；「打开所选日日报」是带完整日期的历史动作，顶部最新日报入口独立。接口契约见 `docs/reference/api/daily-reports.md` §`GET /semantic-boards/:id/lane-dynamics`。
-
-> **口径变更（add-event-story-heat，2026-11-05 起）**：旧口径「日格 = 同日各主题桶 thread_count 的峰值（bucket max）」「演进节点 = 当日线索合计（day sum）」已被上述事件线口径**取代**——桶峰值随 LLM 分桶 `k` 漂移且同日多桶会重复抬高格值，不再是格值定义；事件线（`board_stories`）身份、归属判定与热度公式见 `flow/daily-report.md` §事件线归属与跨期去重。
 
 - **当日其他话题**：矩阵保留折叠组，成员只来自所选日报，沿既有 sectionId/topicId 排除正式与休眠泳道；历史状态取 `topic_status_at_report`，不借当前候选资格。行高/标题/实底热度格/选中与泳道共用视觉，只绘所选日格。选中后，现有日期表头（窄屏复用同源日期条）用黄点标记同 `persistentTopicId` 的可见窗真实记录日，hover/focus 显示当日分区原题；同日多分区只一个点、仍定位原序首 section，不合并正文、不跨新旧 ID 自动补连。点黄点通过 `selectObservedDay` 原子切日期/report/section/topic，普通报日仍走原 `selectDayHeader`；换选更新、清选择/无 ID 清点。**已验证记录日**（黄点当日：观察带里同 ID 的真实分区记录，自带 report/section，证据强于报日索引）在报日索引缺该日（陈旧/不全）时不被选中日普通回落搬走；只保护当前这一个观察目标，普通选行/清场/切泳道/切板块/换日即失效，范围排出（轴外）照旧回落；目标实际无日报时保留日期与目标并显示诚实「所选日没有日报」态，不借旧正文、不退回别日。观察复用 days=0 单份板块缓存，失败/缺 ID 说明及重试留在阅读区，但不再重复日期药丸。正文复用泳道标题/分隔/线索展开，不产滚动态势；0 正式泳道未选其他时只保留选日/选话题方向提示，不画无效选泳道卡。此增量只读、无迁移/重生成/配置，旧无 ID 数据无关联点，缺分区如实提示。组 summary 的总数徽标 = 组内线索合计（= 各成员行所选日线索数之和，与矩阵主行格值同口径，**不是分区数**；分区数只在「N 个分区未入泳道」类说明文案里出现），折叠与展开态同数，非 ready 不冒 0。
 - **展示范围/休眠**：A 档响应中的 active ∪ watch 关联泳道（`board_topic_watches.persistent_topic_id`）；行序按 lane_heat 降序（平手依次 story_count_14d 降序、topic id 升序），不按可见裁切重算；休眠（source 全窗分区 ≤2）仅折叠展示，不改生命周期；candidate 只进候选区/编排入口，需人工激活，不自动转正。
@@ -240,7 +292,7 @@ SemanticBoard 管理面板
 
 > 变更溯源见本文件 [§变更溯源](#变更溯源)。
 
-### 版块态势页左右轨（console-rails-live-signals：版块栏条码 + 当日日报）
+##### 版块态势页左右轨（条码 + 当日日报）
 
 **左轨（版块栏）**：一行式 = 版块名称（省略号截断）+ **14 格逐日线索条码**（右侧）。条码格值 = 该版块该日**非综合稿线索合计**（`GET /semantic-boards/overview` 的 `clue_days`），颜色按**行内峰值**归一（与矩阵日格、雷达页版块小矩阵同一套 `clueDepth`/`clueMix`），行整体强度按 14 天总量分档（安静板块压暗）。行序保持 `display_order`，**MUST NOT** 因活跃度重排。**左轨不出现任何数字**（原 `tag_count` 只进 `title`），**MUST NOT** 出现口径说明文字。
 
@@ -260,7 +312,7 @@ SemanticBoard 管理面板
 
 **代码入口**：前端 `front/app/features/tags/components/console/BoardRail.vue`（左轨）、`console/RailNowBrief.vue`（当日日报块：点评层 + 泳道层）、`console/RailOtherTopicsBrief.vue`（右轨「当日其他话题」子块：标题 + 计数徽标 + 逐行；纯受控）、`console/BoardContextRail.vue`（右轨容器与顺序）、`console/RailHealthBrief.vue`（体检一行状态条）、`console/railClueAxis.ts`（左轨行读模型 + 共同轴重对齐）、`console/nowBrief.ts`（当日日报读模型 + 泳道排序）、`console/dayOtherTopics.ts`（「当日其他话题」组模型唯一实现点：成员/行序/计数/状态词）、`console/useConsoleShellData.ts`（overview 行共享读模型）、`api/normalizers/laneDayReading.ts`（日报 `title`/`summary`/`highlights` 归一）；后端**零改动**（`overview` 与 `daily-reports/:id` 字段均已存在，前端只是把被丢弃的字段接上，**零新增请求**）。
 
-### 关键事件视图（add-key-event-matrix-view：矩阵骨架的第二个读数）
+##### 关键事件视图（矩阵骨架的第二个读数）
 
 版块态势页主舞台的两个**同级视图**：「矩阵 / 追踪」（现状，量）与「关键事件」（名）。切换入口在页头 `.console-seg` 分段组（`BoardConsoleHeader.vue`，`activeView='events'`，窄屏 <768px 不渲染按钮与视图）；视图状态走 URL `?view=events`（非法值回落 `matrix`），刷新与分享保持。
 
@@ -291,7 +343,7 @@ SemanticBoard 管理面板
 
 **代码入口**：前端 `front/app/api/boardKeyEvents.ts` + `api/normalizers/boardKeyEvents.ts`（取数与归一）、`composables/useBoardKeyEvents.ts`（按 board+days 缓存 / 三态 / 晚到隔离）、`console/keyEventLayout.ts`（列宽 / 双侧归带 / 引线折点 / 卡片矩形 / 行高的纯模型）、`console/KeyEventTimelineView.vue`（行 + 轴 + 节点 + 引线 + 卡片列挂载）、`console/KeyEventLabel.vue`（单条标签）、`console/KeyEventDayCard.vue`（单张日聚焦卡片）；后端 `backend-go/internal/topicgraph/handler/key_event_handler.go:listBoardKeyEventMarkers` + `repository/key_event_markers.go:ListBoardKeyEventMarkers`（只读批量）。
 
-### 泳道工作面（unify-lane-workbench：三栏 / 节点卡显式写操作 / 模态本地时间窗）
+##### 泳道工作面（三栏 / 节点卡写操作）
 
 版块态势页顶栏「新建泳道」与矩阵行入口打开的 `console/BoardComposeOverlay.vue` 同时承载两个模式；**修正模式（编辑既有泳道）为三栏工作面**：
 
@@ -320,20 +372,20 @@ SemanticBoard 管理面板
 - **已确认关键线索 ★（add-lane-compose-topic-event-tags）**：带 confirmed 关键注记的节点**主体换成星形**（不是圆点 + 角标）；外接尺寸沿用 `pointRadius`，不改变「大小 = 接近程度」；节点卡日期行后逐条列出快照标题，左栏成员条目日期行右端、右栏②条目日期行首各显示 ★。只读投影，不参与任何计算；`source_section_id` 为 NULL 的脱离快照不显示、不模糊补挂。编排面**不再提供**「显示已有泳道（只读）」与「历史待启用话题」入口（2026-11-23 用户定档；`showAssigned` 恒 false）。
 - **代码入口**：`front/app/features/tags/components/compose/LaneComposeCanvas.vue`（行几何 + 手势 + ghost + 星形 `starPath`）、`components/compose/LaneComposeCandidates.vue`（左栏条目 ★）、`composables/laneComposeLogic.ts`（`buildRowIndex` / `layoutRows` / `titleBudget` / `thresholdOf` / `visibleScatter` / `unclassifiedIds`）、`composables/useLaneCompose.ts`（`thresholdTier` / `lastRemoval` 撤销）、`components/compose/LaneComposeInspector.vue`（三段骨架 + 检索投影）。
 
-### 板块来源构成（add-source-board-hit-rate，当前右轨/单级工作面）
+#### 决策记录
 
-供血源视角的只读聚合（当前版块右轨简要 + 单级宽工作面全量；不随观察日期/档重算）：`GET /api/semantic-boards/:id/source-breakdown?window=7` 返回该版块窗口内的来源构成——`total_articles`（按文章去重）/ `source_count` / `sources[]`（`feed_id`、本版块篇数 `articles`、占比 `share`、该源窗口总量 `feed_articles`、该源整体命中率 `feed_hit_rate`）。与板块文章列表 `/:id/articles` 的口径差异：articles 是文章列表（分页/过滤、含匹配质量明细），source-breakdown 是按源聚合的命中构成——**含已归档、按文章去重（同版块多标签只计一次、同一文章命中多版块各计一次）、必限窗口**；不变量：`Σ sources[].articles == total_articles`。版块不存在或非 `label_type='board'` → 404；disabled 版块不是 404（按命中口径聚合为 0）。
+**`泳道动态（board-lane-dynamics）`**
 
-```text
-治理工作面（console/BoardWideWorkface.vue）页签流
-  → 「体检」页签（console/board-health/BoardHealthWorkspace.vue：体检依据 + 分诊处置，吸收原构成管理）
-  → 「来源」页签 → BoardSourcePanel.vue（窗口 7/30/90 + 汇总行 + 来源表，只读无写动作）
-  → 选中版块变化时与 loadComposition 并行重取（请求竞态沿用既有面板惯例）
-```
+> **口径变更（add-event-story-heat，2026-11-05 起）**：旧口径「日格 = 同日各主题桶 thread_count 的峰值（bucket max）」「演进节点 = 当日线索合计（day sum）」已被上述事件线口径**取代**——桶峰值随 LLM 分桶 `k` 漂移且同日多桶会重复抬高格值，不再是格值定义；事件线（`board_stories`）身份、归属判定与热度公式见 `flow/daily-report.md` §事件线归属与跨期去重。
 
-口径与源视角（`GET /api/feeds/board-hit-stats`，见 [reading.md](reading.md) §源视角观测）共用同一份聚合代码 `internal/tagmanagement/service/sourcestats/`；契约见 [semantic-boards.md](../api/semantic-boards.md)。处置入口不在面板内（仍在设置 → 订阅源）。
 
-### 版块体检（add-board-health-checkup，每日纯读统计）
+### 五、版块体检
+
+> spec: `board-diagnostics` + `board-research`
+
+#### 当前规则
+
+##### 版块体检（每日纯读统计）
 
 > 🗺 全链路图：[`diagrams/board-health-checkup.html`](diagrams/board-health-checkup.html)（双主题，含 2026-10-03 评分 prompt 方法学锚：insufficient ≠ 失效，<60 只看真实病征）
 
@@ -363,7 +415,7 @@ DailyReportJob 定时主轮成功（failedCount==0）
   → recallExpandAuxCandidates → 最新快照 uncaptured_candidates 非空？主路 top N（保险滤 + days 过滤） ：回退相似+共现双路
 ```
 
-### 版块体检三病分诊与共享描述修复（board-health-triage-advice）
+##### 版块体检三病分诊与共享描述修复
 
 体检从「一句笼统评语」升级为**可开药方的标签级分诊**：同一轮纯读里为每个构成标签算三类确定性信号，把证据喂给**同一次** LLM 调用，输出四类分诊清单（🔴 建议摘除 / 🟡 建议重写描述 / 🟢 保留澄清 / ⚪ 证据不足），随快照持久化（`metrics.triage`）。摘除与描述修复都**不在体检轮次内执行**：摘除走既有构成 DELETE 接口，描述修复走独立的持久任务链（人工确认后才创建）。
 
@@ -401,43 +453,66 @@ DailyReportJob 定时主轮成功（failedCount==0）
              → 三阶段/计数可查；失败显式 retry（只续匹配）；完成 =「更新完成，效果待下一轮体检验证」
 ```
 
-### 标签级 watched tags（区别于话题级 topic-watch）
+#### 决策记录
 
-用户可在标签管理里关注（watch）任意标签，用于按标签筛选文章/日报。这与 `flow/daily-report.md` / `flow/topic-graph.md` 的**话题级** topic-watch（watch 持久话题 → 日报评估命中）是两套独立机制：一个 watch 的是**标签**，一个 watch 的是**持久话题**。
+（暂无）
 
-路由（`tagmanagement/handler/watched_tags_handler.go` + `service/watched/watched_tags_service.go`，挂在 `/api/topic-tags` 下）：
 
-| 端点 | 语义 |
-| ---- | ---- |
-| `GET /api/topic-tags/watched` | 列出所有 `is_watched && status=active` 的标签，附 abstract 元信息（`is_abstract` + `child_slugs`，查 `topic_tag_relations`） |
-| `POST /api/topic-tags/:tag_id/watch` | 标记 `is_watched=true`、`watched_at=now` |
-| `POST /api/topic-tags/:tag_id/unwatch` | 取消关注（`is_watched=false`、`watched_at=NULL`） |
+### 六、版块治理
 
-`GetWatchedTagIDsExpanded` 递归展开被关注标签（含抽象标签）的全部子标签 ID，供下游按 watched 标签集合做文章/日报筛选时使用。前端：`api/watchedTags.ts`。
+> spec: `board-api` + `lane-correction-surface`
 
-### 标签合并预览（merge-preview，流式扫描/评估）
+#### 当前规则
 
-> 该工作流替代了已废弃的「标签自动合并 scheduler」（见 `flow/scheduler.md`，旧 scheduler 已不存在）。合并不再由定时任务自动执行，而是由用户驱动的 scan → evaluate → 分组 → dismiss/merge 流水线完成。
+##### SemanticBoard 管理 / 回填
 
-路由（`tagmanagement/handler/tag_merge_preview_handler.go` + `service/merge/` + `service/core/`，挂在 `/api/topic-tags` 下）：
+```text
+SemanticBoard 管理面板
+  → 辅助标签入库: L1 slug匹配 → L2 embedding合并 → L3 新建
+  → SemanticBoard 匹配: 三规则挂载 → topic_tag_board_labels
+  → 升级建议: 见上「升级建议生命周期」（持久化 + 双签名 + 观察池 + 定时生成）
+  → 辅助标签治理: 禁用、alias合并、composition移除、suggest-auxiliaries、clusters、gc
+  → 回填: all / unassigned / board 三种模式 + backfill-embeddings + rematch-all
+```
 
-| 端点 | 语义 |
-| ---- | ---- |
-| `POST /api/topic-tags/merge-preview/scan` | 启动异步全量扫描（`StartFullScan` 单例锁，已在跑返回 409） |
-| `GET /api/topic-tags/merge-preview/scan/stream` | SSE 流式推送扫描进度 |
-| `POST /api/topic-tags/merge-preview/evaluate` | 启动异步 LLM 评估（`StartEvaluation`，对候选对逐个裁决） |
-| `GET /api/topic-tags/merge-preview/evaluate/stream` | SSE 流式推送评估进度 |
-| `GET /api/topic-tags/merge-preview` | 读 pending 的 `TagMergeSuggestion`，过滤 `should_merge=false`，按目标标签分组返回 |
-| `GET /api/topic-tags/merge-preview/status` | 返回 scan/eval 是否在跑 |
-| `POST /api/topic-tags/merge-preview/add-to-group` | 手动把标签加入某合并组（`source=manual`，`OnConflict DoNothing`） |
-| `POST /api/topic-tags/merge-preview/dismiss` | 标记候选对 `status=dismissed` |
-| `POST /api/topic-tags/merge-with-name` | 真正执行硬合并：事务内 `FOR UPDATE` 锁两端 → 可选 rename + slug 冲突检测 → `HardMergeTags` → 提交后 `EnqueueMergeReembedding` 入重算队列 → 相关 suggestion 标 `merged` |
+###### 版块运维端点（`board_crud_handler.go` / `board_match_handler.go` / `board_upgrade_handler.go`）
 
-工作流：**scan**（全量扫描候选对，SSE 进度）→ **evaluate**（LLM 评估每对，SSE 进度）→ **merge-preview** 列表（按 target 分组）→ 用户对每组 **dismiss** / **add-to-group** / **merge-with-name**。合并后源标签的文章/关系迁移到目标标签，并触发 `merge-reembedding` 队列重算 embedding（见下「队列与回填运维」）。
+| 端点 | 业务用途 |
+| ---- | -------- |
+| `POST /api/semantic-boards/backfill` | 入队一个 backfill job（`SemanticBoardBackfillRequest`，all/unassigned/board 三模式），返回 job 对象 |
+| `GET /api/semantic-boards/backfill/:id` | 查询 backfill job 状态/进度（前端 `BackfillProgress.vue` 轮询） |
+| `POST /api/semantic-boards/backfill-embeddings` | 为 `embedding IS NULL` 的版块生成 embedding（一次性补齐；`board-direction-check` 引入版块向量后的回填入口） |
+| `POST /api/semantic-boards/rematch-all` | 取所有已挂载 `topic_tag`，逐个重跑 `MatchTopicTag`，返回 `{success, failed, total}`（匹配阈值调整后全量重算） |
+| `GET/PUT /api/semantic-boards/matching-config` | 读/写匹配阈值（`ai_settings` 中 13 个 `semantic_board_match_*` key；PUT 后调 `InvalidateMatchingConfigCache` 失效缓存）。前端 `MatchingConfigDialog.vue` |
 
-前端（`features/tags/components/`）：`TagMergePreview.vue`、`TagMergeGroup.vue`、`composables/useTagMergePreview.ts`、`api/tagMergePreview.ts`。后端 service：`service/merge/tag_merge_suggest.go`、`service/core/merge_suggestions.go`、`service/core/hard_merge.go`、`service/core/merge_reembedding_queue.go`。
+###### 辅助标签治理与建议（`board_crud_handler.go` + `service/auxlabel/`）
 
-### 版块治理面板数据流
+| 端点 | 业务用途 |
+| ---- | -------- |
+| `GET /api/semantic-boards/suggest-auxiliaries?label=&description=` | 全局建议：embed 查询文本 → 与 active aux cosine 排序，分页返回候选 |
+| `GET /api/semantic-boards/:id/suggest-auxiliaries` | 版块级建议：以版块 `label+description` 为查询，排除已在该版块 composition 里的 aux |
+| `GET /api/auxiliary-labels/clusters` | 聚类：cosine 距离 < 0.2 的连通分量（size≥2），10 分钟缓存，`?refresh=true` 强制重算 |
+| `POST /api/auxiliary-labels/gc` | GC 回收，`mode` ∈ `dry_run/disable/delete/recalculate`，可选 `grace_days` |
+| `POST /api/auxiliary-labels/merge-alias` | alias 合并（source→target） |
+| `POST /api/auxiliary-labels/:id/disable` | 禁用单个 aux |
+| `GET/POST /api/semantic-boards/:id/composition`、`DELETE /:id/composition/:aux` | 版块 composition 增删查 |
+
+前端治理 UI（`features/tags/components/`）：`AuxiliaryLabelPool.vue`（辅助标签池）、`AuxiliaryLabelPicker.vue`（选择器，双模式：版块推荐/手动指定）、治理工作面 `console/BoardWideWorkface.vue`（单级宽工作面，页签 构成/组合/候选/来源/设置——体检依据与处置 `console/board-health/BoardHealthWorkspace.vue`、构成明细 `console/BoardHealthDetail.vue`、来源 `BoardSourcePanel.vue`、设置 `console/BoardSettingsForm.vue`）、右轨体检摘要 `console/RailHealthBrief.vue`、`composables/useAuxiliaryLabels.ts`。
+
+##### 板块来源构成
+
+供血源视角的只读聚合（当前版块右轨简要 + 单级宽工作面全量；不随观察日期/档重算）：`GET /api/semantic-boards/:id/source-breakdown?window=7` 返回该版块窗口内的来源构成——`total_articles`（按文章去重）/ `source_count` / `sources[]`（`feed_id`、本版块篇数 `articles`、占比 `share`、该源窗口总量 `feed_articles`、该源整体命中率 `feed_hit_rate`）。与板块文章列表 `/:id/articles` 的口径差异：articles 是文章列表（分页/过滤、含匹配质量明细），source-breakdown 是按源聚合的命中构成——**含已归档、按文章去重（同版块多标签只计一次、同一文章命中多版块各计一次）、必限窗口**；不变量：`Σ sources[].articles == total_articles`。版块不存在或非 `label_type='board'` → 404；disabled 版块不是 404（按命中口径聚合为 0）。
+
+```text
+治理工作面（console/BoardWideWorkface.vue）页签流
+  → 「体检」页签（console/board-health/BoardHealthWorkspace.vue：体检依据 + 分诊处置，吸收原构成管理）
+  → 「来源」页签 → BoardSourcePanel.vue（窗口 7/30/90 + 汇总行 + 来源表，只读无写动作）
+  → 选中版块变化时与 loadComposition 并行重取（请求竞态沿用既有面板惯例）
+```
+
+口径与源视角（`GET /api/feeds/board-hit-stats`，见 [reading.md](reading.md) §源视角观测）共用同一份聚合代码 `internal/tagmanagement/service/sourcestats/`；契约见 [semantic-boards.md](../api/semantic-boards.md)。处置入口不在面板内（仍在设置 → 订阅源）。
+
+##### 版块治理面板数据流
 
 ```text
 SemanticBoardPanel
@@ -453,16 +528,7 @@ SemanticBoardPanel
   → backfill() → POST /api/semantic-boards/backfill
 ```
 
-### Event 标签延迟 embedding
-
-```text
-Event 标签延迟 embedding: 描述+关键词生成后入队
-  → 多行 embedding (semantic + event_keyword)
-```
-
-Event 类标签不随入库立即向量化，而是等描述与关键词生成后才入队，产出 semantic 与 event_keyword 两路 embedding。
-
-### 相关事件（related-events）
+##### 相关事件（related-events）
 
 ```mermaid
 flowchart LR
@@ -476,6 +542,11 @@ flowchart LR
 - **查询口径**：同版块、当前有效（`status='active'` 且入板非 `direction_mismatch`）的 event 标签，`created_at ∈ [as_of-30d, as_of]`（标签收录时间，不是事件发生时间）；阈值前不截断候选，阈值后按分数降序 + id 升序取 10；不传递。
 - **覆盖状态**：`ready`（含合法空集）/ `partial`（部分候选未索引）/ `not_ready`（源未索引或无可用路由），响应带 `candidate_count`/`indexed_count`/`threshold`，界面按状态给不同文案——**缺索引不冒充空结果**。
 - **只读边界**：GET 不改标签、辅助标签、文章、thread、事件线身份或热度；不写这张派生表。运维刷新见 [configuration.md](../configuration.md) §「相关事件索引」。
+
+#### 决策记录
+
+（暂无）
+
 
 ## 业务约束与不变量
 
