@@ -110,3 +110,8 @@ openspec/**/*.ico
 openspec/**/*.avif
 backend-go/backfill-stories
 backend-go/.tmp-entity-resolution-eval/
+
+# 本地构建残留与原型草稿（不入库）：Go 临时二进制 / 静态托管前备份目录 / pi 原型草稿
+backend-go/uvcd-restore-check
+backend-go/.frontend-before-matrix-copy.*/
+.pi/prototypes/
