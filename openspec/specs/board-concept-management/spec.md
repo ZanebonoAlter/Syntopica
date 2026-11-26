@@ -1,3 +1,5 @@
+<!-- domain: semantic-board -->
+
 ## Purpose
 
 **DEPRECATED** — 已被 `semantic-label-model` + `board-management-api` + `board-upgrade` 替代。本 spec 描述的 board_concepts 表、embedding 直接匹配、LLM cold-start 建议等已全部废弃。保留仅供参考历史版本。
