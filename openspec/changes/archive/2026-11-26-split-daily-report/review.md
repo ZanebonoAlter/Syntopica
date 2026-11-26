@@ -44,7 +44,7 @@
 
 ### R-4 2026-11-26【Medium】tasks 8.3a「归档后文件从 delta 重建会丢 marker」与 openspec 2.1.1 实测相反，照做会插出重复 marker
 - **状态**：已修复
-- **处置**：tasks 8.3a 更正为「marker 不用补」——`buildUpdatedSpec` 实测预演显示 daily-report-system 是纯删除+追加、marker 保留、新增 0 行
+- **处置**：**review 的实测结论也不准，归档后实测三个 marker 全丢**（`daily-report-system` 的 marker 在 openspec 重建时被剥离，新建两族本就没有）。已全部补上：system → `daily-report, semantic-board`、interface → `daily-report, ui`、ops → `daily-report`。教训：marker 存活必须归档后实测，不能信预演结论
 - **位置**：`tasks.md` 8.3a 括注「（另需补 marker，归档后文件从 delta 重建会丢）」
 - **问题**：`daily-report-system` 的 delta 只有 REMOVED，归档走的是「把 delta 合进现有 main spec」而非「从 delta 重建」：openspec 的 `buildUpdatedSpec` 取现有 main spec 的 `parts.before`（marker + `## Purpose`）作为基线，重建稿首行仍是原 marker。实测重建稿 675 行 / 21 req / 99 sc，**相对原文件 0 行新增**（纯删除）、diff 只有被搬走的 20 个块、21 条保留 Requirement 顺序原样、marker 一字未动。实施者按括注字面「补 marker」，会在已有 marker 的文件里再插一行，产出**重复 domain marker**。
 - **证据**：用 openspec 2.1.1 `dist/core/specs-apply.js` 的 `buildUpdatedSpec` 预演 `daily-report-system` delta：`counts={removed:20}`、`noRequirementBlocks=false`、`unaccountedContent=["<!-- domain: daily-report, semantic-board -->", "归属预算 SHALL 为每份报告 60s…"]`（第二项是原 spec 里 `日报生成编排流水线` 块内一段散落正文，属原有问题，不影响本次判定）；重建稿首行 = `<!-- domain: daily-report, semantic-board -->`；`diff 原文件 重建稿` 的新增行数 = **0**。
