@@ -10,11 +10,11 @@
 
 | 项 | 值 |
 |---|---|
-| 源分支 | `develop` → `origin/develop` = `443d7f6b` |
+| 源分支 | `develop` → `origin/develop` = `ee2949f1` |
 | 目标分支 | `master` → `origin/master` = `27ca6dc6`（上一个 PR #23） |
-| 提交数 | **186** 个（`origin/master..origin/develop`） |
+| 提交数 | **187** 个（`origin/master..origin/develop`，截至推送点 `ee2949f1`；本文档自身的数字对齐提交再 +1） |
 | 时间跨度 | 2026-10-12 → 2026-11-26 |
-| 代码量 | 2864 文件，**+343,114 / −32,351**（后端 489 文件 +98,916/−3,272；前端 480 文件 +110,628/−11,194） |
+| 代码量 | 2866 文件，**+343,390 / −32,352**（后端 489 文件 +98,916/−3,272；前端 480 文件 +110,628/−11,194） |
 | master 独有 | 3 个提交（PR #20/#21/#23 的 merge commit） |
 
 > ⚠️ **仓库没有 `main` 分支**，主线叫 `master`（`origin/HEAD → origin/master`）。本记录与下面的命令都按 `master` 写。
@@ -39,7 +39,7 @@
 
 ### 契约变更（openspec）
 
-- **新增 31 个 main spec**：含 `board-api`、`board-diagnostics`、`board-research`、`tagging`、`auxiliary-label`、`tag-matching`、`workshop-board-console`、`workshop-lane-compose`、`workshop-radar`、`workshop-article-archive`、`lane-correction-surface`、`lane-manual-correction`、`lane-heat-metric`、`ai-generated-article-detection`、`article-search`、`article-description-sanitization`、`entity-subject-resolution`、`event-story`、`related-events`、`thread-related-events`、`radar-pipeline-status`、`topic-key-event-markers`、`spec-domain-index`、`ui-verification-trace-gate`、`frontend-interaction-contract`、`design-decision-landing`、`disaster-recovery`、`change-diagram-convention`、`desktop-shell` 等。
+- **新增 30 个 main spec**：含 `board-api`、`board-diagnostics`、`board-research`、`tagging`、`auxiliary-label`、`tag-matching`、`workshop-board-console`、`workshop-lane-compose`、`workshop-radar`、`workshop-article-archive`、`lane-correction-surface`、`lane-manual-correction`、`lane-heat-metric`、`ai-generated-article-detection`、`article-search`、`article-description-sanitization`、`entity-subject-resolution`、`event-story`、`related-events`、`thread-related-events`、`radar-pipeline-status`、`topic-key-event-markers`、`spec-domain-index`、`ui-verification-trace-gate`、`frontend-interaction-contract`、`design-decision-landing`、`disaster-recovery`、`change-diagram-convention`、`desktop-shell` 等。
 - **退役 26 个 main spec**（多为 spec 族合并的产物，Requirement 逐字搬运、零语义改动）。
 - **改动 127 个 main spec**；**归档 127 个 change**。
 - 本批含 3 次 spec 族合并：`merge-tag-spec-family`（23→3）、`merge-board-diagnostic-specs`（4→2）、`merge-board-upgrade-api-specs`（6→2）。
@@ -84,7 +84,7 @@ curl --noproxy '*' -s http://localhost:5100/api/health
 # 合并后回滚（保留 master 的历史）
 git revert -m 1 <merge-commit>
 # 或整段回滚
-git revert <443d7f6b>^..<443d7f6b>
+git revert <ee2949f1>^..<ee2949f1>
 ```
 
 - 数据库侧**无需回滚**：迁移是加列/加表/加索引，多余的列与索引留着不影响旧代码。
@@ -267,7 +267,7 @@ git revert <443d7f6b>^..<443d7f6b>
 # 在 GitHub 上发 PR：base = master，head = develop（推荐，保留历史）
 # 或本地：
 git checkout master && git pull --ff-only
-git merge --no-ff develop -m "Merge branch 'develop' into master（2026-11-26，186 提交）"
+git merge --no-ff develop -m "Merge branch 'develop' into master（2026-11-26，187 提交）"
 git push origin master
 ```
 
