@@ -14,10 +14,12 @@
 
 事实库给出了直接证据（`.pi/harness/events.db`）：
 
-| 事件 | 次数 | 含义 |
+| 事件 | 条数 | 含义 |
 |---|---:|---|
-| `ui-stage-missing` | **38** | 写原型时 `ui-design.md` 里根本没有 `ui-stage` marker |
+| `ui-stage-missing` | **39** | 写原型时 `ui-design.md` 里根本没有 `ui-stage` marker（每个 会话×change×码 只记一次，故条数 ≤ 写入次数） |
 | `ui-stage-scope-out` | **0** | 有 marker 的情况下越域——一次都没有 |
+
+39 条按发生时的阶段族分布：planning 族 15（design 8 / propose 1 / requirements 6）+ 阶段未绑定 22 + implement 1（且该 change 声明 minor）。**按旧实现，这些越级写入的拦截数为 0**——这正是必须把链改成按写入路径触发的原因（见 review R-1）。
 
 **分层规则从未被触发过，因为没人申报阶段。** `checkStageScope` 的判定逻辑（`l0` 禁写 `ui-prototype/`、`skeleton` 只许写 `skeleton/`）写得完整，但它依赖一个自觉申报的 marker——marker 不写，判定就死了，只剩一条 warn 日志。
 

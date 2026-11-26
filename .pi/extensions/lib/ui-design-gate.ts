@@ -523,7 +523,7 @@ const PSEUDOCODE_HEADING = "## 核心逻辑（伪代码）";
 /**
  * 读 design.md 的伪代码节（ISS-02 D1）：三种结果——
  * - missing：整节不存在（含 designMd 为 null）
- * - na-empty：写了 `N/A`／`N/A:` 但没给理由
+ * - na-empty：写了 `N/A`／`N/A:` 但没给理由（只判非空，不判质量——`N/A：无` 合法）
  * - ok：节内有三行以上实质内容，或 `N/A：<非空理由>`
  */
 export function readPseudocodeSection(designMd: string | null): PseudocodeProbe {
@@ -543,7 +543,7 @@ export function readPseudocodeSection(designMd: string | null): PseudocodeProbe 
 	const na = text.match(/^N\/A\s*[：:]?\s*([\s\S]*)$/i);
 	if (na) {
 		const reason = (na[1] ?? "").replace(/^[\s·\-—]+/, "").trim();
-		return reason.length >= 4 ? { kind: "ok" } : { kind: "na-empty" };
+		return reason.length >= 1 ? { kind: "ok" } : { kind: "na-empty" };
 	}
 	return { kind: "ok" };
 }

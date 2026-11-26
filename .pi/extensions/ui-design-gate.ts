@@ -42,9 +42,11 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import { logPolicyDecision, type PolicyDecisionInput } from "./lib/policy-decision";
 import { queryByChange, queryLatestStageSet } from "./lib/harness-log";
 import {
+	UI_SCHEMA,
 	changeNameFromPath,
 	checkStageScope,
 	parseUiStage,
+	checkPrototypeChain,
 	relInsideChange,
 	decideUiToolGate,
 	passReasonForRelease,
@@ -139,6 +141,15 @@ async function check(
 
 	// 0. 按写入路径触发的 stage 记账（add-ui-stage-accounting D1/D4）：不看 mode、不改裁夺。
 	if (tool.kind === "mutation") accountStageScope(ctx, normalizeTarget(tool, cwd));
+
+	// 0.5 原型产出物依赖链（ISS-02 D2）：**按写入路径触发**，不看阶段族、不看 verdict。
+	//     原实现挂在 decideUiToolGate 的 pass 分支里，而 pass 要求「已批准 + 原型文件已在盘」
+	//     ——原型早写完了，链一次都拦不到（events.db 实测：39 条越级写入发生在 planning 族 15 /
+	//     未绑定 22 / implement 1，新链拦截数 0）。here 对齐 accountStageScope 的触发方式。
+	if (tool.kind === "mutation") {
+		const chainBlock = checkChainByPath(ctx, cwd, normalizeTarget(tool, cwd));
+		if (chainBlock) return chainBlock;
+	}
 
 	const stageInfo = readLatestStage(cwd, sessionId);
 	if (!stageInfo || stageInfo.stageFamily !== "implementation" || !stageInfo.boundChange) {
@@ -337,6 +348,63 @@ function recordReleasePass(ctx: GateCtx, change: string): void {
 }
 
 /** policy.decision 旁路记账（同 spec-gate：无 cwd/sessionId 不记；失败不影响裁决） */
+/**
+ * 依赖链的路径触发入口（ISS-02 D2 修复）：只看「写的是不是某 change 的 ui-prototype/**」，
+ * 不看阶段族与 verdict——原型在生产期（planning 族、未绑定档、pending 期）被写，
+ * 挂到 pass 分支等于永不生效。
+ *
+ * legacy 豁免：change 无 .openspec.yaml（旧 schema）不查。
+ * 返回 null = 放行；否则为 block 结果。
+ */
+function checkChainByPath(
+	ctx: GateCtx,
+	cwd: string,
+	tool: UiToolAction,
+): { block: true; reason: string } | null {
+	try {
+		if (tool.kind !== "mutation" || !tool.targetPath) return null;
+		const change = changeNameFromPath(tool.targetPath);
+		if (!change) return null;
+		const rel = relInsideChange(tool.targetPath, change);
+		if (!rel) return null;
+		if (rel !== "ui-prototype" && !rel.startsWith("ui-prototype/")) return null;
+
+		const changeDir = join(cwd, "openspec/changes", change);
+		if (!existsSync(changeDir)) return null;
+		if (readSchemaName(changeDir) !== UI_SCHEMA) return null; // legacy 不追溯
+
+		const detail = checkPrototypeChain(
+			{
+				schema: UI_SCHEMA,
+				proposalText: safeRead(join(changeDir, "proposal.md")),
+				tasksMd: safeRead(join(changeDir, "tasks.md")),
+				uiDesignText: safeRead(join(changeDir, "ui-design.md")),
+				designMd: safeRead(join(changeDir, "design.md")),
+				changeDirFiles: listRegularFiles(changeDir),
+			},
+			rel,
+		);
+		if (!detail) return null;
+
+		auditPolicy(ctx, change, {
+			policy: "ui-design-gate",
+			action: "block",
+			reasonCode: "ui-chain-out-of-order",
+		});
+		return {
+			block: true,
+			reason: [
+				`⛔ [ui-design-gate] 「${change}」原型产出物越级（reasonCode: ui-chain-out-of-order），本次写入已阻断。`,
+				`缺失项：${detail}`,
+				"顺序：design.md 伪代码 → ui-design.md 八节 → ui-prototype/skeleton/ → ui-prototype/index.html → ui-prototype/fixture.json。",
+			].join("\n"),
+		};
+	} catch (err) {
+		console.warn(`[ui-design-gate] 依赖链检查异常，本次放行（fail-open）：${String(err)}`);
+		return null;
+	}
+}
+
 /**
  * 按写入路径触发的 stage 记账（add-ui-stage-accounting design D1/D4）：
  * **不看 mode**——原型工作在 requirements / 无档位发生，而 `ui-approval` 的 mode 触发

@@ -224,8 +224,8 @@ check("A2' major approved + design.md 缺失 → block ui-pseudocode-missing",
 	isBlock(evaluateUiContract(contract({ designMd: null })), 'ui-pseudocode-missing'));
 check("A3' major approved + N/A 理由为空 → block ui-pseudocode-missing",
 	isBlock(evaluateUiContract(contract({ designMd: PSEUDO_NA_EMPTY })), 'ui-pseudocode-missing'));
-check("A4' major approved + N/A 带理由 → pass",
-	evaluateUiContract(contract({ designMd: PSEUDO_NA_OK })).kind === 'pass');
+check("A4' major approved + N/A 带理由（含单字「无」）→ pass",
+	evaluateUiContract(contract({ designMd: PSEUDO_NA_OK })).kind === 'pass' && evaluateUiContract(contract({ designMd: '## 核心逻辑（伪代码）\n\nN/A：无\n' })).kind === 'pass');
 check("A5' major approved + 有伪代码 → pass",
 	evaluateUiContract(contract()).kind === 'pass');
 check("A6' major pending 仍卡在审批（不看伪代码）",
@@ -310,6 +310,9 @@ function writeChange(cwd, name, files) {
 	return dir;
 }
 const SCHEMA_UI = `schema: ${UI_SCHEMA}\ncreated: 2026-09-03\n`;
+
+
+
 const SCHEMA_LEGACY = 'schema: spec-driven\ncreated: 2026-01-01\n';
 const MAJOR_PENDING_FILES = {
 	'.openspec.yaml': SCHEMA_UI,
@@ -636,6 +639,7 @@ async function runTool(mod, cwd, sessionId, toolName, input, family = 'implement
 			'proposal.md': PROP_MAJOR,
 			'ui-design.md': UI_MAJOR_FULL('pending', 'ui-prototype/index.html').replace(/<!-- ui-stage: [a-z]+ -->\n/, ''),
 			'ui-prototype/index.html': '<html>p</html>',
+			'ui-prototype/skeleton/index.html': '<html>s</html>',
 		});
 		seedStageSet(tL, 'sL', 'planning', 'legacy-stage');
 		const g4 = await runTool(loadFresh('./.uige.cjs'), tL, 'sL', 'write', {
@@ -656,6 +660,7 @@ async function runTool(mod, cwd, sessionId, toolName, input, family = 'implement
 			'proposal.md': PROP_MAJOR,
 			'ui-design.md': UI_STAGE_DOC('design'),
 			'ui-prototype/index.html': '<html>p</html>',
+			'ui-prototype/skeleton/index.html': '<html>s</html>',
 		});
 		seedStageSet(tI, 'sI', 'planning', 'bad-stage');
 		const g5 = await runTool(loadFresh('./.uige.cjs'), tI, 'sI', 'write', {
@@ -676,6 +681,7 @@ async function runTool(mod, cwd, sessionId, toolName, input, family = 'implement
 			'proposal.md': PROP_MAJOR,
 			'ui-design.md': UI_STAGE_DOC('approved'),
 			'ui-prototype/index.html': '<html>p</html>',
+			'ui-prototype/skeleton/index.html': '<html>s</html>',
 		});
 		seedStageSet(tA, 'sA', 'planning', 'ok-stage');
 		const g6 = await runTool(loadFresh('./.uige.cjs'), tA, 'sA', 'write', {
@@ -765,6 +771,48 @@ async function runTool(mod, cwd, sessionId, toolName, input, family = 'implement
 		check(`F5 三个 stage warn 码不与阻断码白名单相交${overlap.length ? `——交叠：${overlap.join('、')}` : ''}`, overlap.length === 0);
 		check('F5 阻断码十一个（ISS-02 扩容 ui-pseudocode-missing / ui-chain-out-of-order）', UI_REASON_CODES.length === 11);
 		check('F5 warn 码恰为三个', UI_STAGE_WARN_REASON_CODES.length === 3);
+	}
+
+	// §B'' 链按写入路径触发（R-1 修复）：planning 族 / pending 期也要拦
+	const chainTmp = mktmp(); // 本段自管（§C 的 tmps 尚未定义）
+	writeChange(chainTmp, 'chain-chg', {
+		'.openspec.yaml': SCHEMA_UI,
+		'proposal.md': PROP_MAJOR,
+		'ui-design.md': UI_MAJOR_FULL('pending', 'ui-prototype/index.html'),
+		'design.md': '## 核心逻辑（伪代码）\n\nfn() {}\n',
+		'ui-prototype/index.html': '<html>p</html>',
+	});
+	{
+		// planning 族（原型真正的生产阶段）+ 无 skeleton → 必须 block
+		seedStageSet(chainTmp, 'sc-plan', 'planning', 'chain-chg');
+		const rPlan = await runTool(loadFresh('./.uige.cjs'), chainTmp, 'sc-plan', 'write', {
+			path: 'openspec/changes/chain-chg/ui-prototype/index.html', content: 'x',
+		});
+		check("B11'' planning 族缺骨架写 index.html → block（R-1 修复前放行）",
+			rPlan.result && rPlan.result.block === true && rPlan.result.reason.includes('ui-chain-out-of-order'));
+
+		// pending 期（合同本就是 block）→ 仍要 block 链
+		seedStageSet(chainTmp, 'sc-pend', 'implementation', 'chain-chg');
+		const rPend = await runTool(loadFresh('./.uige.cjs'), chainTmp, 'sc-pend', 'write', {
+			path: 'openspec/changes/chain-chg/ui-prototype/fixture.json', content: '{}',
+		});
+		check("B12'' pending 期直接写 fixture → block（不再走「change 内放行」）",
+			rPend.result && rPend.result.block === true && rPend.result.reason.includes('ui-chain-out-of-order'));
+
+		// 补骨架后同一路径放行（目录可能已被前面的 rmSync 场景清掉，先建）
+		fs.mkdirSync(path.join(chainTmp, 'openspec/changes/chain-chg/ui-prototype/skeleton'), { recursive: true });
+		fs.writeFileSync(path.join(chainTmp, 'openspec/changes/chain-chg/ui-prototype/skeleton/index.html'), '<html>s</html>');
+		const rOk = await runTool(loadFresh('./.uige.cjs'), chainTmp, 'sc-plan', 'write', {
+			path: 'openspec/changes/chain-chg/ui-prototype/index.html', content: 'x',
+		});
+		check("B13'' 补骨架后 planning 族写 index.html → 放行",
+			!rOk.result || rOk.result.block !== true);
+
+		// 非原型路径不受影响
+		const rOther = await runTool(loadFresh('./.uige.cjs'), chainTmp, 'sc-plan', 'write', {
+			path: 'openspec/changes/chain-chg/design.md', content: 'x',
+		});
+		check("B14'' 非原型路径不触发链", !rOther.result || rOther.result.block !== true);
 	}
 
 	let fail = 0;

@@ -32,7 +32,7 @@
 
 - [x] 4.1 `开发执行规范.md` §3.1.1 补「业务先定」前置 + 依赖链顺序
 - [x] 4.2 `standard/frontend/interaction.md` 补决策权划线表（影响对外产出 vs 只影响界面）
-- [ ] 4.3 修订 §3.1.1 的 L0 三节名（与实际八节不符——本 change 已发现，但作为独立文档清理）
+- [x] 4.3 修订 §3.1.1 的 L0 三节名（与实际八节不符——本 change 已发现，但作为独立文档清理）
 
 ## 5. change 制品
 
@@ -42,14 +42,14 @@
 
 ## 6. review
 
-- [ ] 6.1 派 review（`minimax-cn/MiniMax-M3.1-Flash:max`）
-- [ ] 6.2 处置 review 发现
+- [x] 6.1 派 review（`minimax-cn/MiniMax-M3.1-Flash:max`）
+- [x] 6.2 处置 review 发现
 
 ## 7. 归档
 
-- [ ] 7.1 八项门禁全绿
-- [ ] 7.2 `openspec archive add-ui-pseudocode-chain-gate --yes`
-- [ ] 7.3 `openspec validate --specs` 全过
+- [x] 7.1 八项门禁全绿
+- [x] 7.2 `openspec archive add-ui-pseudocode-chain-gate --yes`
+- [x] 7.3 `openspec validate --specs` 全过
 
 ## 8. 测试
 
@@ -69,7 +69,13 @@
 - `docs/reference/standard/frontend/interaction.md`（4.2）
 - `docs/research/process-arch-rework/issues.md`：ISS-02 回填（见 10.2）
 
-## 10. 验收
+## 10. 验证
+
+- [x] 10.1 伪代码三态 §A' 6/6、依赖链 §B' 8/8、路径触发 §B'' 4/4
+- [x] 10.2 白名单 11 值（D7 / F5 断言）
+- [x] 10.3 既有红已登记欠账，本 change 零新增红
+
+## 11. 验收
 
 - [x] A 伪代码在 major approved 时强制、pending 期不查、minor/none 不查
 - [x] B 依赖链只判文件存在性，不依赖 marker；`ui-skip` 为显式留痕出口

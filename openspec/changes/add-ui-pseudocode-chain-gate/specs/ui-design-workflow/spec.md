@@ -20,6 +20,32 @@ UI 设计门禁的显著裁决 SHALL 写入 harness `policy.decision`，`policy=
 - **WHEN** UI 规划与审批均满足要求且实现正常放行
 - **THEN** 事实库 MUST NOT 产生 `policy.decision`
 
+## MODIFIED Requirements
+
+### Requirement: 实现入口门禁与存量兼容
+
+新 workflow schema 的 apply 指令与 UI 入口门禁 SHALL 在 implementation 档对规划状态做同源检查。major change 未获批准时，门禁 MUST 阻止实现工具对项目代码的写入，以及**具备写能力的实现子线程**派发；门禁 MUST NOT 阻断只读档（勘察/审查）与原型编辑档的派发——只读档（`explore`/`plan`：无写工具；`change-review`：只读工具 + shell，shell 通道为既有边界）不产生前端实现，原型编辑档服务于「修改当前 change 的 UI 设计与原型」这一被允许的路径，且其经 `edit`/`write` 工具的写入仍逐个过门禁（越出当前 change 目录者照常阻止；shell 类通道不在本门禁覆盖范围——既有边界）。门禁 SHALL 允许继续修改当前 change 的 UI 设计与原型；`none` 或 `minor` 满足各自制品要求后正常放行。发布前已存在且仍绑定旧 `spec-driven` schema 的 change SHALL 保持可继续执行，不因缺少新制品被硬阻断，但触及前端时 SHALL 收到一次迁移提示。
+
+#### Scenario: major pending 阻止实现写入
+- **WHEN** implementation 档绑定 major change 且审批为 pending，agent 尝试编辑项目代码，或派发具备写能力的实现子线程
+- **THEN** 门禁 MUST 阻止操作，说明缺失项，并允许其返回 requirements 档完善 `ui-design.md` 与原型
+
+#### Scenario: major pending 放行只读档与原型编辑档派发
+- **WHEN** implementation 档绑定 major change 且审批为 pending，agent 派发只读档（勘察/审查）或原型编辑档
+- **THEN** 门禁 MUST NOT 阻断该派发，并按 `ui-dispatch-allowed` 留痕
+
+#### Scenario: 原型编辑档写入越界仍被阻止
+- **WHEN** 原型编辑档子线程在合同未就绪期间经 `edit`/`write` 工具写入目标越出当前 change 目录（如 `front/` 下的文件）
+- **THEN** 该写入 MUST 被阻止并记 block；写入 change 目录内的 `ui-prototype/**` 与规划制品 MUST 放行，**但 `ui-prototype/**` 的写入 SHALL 先过原型产出物依赖链**（见「原型产出物依赖链」：major 且缺前一层产物时按 `ui-chain-out-of-order` 阻断，不因「在 change 目录内」而豁免）
+
+#### Scenario: 完整规划正常放行
+- **WHEN** UI 声明合法、`ui-design.md` 满足对应等级，且 major change 已 approved
+- **THEN** apply 与实现工具 SHALL 正常放行且不产生成功噪声事件
+
+#### Scenario: 旧 change 不被突然卡死
+- **WHEN** rollout 前创建的 change 仍绑定旧 `spec-driven` schema 且缺少 `ui-design.md`
+- **THEN** 系统 SHALL 允许继续执行；仅当其触及前端时给出一次迁移提示，不作硬阻断
+
 ## ADDED Requirements
 
 ### Requirement: 业务先定：major 批准时伪代码节必须在

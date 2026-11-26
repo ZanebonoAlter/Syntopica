@@ -19,7 +19,13 @@
 
 | 环 | 判据 | 为什么是它 |
 |---|---|---|
-| L-1 伪代码 | `design.md` 有 `## 核心逻辑（伪代码）` | 业务口径的唯一载体。原型改不动它，所以业务问题必须回到这里 |
+| L-1 伪代码 | `design.md` 有 `## D7 legacy change 迁移时的注意（review R-10）
+
+legacy change（无 `.openspec.yaml`）补上 schema 声明后，链会立即生效。此时原型通常已写完——`skeleton/` 与 `index.html` 都已存在，链自然通过。真被卡住（比如只有 `index.html` 没 `skeleton/`）时，`<!-- ui-skip: skeleton(理由) -->` 一步出口。
+
+不为此加宽限期：链判的是"当前磁盘状态"，而补 schema 这个动作本身就是「我要按新规矩来」的声明。
+
+## 核心逻辑（伪代码）` | 业务口径的唯一载体。原型改不动它，所以业务问题必须回到这里 |
 | L0 八节 | `ui-design.md` 八节齐全 | 既有 `evaluateUiContract` 已保证（pass 前提），依赖链**不重复查** |
 | L1 骨架 | `ui-prototype/skeleton/` 至少 1 文件 | 最便宜的一步（空壳），成本低到没有拒绝理由；跳过它意味着直接进高成本步骤 |
 | L2 原型 | `ui-prototype/index.html` 存在 | 写 `fixture.json` 之前必须先有能跑的原型，否则数据注入无宿主 |
@@ -49,6 +55,8 @@
 
 这条与 `ui-impact` 的既有语义一致：三档本来就是对"这个改动有多重"的判断。
 
+**minor 会不会变成规避通道**（review R-3）：会，但已被既有机制覆盖——`scanImpactMismatch` 对「声明 minor 但内容有 major 特征词 / 触及前端路径」做反向质询并 block `ui-impact-mismatch`。谎报档位不是本 change 引入的新漏洞，也不该用「再挂一条链」的方式解决（那等于让 minor 也背骨架，违背分档初衷）。
+
 ## D5 出口设计：`ui-skip` 为什么不破坏约束
 
 `<!-- ui-skip: skeleton(纯样式微调，无新增区块) -->` 让某些 change 跳过骨架环。
@@ -69,6 +77,12 @@
 - 且已有 `ui-skip` 出口兜底
 
 风险确认为零误伤：仓库里唯一的 major 档 active change（`add-home-pipeline-status-page`）**没有 `.openspec.yaml`**，走 legacy 分支不进入依赖链。
+
+## D7 legacy change 迁移时的注意（review R-10）
+
+legacy change（无 `.openspec.yaml`）补上 schema 声明后，链会立即生效。此时原型通常已写完——`skeleton/` 与 `index.html` 都已存在，链自然通过。真被卡住（比如只有 `index.html` 没 `skeleton/`）时，`<!-- ui-skip: skeleton(理由) -->` 一步出口。
+
+不为此加宽限期：链判的是"当前磁盘状态"，而补 schema 这个动作本身就是「我要按新规矩来」的声明。
 
 ## 核心逻辑（伪代码）
 
@@ -128,7 +142,13 @@ checkPrototypeChain(input, rel):
 
 readPseudocodeSection(designMd):
     if designMd == null:                     return missing
-    定位 '## 核心逻辑（伪代码）'，截到下一个 '## '
+    定位 '## D7 legacy change 迁移时的注意（review R-10）
+
+legacy change（无 `.openspec.yaml`）补上 schema 声明后，链会立即生效。此时原型通常已写完——`skeleton/` 与 `index.html` 都已存在，链自然通过。真被卡住（比如只有 `index.html` 没 `skeleton/`）时，`<!-- ui-skip: skeleton(理由) -->` 一步出口。
+
+不为此加宽限期：链判的是"当前磁盘状态"，而补 schema 这个动作本身就是「我要按新规矩来」的声明。
+
+## 核心逻辑（伪代码）'，截到下一个 '## '
     if 节内容为空:                           return missing
     if 节以 N/A 开头: 理由 ≥ 4 字 ? ok : na-empty
     return ok
