@@ -1,0 +1,6 @@
+schema: syntopica-ui
+created: 2026-11-26
+# 3 个旧 capability（board-health-checkup / board-direction-check / board-signal-reports /
+# board-level-analysis 中除保留外的全部）的 Requirement 迁入 2 个族级 capability。
+# openspec 默认「写入重建稿 → 校验」，空 spec 校验失败会整次中止，必须显式授权退役。
+retire_capabilities: true
