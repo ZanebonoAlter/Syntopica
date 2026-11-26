@@ -47,7 +47,7 @@
 
 ### 一、生成与匹配
 
-> spec: `daily-report-system`
+> spec: `daily-report-system` + `daily-report-margin-notes`（页边注跟随重派生）
 
 #### 当前规则
 
@@ -145,7 +145,11 @@ ClusterTagsLane 分桶（Step3）与归属判定**共享同一个可锚定 Persi
 2. candidate 需 `last_seen_date` 在 `persistent_topic_candidate_decay_window`（默认 7 天）内，按 `last_seen_date DESC, hit_count DESC, id ASC` 排序，最多保留 `persistent_topic_candidate_prompt_limit`（默认 20）条。
 3. 窗口外或被截断的 candidate 不出现在任何一侧，消除单边锚定的隐式 bug。
 
-##### 事件线归属与跨期去重
+##### 事件线归属与跨期去重（**已停写**，链路保留作历史）
+
+> **当前状态：这条链路已停写**（`retire-story-adopt-event-metrics` 起矩阵/演进口径改用当天线索合计）。下列内容描述的是已退役的事件线身份与热度公式，保留供考古；**新代码 MUST NOT 依赖它**。现行口径见「泳道动态」的「热度/缓存口径」与红线 28。
+
+> 来源 change：`add-event-story-heat`
 
 > ⚠️ **本节描述的事件线链路已硬停写**（change `retire-story-adopt-event-metrics`，2026-11-11；review R-1 删开关）：日报链不再产生 `board_stories` / `story_signals` / `story_id`，跨期去重同步退役；下方文字保留为历史口径与回滚依据，现行「今日重点」候选源见红线 46-47（当天同事件聚簇）。
 
@@ -186,6 +190,8 @@ ClusterTagsLane 分桶（Step3）与归属判定**共享同一个可锚定 Persi
 
 ##### 今日重点的选题与热度（story highlights）
 
+> 来源 change：`retire-story-adopt-event-metrics`、`widen-highlight-cluster-candidates`
+
 > ⚠️ **历史口径备注**：本节曾描述「事件线热度候选 + 进展徽标」（`surface-story-heat-in-report-top`，已随 change `retire-story-adopt-event-metrics` 退役，`is_progress` 不再产生）；`widen-highlight-cluster-candidates`（2026-11-15）重写本节为现行聚簇口径，并放宽候选入口（见下）。
 
 「今日重点」由当天同事件聚簇产生候选，LLM 只从白名单挑 ≤3 条写事实文案，簇身份与数值快照一律服务端计算（模型不输出数字，杜绝编造）。编排入口 `daily_report_watch.go` `GenerateAndSaveReport` → `daily_report_story_highlights.go` `finalizeDailyReportHighlights`：
@@ -210,28 +216,21 @@ ClusterTagsLane 分桶（Step3）与归属判定**共享同一个可锚定 Persi
 - **兼容**：旧报告 highlights 不回填、不重算（旧聚簇口径或标签回退产物原样返回，缺字段 `omitempty` 不以 0 冒充）；该日报被重建时按新口径重算重点（预期内行为）。重建窗口守卫（约束 20）不变。
 - **派生关系（消费方须知，2026-11-19 补）**：`FinalizeReportHighlights` 写库时同时写 `highlights` / `title` / `summary`，其中 **`title = highlights[0].Title`、`summary = highlights[0].Reason`**（`backend-go/internal/topicgraph/repository/report_story_highlights.go:78-81`）——**日报标题与摘要就是首条重点的标题与点评**。任何消费方 MUST NOT 把 `title` / `summary` 与 `highlights` 并排展示（会重复渲染同一条）。版块态势页右轨「当日日报」块据此只展示 `highlights`（2–3 条），不另列日报标题（见 `flow/semantic-board.md` §版块态势页左右轨）。
 
+> **Step5.5 泳道内主题分桶（intra-lane theme bucketing，add-intra-lane-theme-bucketing）**：域型泳道（把「话题当泳道用」的板块）会把当天全部线索塞进一条 section（实测板块 3030 一条 section 18 tags / 17 threads 平铺），根因是 section 的产生单位被写死成「话题 × 天」。分桶在**单个聚类内部**、thread 生成之后、section embedding 之前插入：**触发阈值**为 `threads ≥ daily_report_intra_bucket_min_threads`（默认 6）**或** `tags ≥ daily_report_intra_bucket_min_tags`（默认 10），总开关 `daily_report_intra_bucket_enabled` 默认开（叙事型泳道单条 ≤5 tags 永不触发）；**组数**由代码算 `k = clamp(round(线索数/2.5), 2, 6)`；**两阶段**（温度 0）——phase 1（operation `daily_report.bucket_theme_names`）只给 k 个方向名（≤12 字）+ 每组当日章节标题，组数多于 k 时确定性合并最小两组、少于 k 按实际组数；phase 2（operation `daily_report.bucket_assign`）方向名固定、只做逐条归属，禁止增删改名合并拆分；**确定性校验**（不信任模型自觉）——未覆盖线索并入最小 group、重复保留首处、单例组合并、空组丢弃、修复后仍 1 组则回退单 section；任一阶段失败只为 warn 并保持单 section（日报不失败）。**产出**：每条桶一条 section，共享来源聚类的 `cluster_index`，`bucket_index` 0..k-1、`bucket_title` 为方向名、`cluster_label` 为该桶当日章节标题（缺失时兜底链按**桶内**线索：首条 thread 标题 → 泳道 label，不借用其他桶内容）、`cluster_tag_ids` 为桶内 thread 的 tag 并集、embedding 用**该桶自己的 tag 集**计算；兄弟 section 继承 `lane_tier`/`persistent_topic_id`/`topic_match_confidence`，各自计算 `topic_match_distance`。同日合并按 `cluster_index` 相同即拒绝（防止被粘回一条），开关默认仍关。**重新分桶** `POST /api/daily-reports/:id/rebucket`：对 `(report_id, cluster_index)` 组重跑两阶段并整组替换 section 行，thread 只迁移 `section_id` 不删除（关键事件注记按 thread 重派生、watch 命中/页边注跟随重派生、关系双向重建），与 `SaveReport` 共用同键 `(board, date)` 事务级 advisory lock 串行化；报告非 `completed` 409、`watch_*` 物化组 400、未达阈值/拆不动 200 + `buckets=1` 且不写库。
+
 #### 决策记录
 
 **`日报生成管线`**
 
-> **Step5.5 泳道内主题分桶（intra-lane theme bucketing，add-intra-lane-theme-bucketing）**：域型泳道（把「话题当泳道用」的板块）会把当天全部线索塞进一条 section（实测板块 3030 一条 section 18 tags / 17 threads 平铺），根因是 section 的产生单位被写死成「话题 × 天」。分桶在**单个聚类内部**、thread 生成之后、section embedding 之前插入：**触发阈值**为 `threads ≥ daily_report_intra_bucket_min_threads`（默认 6）**或** `tags ≥ daily_report_intra_bucket_min_tags`（默认 10），总开关 `daily_report_intra_bucket_enabled` 默认开（叙事型泳道单条 ≤5 tags 永不触发）；**组数**由代码算 `k = clamp(round(线索数/2.5), 2, 6)`；**两阶段**（温度 0）——phase 1（operation `daily_report.bucket_theme_names`）只给 k 个方向名（≤12 字）+ 每组当日章节标题，组数多于 k 时确定性合并最小两组、少于 k 按实际组数；phase 2（operation `daily_report.bucket_assign`）方向名固定、只做逐条归属，禁止增删改名合并拆分；**确定性校验**（不信任模型自觉）——未覆盖线索并入最小 group、重复保留首处、单例组合并、空组丢弃、修复后仍 1 组则回退单 section；任一阶段失败只为 warn 并保持单 section（日报不失败）。**产出**：每条桶一条 section，共享来源聚类的 `cluster_index`，`bucket_index` 0..k-1、`bucket_title` 为方向名、`cluster_label` 为该桶当日章节标题（缺失时兜底链按**桶内**线索：首条 thread 标题 → 泳道 label，不借用其他桶内容）、`cluster_tag_ids` 为桶内 thread 的 tag 并集、embedding 用**该桶自己的 tag 集**计算；兄弟 section 继承 `lane_tier`/`persistent_topic_id`/`topic_match_confidence`，各自计算 `topic_match_distance`。同日合并按 `cluster_index` 相同即拒绝（防止被粘回一条），开关默认仍关。**重新分桶** `POST /api/daily-reports/:id/rebucket`：对 `(report_id, cluster_index)` 组重跑两阶段并整组替换 section 行，thread 只迁移 `section_id` 不删除（关键事件注记按 thread 重派生、watch 命中/页边注跟随重派生、关系双向重建），与 `SaveReport` 共用同键 `(board, date)` 事务级 advisory lock 串行化；报告非 `completed` 409、`watch_*` 物化组 400、未达阈值/拆不动 200 + `buckets=1` 且不写库。
-
-**`事件线归属与跨期去重`**
-
-> 来源 change：`add-event-story-heat`
-
-**`今日重点的选题与热度（story highlights）`**
-
-> 来源 change：`retire-story-adopt-event-metrics`、`widen-highlight-cluster-candidates`
-
-
 ### 二、对外契约与阅读
 
-> spec: `daily-report-interface`
+> spec: `daily-report-interface` + `lane-ops`（候选读取的泳道侧）
 
 #### 当前规则
 
 ##### 日报阅读台
+
+> 来源 change：`rework-workshop-into-radar-and-desk`
 
 日报阅读台是独立路由 `/tags/:boardId/:date`，不再依赖旧 `TagsPage` 的 tab/浮层（该宿主已随 rework-workshop-into-radar-and-desk 8.4 物理删除；旧入口 `?report=&annotation=` 在 L0 反查日期后 replace 到本路由）：
 
@@ -258,6 +257,8 @@ pages/tags/[boardId]/[date].vue
 **事件线深链定位（surface-story-events-in-radar）**：雷达右栏的事件线条目带落点报告日期，点击跳 `/tags/{boardId}/{reportDate}?story={storyId}`。阅读台壳 `DailyReportDeskShell.vue` 解析 `?story=`（非数字 / 0 / 负数的非法值忽略，不报错阻断阅读），详情就绪后按**本期正文 DOM 顺序**定位该事件线的第一条 thread（展开 → 滚动 → 聚焦 → 高亮 2s），复用刊头「今日重点」的同一定位路径。**本期正文没有该事件线时不滚动、不跳近似位置**，只提示「本期正文暂无对应事件」；翻页 / 切版块时该参数不被续传，不在别的报告重复定位。无正文落点的事件线不渲染为可点条目（由响应 `report_date` 为空表达）。雷达侧的事件线条目单位、事件线级升温与「今日新起」口径属雷达域，见 [`semantic-board.md`](semantic-board.md) 约束 29/30。
 
 ##### 线索相关推荐
+
+> 来源 change：`replace-lane-lifeline-with-topic-events`
 
 日报 active 话题卡片里，**每条当日线索下方**渲染一行「相关线索」chip（整宽一行，位于 `.drm-thread-row` 之后、文章列表之前）：
 
@@ -307,18 +308,10 @@ CRUD：POST/GET /api/semantic-boards/:id/topic-watches、PATCH/DELETE /api/topic
 
 #### 决策记录
 
-**`日报阅读台`**
-
-> 来源 change：`rework-workshop-into-radar-and-desk`
-
-**`线索相关推荐`**
-
-> 来源 change：`replace-lane-lifeline-with-topic-events`
-
 
 ### 三、运维与补档
 
-> spec: `daily-report-ops`
+> spec: `daily-report-ops` + `event-story`（已停写，见族一）
 
 #### 当前规则
 
@@ -337,6 +330,8 @@ POST /api/daily-reports/backfill-topics       重建持久话题
 > **自动补档（offline-catchup）**：手动 backfill 之外，`DailyReportJob` 每晚生成完当天报告后会自动补齐保留窗口内的缺档日期（tag 队列空为前置、窗口内逐日只补缺、队列未清顺延次日；超窗日期拒绝重建，见业务约束 19/20）——停机错过的日期无需人工逐日重建。成功裁决后另有**版块体检尾步**（add-board-health-checkup：同步 RunCheckup 纯读统计+LLM 评分落快照，error/panic 不污染日报 job，链路见 [semantic-board.md](semantic-board.md) §版块体检）。
 
 ##### 缺口与补填（gap backfill）
+
+> 来源 change：`add-daily-report-gap-backfill`
 
 日报域多了一对端点，把「看不见的空洞」搬到台面上：`GET /api/daily-reports/gaps`（只读缺口清单）+ `POST /api/daily-reports/backfill-gaps`（异步补填）。自动补档（上一节 offline-catchup）是**夜间无人值守**的那条路，它补的是「调度器自己知道的」缺档；缺口/补填是**用户看得见、点得到**的那条路。
 
@@ -393,9 +388,13 @@ POST /api/daily-reports/backfill-gaps
 
 ##### 话题关键事件注记（key-event markers）
 
+> 来源 change：`add-topic-key-event-markers`
+
 `GenerateAndSaveReport` 尾部（`spawnLaneSnapshotSettlement` 之后）异步起推荐任务（每版块 `TryLock` 互斥、90s timeout、失败/panic 全吞不阻塞日报终态通知）：候选=当日 section 的 threads（≤40，按来源指纹 SHA-256(board|topic|上海日期|空白归一标题|排序去重 tag+article ID) 精确去重），prompt 三块素材（候选列表 / 泳道 14 天指纹 `ListLaneSnapshotMaterial` / 已处理历史 ≤20）clamp 12000 runes，单次 LLM 调用（operation=`daily_report.key_event_recommend`）产出候选子集+理由+证据，服务端校验（候选 ID 合法、理由非空、证据 ⊆ 线索文章）后**只写 `suggested` 行**（`SaveSuggestedMarkers`，幂等刷新未处理建议；`key_event_recommendation_runs` 记任务状态与 generation_token——重建换 token，迟到批次整批丢弃）。人工动作三端点（读写契约见 `api/daily-reports.md` §关键事件注记）：thread 寻址 PUT（确认/不采纳/手标，服务端反解来源快照，客户端不可伪造内容）、注记寻址 PATCH（取消/失效快照维护）、话题读端 GET（仅 confirmed 回看）。重建重跑时 `ReAttachKeyEventMarkers`（挂 `SaveReport` 事务内）按指纹重挂来源指针，失配即断开为独立失效快照（FK SET NULL 保确认行，不伪造 section/关系）。
 
 ##### 编排 / 修正工作面的候选读取
+
+> 来源 change：`unify-lane-workbench`
 
 泳道编排（新建）与泳道修正（编辑）两个工作面共用 `GET /api/semantic-boards/:id/persistent-topics/compose-candidates`（字段与错误码见 [api/semantic-boards.md](../api/semantic-boards.md) §持久话题手动编排）：
 
@@ -407,18 +406,6 @@ POST /api/daily-reports/backfill-gaps
 - **更早成员入质心**：修正模式带 `all_members_topic_id` 时响应含 `early_members[]`（带 `embedding`），与窗口内成员一起撑起推荐质心；API 归一层必须透传该向量，否则窗口内成员为 0 时候选区全空。
 
 #### 决策记录
-
-**`缺口与补填（gap backfill）`**
-
-> 来源 change：`add-daily-report-gap-backfill`
-
-**`话题关键事件注记（key-event markers）`**
-
-> 来源 change：`add-topic-key-event-markers`
-
-**`编排 / 修正工作面的候选读取`**
-
-> 来源 change：`unify-lane-workbench`
 
 
 ## 业务约束与不变量

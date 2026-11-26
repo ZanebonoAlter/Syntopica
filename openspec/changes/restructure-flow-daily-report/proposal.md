@@ -6,12 +6,12 @@
 
 ## Why
 
-`docs/reference/flow/daily-report.md` 555 行，链路设计 **322 行（58%）/ 14 块**。和刚做完的 semantic-board 同一个病：
+`docs/reference/flow/daily-report.md` 555 行，链路设计 **322 行（58%）/ 13 块**。和刚做完的 semantic-board 同一个病：
 
 | 现状 | 具体 |
 |---|---|
 | 按 change 切片 | 标题带 `add-daily-report-gap-backfill` / `add-event-story-heat` / `retire-story-adopt-event-metrics` / `widen-highlight-cluster-candidates` / `unify-lane-workbench` / `rework-workshop-into-radar-and-desk` / `thread-relations` / `replace-lane-lifeline-with-topic-events` |
-| 按技术层排 | 9 块「后端：…」+ 4 块「前端：…」——技术层不是功能族 |
+| 按技术层排 | 8 块「后端：…」+ 4 块「前端：…」+ 1 块「编排/修正…」——技术层不是功能族 |
 | 信息密度不均 | 「日报生成管线」37 行、「泳道态势结算」4 行、「话题关键事件注记」4 行 |
 
 **具体痛点**：想查「日报的今日重点怎么选题」要在 322 行里找 `story highlights` 那块；想查「缺口补填为什么不能覆盖已有报告」要翻到 `gap backfill` 块再读一段引用。
@@ -37,7 +37,7 @@
 
 ### 3. 红线节与其余节原样搬
 
-`## 业务约束与不变量`（**73 条红线**，全仓最多）节名与内容逐字不动；`## 代码入口`、`## 变更溯源` 同样不动。
+`## 业务约束与不变量`（**73 条编号条目**，`constraint-digest` 提取 71 条——2 条不符合顶层加粗句格式；全仓最多）节名与内容逐字不动；`## 代码入口`、`## 变更溯源` 同样不动。
 
 ## 不做的事
 

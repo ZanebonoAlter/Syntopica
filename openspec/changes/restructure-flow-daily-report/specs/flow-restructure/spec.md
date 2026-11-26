@@ -37,7 +37,7 @@ flow 文档的「链路设计」节 SHALL 按功能族组织，族划分与 `ope
 
 分界判据 SHALL 是「**换一种做法会不会错**」——会错即现行规则，不因其在讲历史而下沉。
 
-族内无决策记录时 SHALL 写一行「（暂无）」。
+族内无决策记录时 SHALL 写一行「（暂无）」，MUST NOT 留空节。
 
 #### Scenario: 现状与历史不混
 
@@ -61,7 +61,7 @@ flow 文档的「链路设计」节 SHALL 按功能族组织，族划分与 `ope
 
 ### Requirement: 红线节与变更溯源原文保留
 
-`## 业务约束与不变量` 节 SHALL 原样保留：节名 MUST NOT 变更，红线内容与编号顺序 MUST NOT 变更（`semantic-board` 39 条 / `daily-report` 73 条）。
+`## 业务约束与不变量` 节 SHALL 原样保留：节名 MUST NOT 变更，红线内容与编号顺序 MUST NOT 变更（`semantic-board` 39 条 / `daily-report` 73 条编号、注入 71 条）。
 
 `## 变更溯源`、`## 代码入口` 表 SHALL 原样保留。
 
@@ -73,7 +73,7 @@ flow 文档的「链路设计」节 SHALL 按功能族组织，族划分与 `ope
 #### Scenario: 注入不受影响
 
 - **WHEN** 重排后执行 `bash scripts/harness/constraint-digest.sh --brief --domains <域>`
-- **THEN** 输出 SHALL 与重排前逐字相同（`semantic-board` 39 条 / `daily-report` 73 条）
+- **THEN** 输出 SHALL 与重排前逐字相同（`semantic-board` 39 条 / `daily-report` 73 条编号、注入 71 条）
 
 ### Requirement: 搬迁不丢内容
 
@@ -81,6 +81,7 @@ flow 文档的「链路设计」节 SHALL 按功能族组织，族划分与 `ope
 - **正文内容零丢失**：原文每个非空行（块标题除外）在重排后 SHALL 存在；标题层级变化不计为丢失
 - 行数 SHALL NOT 作为判据：重排本身会新增结构行（族标题、层标题、spec 标注）
 - 术语 grep 计数前后一致（差异须逐个人工核对并说明）
+- **原文备份保留在可回退位置**（`git show <base>:<path>` 可取证，或仓库外备份）
 
 #### Scenario: 正文行对账
 
