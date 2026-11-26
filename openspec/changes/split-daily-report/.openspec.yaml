@@ -1,0 +1,5 @@
+schema: syntopica-ui
+created: 2026-11-26
+# daily-report-match-fallback 与 radar-pipeline-status 整体退役（条目全部迁入新族）。
+# daily-report-system 不退役——保留 21 条 A/E/F 组条目，只删搬走的 20 条。
+retire_capabilities: true

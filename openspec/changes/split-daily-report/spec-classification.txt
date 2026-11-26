@@ -1,0 +1,28 @@
+# Requirement 标题	business|impl（plan 重排不影响映射）
+日报收集对无板块归属 tag 兜底补算	business
+日报排除 direction_mismatch 标签	business
+日报生成 API — 异步触发	business
+日报生成 WebSocket 进度广播	business
+日报查询 API	business
+重新分桶 API	business
+日报时间线组件 BoardDailyReportTimeline（报纸布局）	business
+日报生成进度前端	business
+TagsPage 内容 Tab	business
+站内阅读预览的全屏层必须盖过宿主浮层	business
+阅读台线索文章直达站内阅读预览	business
+刊头「今日重点」空态可见性	business
+重点依据与正文定位	business
+雷达总览页右栏底部常驻管线状态块	business
+管线状态块的手动日报生成入口	business
+管线状态块的双队列清空判据	business
+管线状态块的缺口区与补齐入口	business
+重新生成今日日报的二次确认	business
+定时任务复用	impl
+缺档日报自动补档	business
+日报重建窗口守卫	business
+日报推荐与历史兼容	business
+日报调度窗口的生成时刻与兜底时刻可读	business
+日报终态通知的计数口径与 WS 终态消息一致	business
+日报缺口可见性	business
+日报缺口异步补填	business
+补填运行留档与终态告知	business

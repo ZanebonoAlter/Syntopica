@@ -1,0 +1,23 @@
+# 族名	源 capability	Requirement 标题（* = 全取）
+daily-report-system	daily-report-match-fallback	*
+daily-report-interface	daily-report-system	日报生成 API — 异步触发
+daily-report-interface	daily-report-system	日报生成 WebSocket 进度广播
+daily-report-interface	daily-report-system	日报查询 API
+daily-report-interface	daily-report-system	重新分桶 API
+daily-report-interface	daily-report-system	日报时间线组件 BoardDailyReportTimeline（报纸布局）
+daily-report-interface	daily-report-system	日报生成进度前端
+daily-report-interface	daily-report-system	TagsPage 内容 Tab
+daily-report-interface	daily-report-system	站内阅读预览的全屏层必须盖过宿主浮层
+daily-report-interface	daily-report-system	阅读台线索文章直达站内阅读预览
+daily-report-interface	daily-report-system	刊头「今日重点」空态可见性
+daily-report-interface	daily-report-system	重点依据与正文定位
+daily-report-interface	radar-pipeline-status	*
+daily-report-ops	daily-report-system	定时任务复用
+daily-report-ops	daily-report-system	缺档日报自动补档
+daily-report-interface	daily-report-system	日报重建窗口守卫
+daily-report-ops	daily-report-system	日报推荐与历史兼容
+daily-report-ops	daily-report-system	日报调度窗口的生成时刻与兜底时刻可读
+daily-report-interface	daily-report-system	日报终态通知的计数口径与 WS 终态消息一致
+daily-report-ops	daily-report-system	日报缺口可见性
+daily-report-ops	daily-report-system	日报缺口异步补填
+daily-report-ops	daily-report-system	补填运行留档与终态告知
