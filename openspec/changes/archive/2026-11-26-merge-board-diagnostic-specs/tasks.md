@@ -26,16 +26,16 @@
 - [x] 4.0 写 `.openspec.yaml`（`retire_capabilities: true`）
 - [x] 4.1 生成 2 个族的 `## ADDED Requirements`
 - [x] 4.2 生成 4 个旧 capability 的 `## REMOVED Requirements`
-- [ ] 4.3 归档前摘掉 4 个被退役 spec 的 `<!-- domain: -->`（openspec 探针实测 `unaccountedContent` 只有 marker 一行，摘掉即充分）；**与 8.2 同一个提交**，摘除不单独 commit
-- [ ] 4.4 **归档后**断言 4 个目录已自动退役（`retire_capabilities` 生效条件：无 leftover 内容）
-- [ ] 4.5 **归档后** `openspec validate --specs` → 156 全过（158 − 4 + 2）
+- [x] 4.3 归档前摘掉 4 个被退役 spec 的 `<!-- domain: -->`（openspec 探针实测 `unaccountedContent` 只有 marker 一行，摘掉即充分）；**与 8.2 同一个提交**，摘除不单独 commit
+- [x] 4.4 **归档后**断言 4 个目录已自动退役（`retire_capabilities` 生效条件：无 leftover 内容）
+- [x] 4.5 **归档后** `openspec validate --specs` → 156 全过（158 − 4 + 2）
 
 ## 5. 验证
 
-- [ ] 5.1 `domain-history.sh semantic-board` → 第 6 段列出指向 4 个旧 capability 的孤儿 delta
-- [ ] 5.2 `check-standards.sh` → 156 个 spec marker 全合法
-- [ ] 5.3 抽查 6 条来源注释，grep archive 确认 change 与日期属实
-- [ ] 5.4 确认 `radar-pipeline-status` 未被触碰（文件 mtime / git diff 为空）
+- [x] 5.1 `domain-history.sh semantic-board` → 第 6 段列出指向 4 个旧 capability 的孤儿 delta
+- [x] 5.2 `check-standards.sh` → 156 个 spec marker 全合法
+- [x] 5.3 抽查 6 条来源注释，grep archive 确认 change 与日期属实
+- [x] 5.4 确认 `radar-pipeline-status` 未被触碰（文件 mtime / git diff 为空）
 
 ## 6. review
 
@@ -45,16 +45,16 @@
 ## 7. 文档
 
 - [x] 7.1 `doc-authoring.md` 的族级约定已在上一 change 落地，本次无需改
-- [ ] 7.2 `docs/research/process-arch-rework/issues.md` 回填 ISS-04 进度（第二族已合并）
-- [ ] 7.3 `docs/reference/flow/semantic-board.md` 变更溯源表加本 change 一行
-- [ ] 7.4 旧 capability 名的路径引用：docs/reference 40 余处均为 change 名溯源不需改；**实质路径引用 1 处**，在在途 change 的探索笔记里（非 main spec，不阻断本 change）
+- [x] 7.2 `docs/research/process-arch-rework/issues.md` 回填 ISS-04 进度（第二族已合并）
+- [x] 7.3 `docs/reference/flow/semantic-board.md` 变更溯源表加本 change 一行
+- [x] 7.4 旧 capability 名的路径引用：docs/reference 40 余处均为 change 名溯源不需改；**实质路径引用 1 处**，在在途 change 的探索笔记里（非 main spec，不阻断本 change）
 
 ## 8. 归档
 
-- [ ] 8.1 `archive-readiness.sh merge-board-diagnostic-specs` 六项全绿
-- [ ] 8.2 `openspec archive merge-board-diagnostic-specs`
-- [ ] 7.5 **登记后续 change**：修 `tag-matching` 里「（详见 board-direction-check）」死引用 + 盘点 3 条消费方契约（日报排除 direction_mismatch / 文章 API 过滤 / match detail 返回 direction_sim）在 `tag-matching` 与 `board-diagnostics` 两侧的重复落点（R-2，跨族引用要等相邻族都收口后统一扫）
-- [ ] 8.3 归档后给 2 个新族补 marker：`board-diagnostics` → `semantic-board`；`board-research` → `semantic-board, data-enrichment`
+- [x] 8.1 `archive-readiness.sh merge-board-diagnostic-specs` 六项全绿
+- [x] 8.2 `openspec archive merge-board-diagnostic-specs`
+- [x] 7.5 **登记后续 change**：修 `tag-matching` 里「（详见 board-direction-check）」死引用 + 盘点 3 条消费方契约（日报排除 direction_mismatch / 文章 API 过滤 / match detail 返回 direction_sim）在 `tag-matching` 与 `board-diagnostics` 两侧的重复落点（R-2，跨族引用要等相邻族都收口后统一扫）
+- [x] 8.3 归档后给 2 个新族补 marker：`board-diagnostics` → `semantic-board`；`board-research` → `semantic-board, data-enrichment`
 
 ## 9. 测试
 
@@ -78,6 +78,6 @@
 
 ## 11. 验收
 
-- [ ] A 两族各自包含原成员的全部 Requirement（22 / 36）
-- [ ] B 每条带 `<!-- from: -->`，可 grep archive 验证
-- [ ] C 4 个旧 capability 已被自动退役；`radar-pipeline-status` 原样保留
+- [x] A 两族各自包含原成员的全部 Requirement（22 / 36）
+- [x] B 每条带 `<!-- from: -->`，可 grep archive 验证
+- [x] C 4 个旧 capability 已被自动退役；`radar-pipeline-status` 原样保留
