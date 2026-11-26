@@ -288,3 +288,66 @@ describe('ObservationMatrixLaneRow — 行头就地改名', () => {
     expect(notifyWarn).toHaveBeenCalledWith('泳道名不能为空')
   })
 })
+
+/**
+ * 名称看全卡片（2026-11-26 用户反馈「泳道名展示不全」）：标签列放不下全名时，星停/聚焦出卡；
+ * 名字放得下时零噪声；卡片只是视觉冗余（全名已在 `aria-label`，卡片 `aria-hidden`）。
+ */
+describe('ObservationMatrixLaneRow — 名称看全', () => {
+  function laneNameEl(): HTMLElement {
+    return document.body.querySelector('.omx-lane-name') as HTMLElement
+  }
+
+  function stubWidth(el: HTMLElement, scrollWidth: number, clientWidth: number): void {
+    Object.defineProperty(el, 'scrollWidth', { value: scrollWidth, configurable: true })
+    Object.defineProperty(el, 'clientWidth', { value: clientWidth, configurable: true })
+  }
+
+  it('不再挂原生 title：全名只在 aria-label 与卡片里', () => {
+    mountRow()
+    const btn = document.body.querySelector('[data-testid="matrix-lane-10"]') as HTMLElement
+    expect(btn.getAttribute('title')).toBeNull()
+    expect(btn.getAttribute('aria-label')).toContain(ROW.label)
+  })
+
+  it('悬停被截断的名 → 出卡（全名 + 本行指标）；放大字号后键盘聚焦同权', async () => {
+    vi.useFakeTimers()
+    mountRow()
+    const btn = document.body.querySelector('[data-testid="matrix-lane-10"]') as HTMLButtonElement
+    stubWidth(laneNameEl(), 300, 120)
+
+    btn.dispatchEvent(new Event('mouseenter'))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushPromises()
+
+    const card = document.body.querySelector('[data-testid="matrix-lane-name-card"]')
+    expect(card).not.toBeNull()
+    expect(card!.textContent).toContain(ROW.label)
+    expect(card!.textContent).toContain(`${ROW.clueTotal} 条线索`)
+    expect(card!.textContent).toContain(`${ROW.sectionTotal} 个主题桶`)
+    expect(card!.getAttribute('aria-hidden')).toBe('true')
+
+    btn.dispatchEvent(new Event('focus'))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="matrix-lane-name-card"]')).not.toBeNull()
+
+    btn.dispatchEvent(new Event('blur'))
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="matrix-lane-name-card"]')).toBeNull()
+    vi.useRealTimers()
+  })
+
+  it('名字放得下（无截断）→ 不出卡', async () => {
+    vi.useFakeTimers()
+    mountRow()
+    const btn = document.body.querySelector('[data-testid="matrix-lane-10"]') as HTMLButtonElement
+    stubWidth(laneNameEl(), 120, 120)
+
+    btn.dispatchEvent(new Event('mouseenter'))
+    await vi.advanceTimersByTimeAsync(300)
+    await flushPromises()
+    expect(document.body.querySelector('[data-testid="matrix-lane-name-card"]')).toBeNull()
+    vi.useRealTimers()
+  })
+})

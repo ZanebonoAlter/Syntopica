@@ -384,16 +384,23 @@ function onSelectCell(payload: { row: ObservationLaneRow, cell: MatrixCellView, 
 
 .omx-grid {
   display: grid;
-  /* ≤31：单屏网格，日期两行显示（完整日期仍在 title/aria），不制造容器内横滚 */
-  grid-template-columns: minmax(7rem, 10rem) repeat(var(--matrix-cols, 14), minmax(0, 1fr));
+  /* ≤31：单屏网格，日期两行显示（完整日期仍在 title/aria），不制造容器内横滚。
+     标签列宽（2026-11-26 用户反馈泳道名展示不全）：先把日格留到 2.6rem（两位数 + 日期短格式的下限），
+     剩下的全给标签列，再卡上下界 7rem / 19rem（约 20 个汉字）。旧值 `minmax(7rem, 10rem)` 是写死上限：
+     1920 屏上日格 70px 只放 1–3 个数（一半白用电、池），标签列却卡在 160px。
+     实测（1920）：标签列 304px、全泳道名零截断、日格 67.6px；1600：304px / 零截断；1440：262px。 */
+  grid-template-columns:
+    minmax(7rem, max(10rem, min(19rem, calc(100% - var(--matrix-cols, 14) * 2.6rem))))
+    repeat(var(--matrix-cols, 14), minmax(0, 1fr));
   gap: 0.12rem;
   align-items: center;
   min-width: 0;
 }
 
-/* >31：契约允许仅矩阵容器内横滚；标签列 sticky，日期保留单行短格式 */
+/* >31：契约允许仅矩阵容器内横滚；标签列 sticky，日期保留单行短格式。
+   此档容器是 `min-width: max-content`（宽不定的百分比会退化成 auto），故只给固定 rem 上限。 */
 .omx-grid.is-scrollable {
-  grid-template-columns: minmax(9rem, 12rem) repeat(var(--matrix-cols, 14), minmax(2.1rem, 1fr));
+  grid-template-columns: minmax(9rem, 13rem) repeat(var(--matrix-cols, 14), minmax(2.1rem, 1fr));
   gap: 0.24rem;
   min-width: max-content;
 }

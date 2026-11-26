@@ -28,9 +28,14 @@
  * 本行**可见窗**内的归一深浅，行内峰值最深、0/未知不着色）；颜色只是冗余强化通道，格值数字与
  * title/aria 仍是唯一信息承载。本组件不自己算分母（归一分母由父/纯模型注入）。
  *
+ * 名称看全（2026-11-26 用户反馈「泳道名展示不全」）：标签列宽有限，名称省略号截断后**不再挂原生
+ * `title`**（1s 延迟、键盘不出、长名照样截），改用 `useNameHoverCard` 的悬停/聚焦卡片：只对被截断
+ * 的名字出卡，卡片内容 = 全名 + 本行指标；`aria-label` 仍带全名与指标，卡片 `aria-hidden`。
  */
 import { computed, nextTick, ref } from 'vue'
 import { useNotify } from '~/composables/useNotify'
+import { Z_INDEX } from '~/components/ui/layout-contract'
+import { useNameHoverCard } from '../../composables/useNameHoverCard'
 import { clueMix, type MatrixCellView, type ObservationLaneRow } from './observationLanes'
 import RowActionMenu from './RowActionMenu.vue'
 import type { RowActionMenuItem } from './rowActionMenu'
@@ -139,6 +144,35 @@ function rowTitle(): string {
   return `${props.row.label}：${props.row.clueTotal} 条线索 · ${props.row.sectionTotal} 个主题桶`
 }
 
+/* ── 名称看全卡片（悬停/聚焦；卡片是视觉冗余，不重复播报） ── */
+const {
+  visible: nameCardVisible,
+  setFloating: setNameCardEl,
+  floatingStyles: nameCardStyles,
+  show: showNameCard,
+  hide: hideNameCard,
+} = useNameHoverCard({ placement: 'bottom-start' })
+
+/** 卡片元信息行（与 `rowTitle` 同一套指标，只是拆成「全名 / 指标」两行排版）。 */
+const nameCardMeta = computed(() => {
+  if (props.coverage) {
+    return props.coverageLastSeen
+      ? `窗口内未进日报 · 最近一次 ${props.coverageLastSeen.slice(5)}`
+      : '窗口内未进日报 · 无记录'
+  }
+  const parts = [`${props.row.clueTotal} 条线索`, `${props.row.sectionTotal} 个主题桶`]
+  if (props.row.watchLinked) parts.push('已追踪')
+  if (props.dormant) parts.push('休眠')
+  return parts.join(' · ')
+})
+
+/** 名称文本元素（`scrollWidth > clientWidth` 即判定为被省略号截断）。 */
+const nameTextRef = ref<HTMLElement | null>(null)
+
+function peekName(event: Event): void {
+  showNameCard(event.currentTarget as HTMLElement, nameTextRef.value)
+}
+
 function isToday(date: string): boolean {
   return date === props.today
 }
@@ -194,14 +228,17 @@ function cellStyle(cell: MatrixCellView): Record<string, string> {
       type="button"
       class="omx-lane-name-btn"
       :class="{ 'is-selected': row.topicId === selectedLaneId, 'is-dormant': dormant }"
-      :title="rowTitle()"
       :aria-label="rowTitle()"
       :aria-pressed="row.topicId === selectedLaneId"
       :data-testid="`matrix-lane-${row.topicId}`"
       :data-lane-id="row.topicId"
+      @mouseenter="peekName"
+      @mouseleave="hideNameCard"
+      @focus="peekName"
+      @blur="hideNameCard"
       @click="emit('selectLane', row.topicId)"
     >
-      <span class="omx-lane-name">{{ row.label }}</span>
+      <span ref="nameTextRef" class="omx-lane-name">{{ row.label }}</span>
       <span v-if="dormant" class="omx-lane-dormant-tag">休眠</span>
       <span v-else-if="row.watchLinked" class="omx-lane-watch">追踪</span>
     </button>
@@ -211,8 +248,10 @@ function cellStyle(cell: MatrixCellView): Record<string, string> {
       :aria-label="rowTitle()"
       :data-testid="`matrix-lane-${row.topicId}`"
       :data-lane-id="row.topicId"
+      @mouseenter="peekName"
+      @mouseleave="hideNameCard"
     >
-      <span class="omx-lane-name-text">{{ row.label }}</span>
+      <span ref="nameTextRef" class="omx-lane-name-text">{{ row.label }}</span>
     </span>
     <RowActionMenu
       :items="laneMenuItems"
@@ -238,6 +277,21 @@ function cellStyle(cell: MatrixCellView): Record<string, string> {
     @click="emit('selectCell', { row, cell, date: axis[cellIndex]! })"
   >{{ cell.text }}</button>
 
+  <!-- 名称看全卡片：Teleport 出矩阵滚动容器（`overflow-x:auto` 会裁掉浮层）。
+       卡片只承担视觉冗余，全名与指标已在名称按钮的 `aria-label` 里。 -->
+  <Teleport to="body">
+    <div
+      v-if="nameCardVisible"
+      :ref="setNameCardEl"
+      class="omx-lane-card"
+      :style="[nameCardStyles, { zIndex: Z_INDEX.toast }]"
+      aria-hidden="true"
+      data-testid="matrix-lane-name-card"
+    >
+      <span class="omx-lane-card-name">{{ row.label }}</span>
+      <span class="omx-lane-card-meta">{{ nameCardMeta }}</span>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped src="./observationMatrixRows.css" />

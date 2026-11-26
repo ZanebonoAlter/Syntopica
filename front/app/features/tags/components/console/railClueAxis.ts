@@ -154,11 +154,11 @@ export function buildRailBoardRows(
 }
 
 /**
- * 行 title / aria：名称 + 标签挂载数 + 版块锚点日 + 逐日明细。
- * 治理数据退到 title（行内不占数字位）；未取到的位置写「未取到」而不是 0。
+ * 行治理/口径明细（名称**除开**的 ` · ` 分段）：名称看全卡片把它单独排成一行小字。
+ * 治理数据退到浮层/aria（行内不占数字位）；未取到的位置写「未取到」而不是 0。
  */
-export function railRowTitle(row: RailBoardRow, dates: readonly string[]): string {
-  const parts: string[] = [row.label]
+export function railRowMeta(row: RailBoardRow, dates: readonly string[]): string[] {
+  const parts: string[] = []
   if (row.tagCount !== null) parts.push(`标签挂载 ${row.tagCount}`)
   // 无锚点 ≠ 本次未取到（review R-5）：前者是「该版块没有日报锚点」，后者是「这次没取到」。
   if (row.anchorDate !== null) parts.push(`数据截至 ${row.anchorDate}`)
@@ -168,5 +168,10 @@ export function railRowTitle(row: RailBoardRow, dates: readonly string[]): strin
     return `${date.slice(5)}：${cell === null ? '未取到' : cell}`
   })
   parts.push(detail.join(' · '))
-  return parts.join(' · ')
+  return parts
+}
+
+/** 行 title / aria：名称 + 标签挂载数 + 版块锚点日 + 逐日明细。 */
+export function railRowTitle(row: RailBoardRow, dates: readonly string[]): string {
+  return [row.label, ...railRowMeta(row, dates)].join(' · ')
 }

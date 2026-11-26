@@ -225,6 +225,8 @@ UI 复审 MUST NOT 只覆盖本次 change 新增组件/原型对照；涉及共�
 
 **`add-other-topics-to-context-rail` 的增补**：L1 `/tags/:boardId` 右轨「当日日报」块**内部**新增「当日其他话题」子块（当日未入正式/休眠泳道的分区：标题 + 该分区线索数 + 归属状态词）——子块挂在**既有顶层区块内**，右轨仍是版块体检 / 当日日报 / 话题追踪 / 构成候选 / 来源构成五块，**不新增第五区**，**四档布局模式枚举不变**、页面仍为三栏常驻 + `overflow: hidden`，故仍属本条固定视口栅格例外、不触发上段的 `ui-approval` 重置条件；子块默认隐藏、仅 `@media (min-width: 1440px)` 显示（1200–1439.98px 右轨随页面流动，出该子块会改变该视口下的页面高度，故该视口不出现），窄于 1440px 一律不渲染该子块（来源：`add-other-topics-to-context-rail` 的 `ui-design.md`）。
 
+**泳道矩阵标签列宽 + 名称看全（2026-11-26 直接修复，用户当场要求不开 change）**：L1 矩阵第一列 MUST 按「先给日格下限、余量归名字」分配，不得再写死上限——`grid-template-columns: minmax(7rem, max(10rem, min(19rem, calc(100% - var(--matrix-cols, 14) * 2.6rem))))`：日格按 2.6rem 保底（两位数 + `MM/DD` 短格式的下限），余量全给标签列，再用 7rem / 19rem 卡上下界（约 20 个汉字）；>31 天档容器是 `min-width: max-content`（宽不定，百分比/calc 会退化成 auto），只给固定 `minmax(9rem, 13rem)`。名称仍被省略号截断时 SHALL 用悬停/聚焦卡片补全名与本行指标（`useNameHoverCard`：只对真被截断的文本出卡、不挂原生 `title`、Teleport + `fixed` 免被矩阵滚动容器裁剪、层级取 `Z_INDEX.toast`）；左栏版块名（栏宽仍为固定 17rem）同款浮层。实测 1920 / 1600 全泳道名零截断、1440 标签列 262px；再收窄就会退回「日格挤名字」（旧 `minmax(7rem, 10rem)` 在 1920 屏上标签列只有 160px、日格 70px 只放 1–3 位数）。
+
 ## 存量迁移
 
 - **不迁移**：存量页面的自由宽度与旧 `width` 弹窗保持现状，仅在主动重构该界面时按本契约收敛（避免大量用户可见变化混入其他 change）。

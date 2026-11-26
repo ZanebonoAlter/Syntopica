@@ -13,9 +13,15 @@
  *  - 「未取到」（斜纹）与「安静」（真实 0 的空槽）视觉上天然分开。
  *
  * 行序保持 `GET /semantic-boards` 的 display_order（MUST NOT 因活跃度重排）。
+ *
+ * 名称看全（2026-11-26）：栏宽是布局契约写死的 17rem，名称省略号截断后**不再挂原生 `title`**，
+ * 改用 `useNameHoverCard` 悬停/聚焦卡（只对被截断的名字出卡）：全名 + 治理/逐日明细两段。
+ * `aria-label` 仍是全名与明细的唯一无障碍承载。
  */
 import { Icon } from '@iconify/vue'
-import { RAIL_AXIS_DAYS, railCellMix, railRowTitle, type RailBoardRow } from './railClueAxis'
+import { Z_INDEX } from '~/components/ui/layout-contract'
+import { useNameHoverCard } from '../../composables/useNameHoverCard'
+import { RAIL_AXIS_DAYS, railCellMix, railRowMeta, railRowTitle, type RailBoardRow } from './railClueAxis'
 
 const props = defineProps<{
   /** 左轨行视图模型（共同轴重对齐后的纯视图模型）。 */
@@ -40,6 +46,28 @@ const emit = defineEmits<{
 /** 行 title / aria：名称 + 标签挂载数 + 锚点日 + 逐日明细。 */
 function rowTitle(row: RailBoardRow): string {
   return railRowTitle(row, props.axisDates)
+}
+
+/* ── 名称看全卡片（悬停/聚焦；卡片是视觉冗余，不重复播报） ── */
+const {
+  visible: nameCardVisible,
+  setFloating: setNameCardEl,
+  floatingStyles: nameCardStyles,
+  show: showNameCard,
+  hide: hideNameCard,
+} = useNameHoverCard({ placement: 'right-start' })
+
+/** 当前悬停/聚焦行的卡片内容（同一时刻只有一行，共用一个卡片实例）。 */
+const peeked = ref<RailBoardRow | null>(null)
+
+function peekName(event: Event, row: RailBoardRow): void {
+  const host = event.currentTarget as HTMLElement
+  peeked.value = row
+  showNameCard(host, host.querySelector<HTMLElement>('.rail-item-name'))
+}
+
+function peekedMeta(row: RailBoardRow): string {
+  return railRowMeta(row, props.axisDates).join(' · ')
 }
 
 /** 单格色阶混入比例（行内峰值归一；复用矩阵同一套算法）。 */
@@ -97,9 +125,12 @@ function cellStyle(row: RailBoardRow, cell: number | null): Record<string, strin
         type="button"
         class="rail-item"
         :class="{ 'is-active': row.boardId === selectedBoardId }"
-        :title="rowTitle(row)"
         :aria-label="rowTitle(row)"
         :data-testid="`board-rail-item-${row.boardId}`"
+        @mouseenter="peekName($event, row)"
+        @mouseleave="hideNameCard"
+        @focus="peekName($event, row)"
+        @blur="hideNameCard"
         @click="emit('select', row.boardId)"
       >
         <span class="rail-item-name">{{ row.label }}</span>
@@ -126,6 +157,21 @@ function cellStyle(row: RailBoardRow, cell: number | null): Record<string, strin
       <Icon icon="mdi:plus" width="14" />
       新建版块
     </button>
+
+    <!-- 名称看全卡片：栏宽固定，长名只能靠悬停/聚焦看全（卡片只承担视觉冗余）。 -->
+    <Teleport to="body">
+      <div
+        v-if="nameCardVisible && peeked"
+        :ref="setNameCardEl"
+        class="rail-name-card"
+        :style="[nameCardStyles, { zIndex: Z_INDEX.toast }]"
+        aria-hidden="true"
+        data-testid="board-rail-name-card"
+      >
+        <span class="rail-name-card-title">{{ peeked.label }}</span>
+        <span class="rail-name-card-meta">{{ peekedMeta(peeked) }}</span>
+      </div>
+    </Teleport>
   </aside>
 </template>
 
@@ -404,5 +450,32 @@ function cellStyle(row: RailBoardRow, cell: number | null): Record<string, strin
   .rail-item::before {
     transition: none;
   }
+}
+
+/* 名称看全卡片（2026-11-26）：栏宽固定，长名靠悬停/聚焦看全。卡片 Teleport 在 body，
+   层级由组件按 `Z_INDEX` 档位表内联绑定——此处不写层级数字。 */
+.rail-name-card {
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  max-width: 24rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 6px;
+  background: var(--color-bg-elevated);
+  box-shadow: 0 8px 20px rgb(0 0 0 / 0.28);
+  color: var(--color-text-primary);
+  line-height: 1.4;
+}
+
+.rail-name-card-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.rail-name-card-meta {
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
 }
 </style>

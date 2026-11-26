@@ -210,3 +210,31 @@
 .omx-lane.is-dormant {
   opacity: 0.55;
 }
+
+/* 名称看全卡片（2026-11-26 用户反馈「泳道名展示不全」）：标签列放不下全名时，悬停/聚焦出卡
+   显示全名与本行指标。卡片 Teleport 到 body（矩阵滚动容器会裁剪浮层），层级由组件按
+   `Z_INDEX` 档位表内联绑定——此处不写层级数字。 */
+.omx-lane-card {
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-width: 22rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 6px;
+  background: var(--color-bg-elevated);
+  box-shadow: 0 8px 20px rgb(0 0 0 / 0.28);
+  color: var(--color-text-primary);
+  line-height: 1.4;
+}
+
+.omx-lane-card-name {
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.omx-lane-card-meta {
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}
