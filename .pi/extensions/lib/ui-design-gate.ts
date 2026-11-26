@@ -16,7 +16,7 @@
 /** 新 UI 工作流 schema 名（openspec/schemas/syntopica-ui）；其余（含 spec-driven/null）视为 legacy */
 export const UI_SCHEMA = "syntopica-ui";
 
-/** spec 声明的 reasonCode 白名单（九个，稳定有界值；顺序即文档序） */
+/** spec 声明的 reasonCode 白名单（十一个，稳定有界值；顺序即文档序） */
 export const UI_REASON_CODES = [
 	"ui-impact-missing",
 	"ui-impact-mismatch",
@@ -25,6 +25,8 @@ export const UI_REASON_CODES = [
 	"ui-approval-pending",
 	"ui-verification-missing",
 	"ui-dispatch-allowed",
+	"ui-pseudocode-missing",
+	"ui-chain-out-of-order",
 	"explicit-bypass",
 	"ui-gate-check-failed",
 ] as const;
@@ -48,6 +50,8 @@ const TOOL_SIDE_BLOCK_CODES: readonly string[] = [
 	"ui-impact-mismatch",
 	"ui-design-missing",
 	"ui-prototype-missing",
+	"ui-pseudocode-missing",
+	"ui-chain-out-of-order",
 ];
 
 /**
@@ -347,6 +351,8 @@ export interface UiContractInput {
 	tasksMd: string | null;
 	/** ui-design.md 文本；null = 文件缺失/读不到 */
 	uiDesignText: string | null;
+	/** design.md 文本（业务口径载体：伪代码节检查用）；null = 文件缺失/读不到 */
+	designMd?: string | null;
 	/** change 目录递归普通文件清单（相对 change 根，正斜杠） */
 	changeDirFiles: readonly string[];
 }
@@ -482,7 +488,123 @@ export function evaluateUiContract(input: UiContractInput): UiContractVerdict {
 				"major UI 原型尚未获得用户明确确认——回到 requirements 档展示 ui-prototype/ 原型并请求确认后，把 ui-approval 改为 approved",
 		};
 	}
+	// ISS-02：业务先定。major 批准的那一刻，业务口径必须已经存在（伪代码节）——
+	// 否则「业务错误到实现阶段才发现」会重现。业务载体只认 design.md，
+	// 因为它不能被原型阶段「顺手改」。允许 N/A，但理由必须非空。
+	const pseudo = readPseudocodeSection(input.designMd ?? null);
+	if (pseudo.kind === "missing") {
+		return {
+			kind: "block",
+			reasonCode: "ui-pseudocode-missing",
+			detail:
+				"major 档已批准，但 design.md 缺 `## 核心逻辑（伪代码）` 节——业务口径必须先定稿（无控制流变化时写 `N/A：<理由>`）",
+		};
+	}
+	if (pseudo.kind === "na-empty") {
+		return {
+			kind: "block",
+			reasonCode: "ui-pseudocode-missing",
+			detail:
+				"`## 核心逻辑（伪代码）` 写了 N/A 但理由为空——写一句大白话说明为什么这个 change 没有控制流变化",
+		};
+	}
 	return { kind: "pass" };
+}
+
+/** 伪代码节探测结果（ISS-02；纯函数，白盒直测点） */
+export type PseudocodeProbe =
+	| { kind: "ok" }
+	| { kind: "na-empty" }
+	| { kind: "missing" };
+
+/** 伪代码节标题（与开发执行规范 §13.4 一致） */
+const PSEUDOCODE_HEADING = "## 核心逻辑（伪代码）";
+
+/**
+ * 读 design.md 的伪代码节（ISS-02 D1）：三种结果——
+ * - missing：整节不存在（含 designMd 为 null）
+ * - na-empty：写了 `N/A`／`N/A:` 但没给理由
+ * - ok：节内有三行以上实质内容，或 `N/A：<非空理由>`
+ */
+export function readPseudocodeSection(designMd: string | null): PseudocodeProbe {
+	if (!designMd) return { kind: "missing" };
+	const lines = designMd.split(/\r?\n/);
+	const start = lines.findIndex((l) => l.trim() === PSEUDOCODE_HEADING);
+	if (start < 0) return { kind: "missing" };
+	const body: string[] = [];
+	for (let i = start + 1; i < lines.length; i++) {
+		const l = lines[i];
+		if (/^##\s/.test(l)) break; // 下一个同级标题
+		body.push(l);
+	}
+	const text = body.join("\n").trim();
+	if (text.length === 0) return { kind: "missing" };
+	// N/A 形态：开头就是 N/A（允许全宽冒号、半角冒号、空格分隔）
+	const na = text.match(/^N\/A\s*[：:]?\s*([\s\S]*)$/i);
+	if (na) {
+		const reason = (na[1] ?? "").replace(/^[\s·\-—]+/, "").trim();
+		return reason.length >= 4 ? { kind: "ok" } : { kind: "na-empty" };
+	}
+	return { kind: "ok" };
+}
+
+/**
+ * 原型产出物依赖链（ISS-02 D2）：只对 `ui-impact: major` 强制，判的是「文件在不在」——
+ * 不靠 agent 申报阶段（实测 38:0：stage marker 从未被写，判定形同虚设）。
+ *
+ * L-1 design.md 伪代码 → L0 ui-design.md 八节（由 evaluateUiContract 保证：八节齐全才 pass，
+ *   故本函数不再重复查）→ L1 ui-prototype/skeleton/ → L2 ui-prototype/index.html →
+ * L3 ui-prototype/fixture.json
+ *
+ * 出口：ui-design.md 写 `<!-- ui-skip: skeleton(理由) -->` / `<!-- ui-skip: data(理由) -->`
+ * 且理由非空，可跳过对应环节（显式留痕，不静默）。
+ *
+ * 返回 null = 允许写入；字符串 = 阻断理由。
+ */
+export function checkPrototypeChain(
+	input: UiContractInput,
+	relPathFromChangeRoot: string,
+): string | null {
+	const declared = parseUiImpactDeclaration(input.proposalText);
+	if (declared !== "major") return null; // minor/none 不强制骨架链
+
+	const p = relPathFromChangeRoot.replaceAll("\\", "/").replace(/^\.\//, "");
+	if (p !== "ui-prototype" && !p.startsWith("ui-prototype/")) return null;
+
+	const uiDesign = input.uiDesignText ?? "";
+	const isSkeleton = p.startsWith("ui-prototype/skeleton/");
+
+	// 第 2 环：L1 骨架先行（写非 skeleton 文件时要求 skeleton/ 已有内容）
+	if (!isSkeleton && !hasSkipMarker(uiDesign, "skeleton")) {
+		const hasSkeleton = input.changeDirFiles.some((f) =>
+			f.startsWith("ui-prototype/skeleton/"),
+		);
+		if (!hasSkeleton) {
+			return "原型写入被挡：缺 L1 骨架（ui-prototype/skeleton/ 至少 1 个文件）—— 先出空壳截图级的骨架，再写完整原型；确实不需要骨架时在 ui-design.md 写 `<!-- ui-skip: skeleton(理由) -->`";
+		}
+	}
+
+	// 第 3 环：L2 原型先行（写 fixture 时要求 index.html 已在）
+	if (p === "ui-prototype/fixture.json" && !hasSkipMarker(uiDesign, "data")) {
+		const hasPrototype = input.changeDirFiles.includes("ui-prototype/index.html");
+		if (!hasPrototype) {
+			return "原型写入被挡：缺 L2 可点原型（ui-prototype/index.html）—— 先出交互原型再灌 fixture 数据；确实不需要时写 `<!-- ui-skip: data(理由) -->`";
+		}
+	}
+
+	return null;
+}
+
+/** `<!-- ui-skip: <环>(理由) -->` 是否存在且理由非空（理由不解析，存在即豁免，风格对齐 doc-impact-excuse） */
+export function hasSkipMarker(uiDesignText: string, ring: string): boolean {
+	const re = new RegExp(
+		`<!--\\s*ui-skip\\s*:\\s*${ring}\\s*\\(([^)]*)\\)\\s*-->`,
+		"g",
+	);
+	for (const m of uiDesignText.matchAll(re)) {
+		if ((m[1] ?? "").trim().length > 0) return true;
+	}
+	return false;
 }
 
 /**
@@ -605,6 +727,26 @@ export function decideUiToolGate(input: UiToolGateInput): UiToolDecision {
 	}
 
 	if (verdict.kind === "pass") {
+		// ISS-02：合同 OK 也要按产出物依赖链顺序写（L-1 伪代码 → L0 三节 →
+		// L1 骨架 → L2 原型 → L3 数据）。只对 major 强制；判的是文件在不在，
+		// 不靠 agent 申报阶段（实测 stage marker 从未被写）。
+		if (tool.kind === "mutation" && tool.targetPath !== null) {
+			const rel = tool.targetPath.startsWith(`openspec/changes/${input.boundChange}/`)
+				? tool.targetPath.slice(`openspec/changes/${input.boundChange}/`.length)
+				: null;
+			const chain = rel ? checkPrototypeChain(input, rel) : null;
+			if (chain) {
+				return {
+					action: "block",
+					reasonCode: "ui-chain-out-of-order",
+					message: [
+						`⛔ [ui-design-gate] 「${input.boundChange}」原型产出物越级（reasonCode: ui-chain-out-of-order），本次写入已阻断。`,
+						`缺失项：${chain}`,
+						"顺序：design.md 伪代码 → ui-design.md 三节 → ui-prototype/skeleton/ → ui-prototype/index.html → ui-prototype/fixture.json。",
+					].join("\n"),
+				};
+			}
+		}
 		return { action: "allow", silent: true, verdict };
 	}
 

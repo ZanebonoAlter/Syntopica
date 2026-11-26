@@ -153,6 +153,7 @@ async function check(
 		proposalText: safeRead(join(changeDir, "proposal.md")),
 		tasksMd: safeRead(join(changeDir, "tasks.md")),
 		uiDesignText: safeRead(join(changeDir, "ui-design.md")),
+		designMd: safeRead(join(changeDir, "design.md")),
 		changeDirFiles: listRegularFiles(changeDir),
 		stageFamily: stageInfo.stageFamily,
 		boundChange,

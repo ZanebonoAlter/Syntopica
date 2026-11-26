@@ -44,6 +44,9 @@ const {
 	changeNameFromPath,
 	relInsideChange,
 	checkStageScope,
+	checkPrototypeChain,
+	readPseudocodeSection,
+	hasSkipMarker,
 } = require('./.uig.cjs');
 
 const checks = [];
@@ -100,13 +103,26 @@ const UI_MAJOR_FULL = (approval, proto) => [
 	MAJOR_SECTIONS,
 	'内容（Acceptance 节含实现与原型差异说明）',
 ].join('\n');
-const FILES_WITH_PROTO = ['proposal.md', 'ui-design.md', 'ui-prototype/index.html'];
+const FILES_WITH_PROTO = ['proposal.md', 'ui-design.md', 'ui-prototype/index.html', 'ui-prototype/skeleton/index.html'];
 
+// ISS-02：major 批准的那一刻要求 design.md 有伪代码节——默认 fixture 带上，
+// 单独的负例用 PSEUDO_MISSING 覆盖。
+const DESIGN_PSEUDO = [
+	'## Decision',
+	'x',
+	'',
+	'## 核心逻辑（伪代码）',
+	'```',
+	'computeLaneHeat(lane, date) -> { heat, clues }',
+	'  if lanes empty -> return 0',
+	'```',
+].join('\n');
 const contract = (over = {}) => ({
 	schema: UI_SCHEMA,
 	proposalText: PROP_MAJOR,
 	tasksMd: TASKS_CLEAN,
 	uiDesignText: UI_MAJOR_FULL('approved', 'ui-prototype/index.html'),
+	designMd: DESIGN_PSEUDO,
 	changeDirFiles: FILES_WITH_PROTO,
 	...over,
 });
@@ -169,6 +185,7 @@ const gate = (over = {}) => ({
 	schema: UI_SCHEMA, stageFamily: 'implementation', boundChange: 'chg',
 	proposalText: PROP_MAJOR, tasksMd: TASKS_CLEAN,
 	uiDesignText: UI_MAJOR_FULL('pending', 'ui-prototype/index.html'),
+	designMd: DESIGN_PSEUDO,
 	changeDirFiles: FILES_WITH_PROTO,
 	tool: TOOL.agent,
 	...over,
@@ -194,6 +211,62 @@ check('B12 合同 block + 写能力档（general-purpose）派发 → 维持 blo
 check('B13 合同 block + 未指定档位的派发（默认 general-purpose）→ 维持 block', decideUiToolGate(gate({ tool: dispatch(null) })).action === 'block');
 check('B14 合同 block + 档位名大小写不敏感（Explore ≡ explore）→ 同样放行', decideUiToolGate(gate({ tool: dispatch('Explore') })).action === 'dispatch-allowed');
 check('B15 放行不改变写侧判定：越出 change 目录的 mutation 仍 block / change 目录内仍放行', decideUiToolGate(gate({ tool: mut('front/app/pages/x.vue') })).action === 'block' && decideUiToolGate(gate({ tool: mut('openspec/changes/chg/ui-prototype/index.html') })).action === 'allow');
+
+// ---------- §A' 业务先定（ISS-02 D1）：major 批准时伪代码节必须在 —— ----------
+
+const PSEUDO_MISSING = '## Decision\nx\n';
+const PSEUDO_NA_EMPTY = '## 核心逻辑（伪代码）\n\nN/A：\n';
+const PSEUDO_NA_OK = '## 核心逻辑（伪代码）\n\nN/A：只改布局常量，无控制流变化\n';
+
+check("A1' major approved + design.md 无伪代码节 → block ui-pseudocode-missing",
+	isBlock(evaluateUiContract(contract({ designMd: PSEUDO_MISSING })), 'ui-pseudocode-missing'));
+check("A2' major approved + design.md 缺失 → block ui-pseudocode-missing",
+	isBlock(evaluateUiContract(contract({ designMd: null })), 'ui-pseudocode-missing'));
+check("A3' major approved + N/A 理由为空 → block ui-pseudocode-missing",
+	isBlock(evaluateUiContract(contract({ designMd: PSEUDO_NA_EMPTY })), 'ui-pseudocode-missing'));
+check("A4' major approved + N/A 带理由 → pass",
+	evaluateUiContract(contract({ designMd: PSEUDO_NA_OK })).kind === 'pass');
+check("A5' major approved + 有伪代码 → pass",
+	evaluateUiContract(contract()).kind === 'pass');
+check("A6' major pending 仍卡在审批（不看伪代码）",
+	isBlock(evaluateUiContract(contract({ uiDesignText: UI_MAJOR_FULL('pending', 'ui-prototype/index.html'), designMd: PSEUDO_MISSING })), 'ui-approval-pending'));
+
+// ---------- §B' 原型产出物依赖链（ISS-02 D2）：缺前一层就 block —— ----------
+
+const passGate = (over = {}) => gate({ uiDesignText: UI_MAJOR_FULL('approved', 'ui-prototype/index.html'), ...over });
+check("B1' 有 skeleton 时写 index.html → 放行",
+	decideUiToolGate(passGate({ tool: mut('openspec/changes/chg/ui-prototype/index.html') })).action === 'allow');
+check("B2' 无 skeleton 时写 index.html → block ui-chain-out-of-order",
+	decideUiToolGate(passGate({ changeDirFiles: ['proposal.md', 'ui-design.md', 'ui-prototype/index.html'], tool: mut('openspec/changes/chg/ui-prototype/index.html') })).reasonCode === 'ui-chain-out-of-order');
+check("B3' 写 skeleton 自身不要求 skeleton 先行 → 放行",
+	decideUiToolGate(passGate({ changeDirFiles: ['proposal.md', 'ui-design.md'], tool: mut('openspec/changes/chg/ui-prototype/skeleton/index.html') })).action === 'allow');
+// 合同 block 时「修当前 change 目录」本就被放行（既有设计），故这一条直测纯函数
+check("B4' 八节不齐时合同本身 block（依赖链不重复查 L0）",
+	isBlock(evaluateUiContract(contract({
+		uiDesignText: '<!-- ui-impact: major -->\n<!-- ui-approval: approved -->\n<!-- ui-prototype: ui-prototype/index.html -->\n\n## User Journey\nx\n## Acceptance\ny',
+	})), 'ui-design-missing'));
+check("B5' 写 fixture 但无 index.html → block ui-chain-out-of-order",
+	decideUiToolGate(passGate({
+		uiDesignText: UI_MAJOR_FULL('approved', 'ui-prototype/skeleton/index.html'),
+		changeDirFiles: ['proposal.md', 'ui-design.md', 'ui-prototype/skeleton/index.html'],
+		tool: mut('openspec/changes/chg/ui-prototype/fixture.json'),
+	})).reasonCode === 'ui-chain-out-of-order');
+check("B6' 有 index.html 时写 fixture → 放行",
+	decideUiToolGate(passGate({ tool: mut('openspec/changes/chg/ui-prototype/fixture.json') })).action === 'allow');
+check("B7' ui-skip: skeleton(理由) 可跳过骨架环",
+	decideUiToolGate(passGate({
+		uiDesignText: UI_MAJOR_FULL('approved', 'ui-prototype/index.html') + '\n<!-- ui-skip: skeleton(纯样式微调，无新增区块) -->',
+		changeDirFiles: ['proposal.md', 'ui-design.md'],
+		tool: mut('openspec/changes/chg/ui-prototype/index.html'),
+	})).action === 'allow');
+check("B8' ui-skip 理由为空不算豁免 → 仍 block",
+	decideUiToolGate(passGate({
+		uiDesignText: UI_MAJOR_FULL('approved', 'ui-prototype/index.html') + '\n<!-- ui-skip: skeleton() -->',
+		changeDirFiles: ['proposal.md', 'ui-design.md', 'ui-prototype/index.html'],
+		tool: mut('openspec/changes/chg/ui-prototype/index.html'),
+	})).reasonCode === 'ui-chain-out-of-order');
+check("B10' 非原型路径不受依赖链影响",
+	decideUiToolGate(passGate({ changeDirFiles: ['proposal.md', 'ui-design.md'], tool: mut('openspec/changes/chg/design.md') })).action === 'allow');
 
 // ---------- §C/§D extension 集成 + telemetry ----------
 
@@ -242,7 +315,9 @@ const MAJOR_PENDING_FILES = {
 	'.openspec.yaml': SCHEMA_UI,
 	'proposal.md': PROP_MAJOR,
 	'ui-design.md': UI_MAJOR_FULL('pending', 'ui-prototype/index.html'),
+	'design.md': '## Decision\nx\n\n## 核心逻辑（伪代码）\n\nfn() {}\n',
 	'ui-prototype/index.html': '<html>proto</html>',
+	'ui-prototype/skeleton/index.html': '<html>skeleton</html>',
 };
 const MAJOR_APPROVED_FILES = { ...MAJOR_PENDING_FILES, 'ui-design.md': UI_MAJOR_FULL('approved', 'ui-prototype/index.html') };
 const NONE_OK_FILES = { '.openspec.yaml': SCHEMA_UI, 'proposal.md': PROP_NONE, 'ui-design.md': UI_NONE_OK };
@@ -309,6 +384,7 @@ async function runTool(mod, cwd, sessionId, toolName, input, family = 'implement
 			'.openspec.yaml': SCHEMA_UI,
 			'proposal.md': PROP_MAJOR,
 			'ui-design.md': UI_MAJOR_FULL('approved', 'ui-prototype/broken.html'),
+			'design.md': '## 核心逻辑（伪代码）\n\nfn() {}\n',
 			'ui-prototype/broken.html': 'x', // 占位：C7 同款断链场景改用真实缺失
 		});
 		fs.rmSync(path.join(t3b, 'openspec/changes/proto-chg/ui-prototype/broken.html'));
@@ -408,8 +484,8 @@ async function runTool(mod, cwd, sessionId, toolName, input, family = 'implement
 		check('C10 无 stage.set 记录 → 静默放行零记账', r10.result === undefined && policyRows(t10).length === 0);
 
 		// D7 reasonCode 白名单与 spec 九值对齐
-		const expected = ['ui-impact-missing', 'ui-impact-mismatch', 'ui-design-missing', 'ui-prototype-missing', 'ui-approval-pending', 'ui-verification-missing', 'ui-dispatch-allowed', 'explicit-bypass', 'ui-gate-check-failed'];
-		check('D7 UI_REASON_CODES 与 spec 九值对齐', expected.every((c) => UI_REASON_CODES.includes(c)) && UI_REASON_CODES.length === 9);
+		const expected = ['ui-impact-missing', 'ui-impact-mismatch', 'ui-design-missing', 'ui-prototype-missing', 'ui-approval-pending', 'ui-verification-missing', 'ui-dispatch-allowed', 'ui-pseudocode-missing', 'ui-chain-out-of-order', 'explicit-bypass', 'ui-gate-check-failed'];
+		check('D7 UI_REASON_CODES 与 spec 十一值对齐', expected.every((c) => UI_REASON_CODES.includes(c)) && UI_REASON_CODES.length === 11);
 		// D7b 放行侧 pass 词汇稳定集（add-change-lifecycle-retro）：两码有界、推导纯函数四分支
 		check('D7b UI_PASS_REASON_CODES 稳定集 = ui-approval-approved / ui-design-satisfied',
 			UI_PASS_REASON_CODES.length === 2 && UI_PASS_REASON_CODES.includes('ui-approval-approved') && UI_PASS_REASON_CODES.includes('ui-design-satisfied'));
@@ -687,7 +763,7 @@ async function runTool(mod, cwd, sessionId, toolName, input, family = 'implement
 
 		const overlap = UI_STAGE_WARN_REASON_CODES.filter((c) => UI_REASON_CODES.includes(c));
 		check(`F5 三个 stage warn 码不与阻断码白名单相交${overlap.length ? `——交叠：${overlap.join('、')}` : ''}`, overlap.length === 0);
-		check('F5 阻断码仍是九个（本 change 不扩容阻断白名单）', UI_REASON_CODES.length === 9);
+		check('F5 阻断码十一个（ISS-02 扩容 ui-pseudocode-missing / ui-chain-out-of-order）', UI_REASON_CODES.length === 11);
 		check('F5 warn 码恰为三个', UI_STAGE_WARN_REASON_CODES.length === 3);
 	}
 
