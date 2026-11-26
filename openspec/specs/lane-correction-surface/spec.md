@@ -3,7 +3,7 @@
 # lane-correction-surface Specification
 
 ## Purpose
-TBD - created by archiving change lane-manual-correction-loop. Update Purpose after archive.
+泳道修正工作面（`/tags/:boardId` 的修正模式）—— 一条**既有泳道**怎么被看清与改写的唯一主场景：三栏布局（左「已选」/ 中 SVG 画布 / 右「待选」）、画布几何纪律（同区同日节点不重叠、标签不越列、缩放不承担解拥挤）、拖拽改归属与三类写入口、首义来源与滚动窗口只读展示、生效时机常驻结论，以及画布外壳（高度贴合、标签列与日期轴吸顶、缩放滚动与编排画布同源）。本能力只管「修正」，新建泳道见 `workshop-lane-compose`，接口与留痕见 `lane-ops`。
 
 ## Requirements
 
