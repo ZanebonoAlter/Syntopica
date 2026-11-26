@@ -17,14 +17,6 @@ TBD - created by archiving change lane-manual-correction-loop. Update Purpose af
 
 配套读端点 SHALL 为 `GET /api/daily-reports/topics/:id/anchor`（纯读，不产生任何写入）。响应 SHALL 为**向后兼容扩展**：既有字段（`topic_id` / `source` / `section_ids` / `override_count` / `effective_from`）SHALL 全部保留，新增字段 SHALL 只增不改。
 
-| 字段 | 含义 |
-|---|---|
-| `source` | `auto` / `manual` 两态：`manual` 表示存在**人工首义留痕**（人工改写，或手动建泳道时写入的建话题留痕）；`auto` 表示无人工留痕、首义为创建时写入 |
-| `section_ids` | 当前首义节点集（取 `topic_anchor_overrides` 最新行反解）；`auto` 且无节点集时 SHALL 为**空集**，前端 SHALL NOT 虚构列表 |
-| `override_count` | 该话题的**首义留痕条数**（`topic_anchor_overrides` 行数）；手动建泳道时写入的建话题留痕计入其中 |
-| `effective_from` | 存在人工留痕时为 `next_report`（质心混合同次日日报生效）；无留痕时为空串 |
-| `anchor_origin` | 首义来源节点：`section_id` / `title` / `period_date` / `resolved` |
-| `centroid` | 滚动窗口口径：`window_size` / `anchor_weight` / `section_ids` / `members[]` / `degraded` |
 
 `anchor_origin.resolved` SHALL 为布尔且语义唯一：`true` 表示来源节点**可考**，SHALL 同时返回该节点的 `section_id` / `title` / `period_date`；`false` 表示来源**不可考**，节点字段 SHALL 为 `null`，SHALL NOT 用「最早成员」等推测值冒充（沿用「自动首义无节点集不得虚构」的既有契约）。`resolved=false` 是**最终形态而非占位**。
 
@@ -128,23 +120,11 @@ TBD - created by archiving change lane-manual-correction-loop. Update Purpose af
 
 校验 SHALL 区分两个方向：
 
-| 方向 | 校验 |
-|---|---|
-| 移除（`topic_id=null`） | section 当前归属某话题；否则 4xx |
-| 加回（`topic_id=N`） | section 当前 `persistent_topic_id` IS NULL；目标话题存在、与 section 同 board、status 非 archived；否则 4xx |
-| 改挂（`topic_id=N`，section 已属其它泳道） | **来源泳道 status 为 candidate（动态）** 时允许；来源为 active（已转正）时 4xx；目标泳道校验同加回 |
 
 加回 SHALL 用于把**无归属**的 section 挂回泳道；**已归属**的 section 改挂到 B 泳道 SHALL 仅在**来源泳道为 candidate（动态）**时允许 —— 改挂语义 SHALL NOT 从 active（已转正）泳道取走节点（用户表达的是「它不该在这儿」而非「它该在那儿」；已转正泳道的素材不因编辑而流动）。改挂 SHALL 追加归属留痕（记录来源与目标泳道）并 SHALL 把**来源与目标两条泳道**均置待重算。
 
 归属变更 SHALL 在单个事务内完成，写入 `daily_report_sections` 的归属快照列：
 
-| 列 | 移除（`topic_id=null`） | 加回（`topic_id=N`） |
-|---|---|---|
-| `persistent_topic_id` | NULL | N |
-| `topic_match_distance` | NULL | 实算：section embedding → N 的锚点（centroid 优先、embedding 兜底） |
-| `topic_match_confidence` | NULL | `manual`（人工改写，非算法判定） |
-| `topic_status_at_report` | NULL | NULL |
-| `lane_tier` | 保持原值 | 保持原值 |
 
 系统 SHALL 记录人工归属变更留痕（变更时间、变更前的话题 id、动作 `detach`/`attach`），SHALL 使「这条内容为什么被移出 / 为什么被加回」可追溯。
 

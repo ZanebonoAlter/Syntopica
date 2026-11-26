@@ -1,0 +1,5 @@
+schema: syntopica-ui
+created: 2026-11-26
+# 6 个旧 capability 的 Requirement 全部迁入 lane-ops 与 workshop-views 两个新族。
+# 空 spec 校验失败会整次中止归档，必须显式授权退役。
+retire_capabilities: true

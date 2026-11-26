@@ -1,0 +1,6 @@
+# 族名	源 capability	Requirement 标题（* = 全取）
+lane-ops	lane-manual-correction	*
+lane-ops	board-lane-dynamics	*
+lane-ops	lane-trend-overview	*
+lane-ops	lane-heat-metric	*
+workshop-board-console	workshop-article-archive	*

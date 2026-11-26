@@ -62,7 +62,7 @@
 
 ### Requirement: 展示范围与排序
 
-泳道动态区 SHALL 展示「关注（active）」与「我在追踪（watch 关联）」的泳道，排序 SHALL 为泳道当天热度降序 → 全窗线索合计降序 → topic id 升序（热度口径与权重见 `lane-heat-metric`）；watch 关联泳道 SHALL 带追踪标识。近 14 天无锚定 section 的 active 泳道（沉寂）SHALL NOT 展示。candidate 泳道 SHALL NOT 出现在主卡片区。
+泳道动态区 SHALL 展示「关注（active）」与「我在追踪（watch 关联）」的泳道，排序 SHALL 为泳道当天热度降序 → 全窗线索合计降序 → topic id 升序（热度口径与权重见本族「泳道当天热度口径」）；watch 关联泳道 SHALL 带追踪标识。近 14 天无锚定 section 的 active 泳道（沉寂）SHALL NOT 展示。candidate 泳道 SHALL NOT 出现在主卡片区。
 
 排序口径 SHALL NOT 使用 section 条数：泳道内主题分桶会把同一话题同一天的内容拆成多条 section，按条数排序会让"当天拆得多的泳道"虚高。排序 SHALL NOT 使用事件线数或事件数（事件线退役后无此输入）。
 
