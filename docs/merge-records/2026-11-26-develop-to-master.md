@@ -2,7 +2,7 @@
 
 > **用途**：本次把 `develop` 合入 `master` 的范围、内容、部署步骤、回滚方式与遗留风险。
 > **生成时间**：2026-11-26
-> **状态**：`develop` 已推送（`origin/develop` = `443d7f6b`），**待人工发起 PR 合入 `master`**。
+> **状态**：`develop` 已推送至 `origin/develop`（以 `git log origin/develop -1` 为准），**待人工发起 PR 合入 `master`**。
 
 ---
 
@@ -10,7 +10,7 @@
 
 | 项 | 值 |
 |---|---|
-| 源分支 | `develop` → `origin/develop` = `ee2949f1` |
+| 源分支 | `develop` → `origin/develop`（本次推送后的 HEAD，见 `git log origin/develop -1`） |
 | 目标分支 | `master` → `origin/master` = `27ca6dc6`（上一个 PR #23） |
 | 提交数 | **187** 个（`origin/master..origin/develop`，截至推送点 `ee2949f1`；本文档自身的数字对齐提交再 +1） |
 | 时间跨度 | 2026-10-12 → 2026-11-26 |
