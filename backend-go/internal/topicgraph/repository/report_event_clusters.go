@@ -194,14 +194,33 @@ type EventTagFact struct {
 }
 
 // RankEventClusterCandidates orders the day's clusters into the highlight
-// candidate list: cluster article count DESC → member event-tag count DESC →
-// representative tag id ASC (unrounded article counts, stable tie-break), then
-// truncates to limit. Zero candidates yield an empty list (the caller switches
-// to the tag-fallback mode).
+// candidate list in the documented order — cluster article count DESC → member
+// event-tag count DESC → representative tag id ASC (unrounded article counts,
+// stable tie-break) — and truncates to limit.
+//
+// The order itself is OrderEventClusterCandidates. Production no longer calls this
+// function: the 「今日重点」pool is built from OrderEventClusterCandidates + the
+// board-relevance filter, which applies its own ≤8 ceiling. What stays here is the
+// documented 「三键 + ≤limit 截断」 semantics, kept for the tests that pin it and
+// for external callers that just want a capped ranking.
 func RankEventClusterCandidates(clusters []EventCluster, limit int) []EventCluster {
 	if limit <= 0 || limit > maxEventClusterCandidates {
 		limit = maxEventClusterCandidates
 	}
+	ordered := OrderEventClusterCandidates(clusters)
+	if len(ordered) > limit {
+		ordered = ordered[:limit]
+	}
+	return ordered
+}
+
+// OrderEventClusterCandidates returns the FULL documented candidate order without
+// truncation: cluster article count DESC → member event-tag count DESC →
+// representative tag id ASC, unrounded, stable. The board-relevance candidate
+// pool needs the whole order (it filters by relevance before the ≤8 ceiling, and
+// fills from the tail by rank), while RankEventClusterCandidates only adds the
+// truncation — sharing this comparator keeps both on one 口径.
+func OrderEventClusterCandidates(clusters []EventCluster) []EventCluster {
 	ordered := make([]EventCluster, len(clusters))
 	copy(ordered, clusters)
 	sort.SliceStable(ordered, func(i, j int) bool {
@@ -214,8 +233,5 @@ func RankEventClusterCandidates(clusters []EventCluster, limit int) []EventClust
 		}
 		return a.ClusterID < b.ClusterID
 	})
-	if len(ordered) > limit {
-		ordered = ordered[:limit]
-	}
 	return ordered
 }

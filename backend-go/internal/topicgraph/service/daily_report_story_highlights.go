@@ -175,14 +175,55 @@ type reportHighlightInputs struct {
 	clusters []repository.ClusterGroup
 }
 
+// 「今日重点」候选池的组池参数：上限沿用提示词白名单（最多 8 条候选），下限
+// 保证贴题簇不足时刊头不空着（补位到 3 条）。
+const (
+	maxHighlightCandidatePool = 8
+	minHighlightCandidatePool = 3
+)
+
+// dailyReportSectionSignals is the swappable read-only hook for this report's
+// section relevance signals (the persisted lane_tier + topic_status_at_report
+// snapshots). Tests replace it to exercise the degraded branch and the
+// empty-signal 口径 without a database; the default reads the stored rows.
+var dailyReportSectionSignals = func(reportID uint) ([]repository.ReportSectionSignal, error) {
+	return repository.Repo.ListReportSectionSignals(reportID)
+}
+
+// highlightCandidatePool builds the 「今日重点」candidate pool: the FULL existing
+// candidate order (never truncated, so nothing is dropped before the relevance
+// filter) → this report's section signals → 版块关联度先筛 (design D5/D6).
+//
+// The caller only invokes it when the day produced at least one cluster (zero
+// candidates takes the tag-fallback mode, which never owns a cluster_id) — so the
+// degraded branch below is only about the signal read.
+//
+// A failed signal read is NOT fatal (spec: 读取板块信号失败退回原口径): the pool
+// degrades to the unchanged 口径 — with no signals every cluster ranks 5, so the
+// theme set is empty and the selector returns the existing candidate order head —
+// and the returned signals are nil so the caller skips the display re-order too.
+func highlightCandidatePool(reportID uint, clusters []repository.EventCluster) ([]repository.EventCluster, []repository.ReportSectionSignal) {
+	ordered := repository.OrderEventClusterCandidates(clusters)
+	signals, err := dailyReportSectionSignals(reportID)
+	if err != nil {
+		logging.Warnf("daily-report: highlight relevance signals unavailable report=%d, keeping candidate order: %v", reportID, err)
+		return selectEventClusterCandidatePool(ordered, nil, maxHighlightCandidatePool, minHighlightCandidatePool), nil
+	}
+	return selectEventClusterCandidatePool(ordered, signals, maxHighlightCandidatePool, minHighlightCandidatePool), signals
+}
+
 // finalizeDailyReportHighlights runs the report's tail: the retired dedup no-op,
 // then the highlights. Story attribution is NOT called — it is permanently
 // stopped (review R-1), so this function can only ever read today's clusters.
 //
-// The 「今日重点」candidate source is the day's same-event clusters (top 8 by
-// article count → tag count → representative tag id). Clustering failure only
-// degrades the highlights to the existing tag-fallback mode — it never blocks the
-// report body (spec: 降级不阻断日报).
+// The 「今日重点」candidate source is the day's same-event clusters. Since
+// rank-report-highlights-by-board-relevance the pool is no longer just the top 8
+// by article count: the full candidate order (article count → tag count →
+// representative tag id) is filtered by a 贴题档 (0–5, read from this report's
+// persisted section snapshots) so 贴题 clusters win the pool and, after the model
+// picks, the display order — the server always owns the order, never the model
+// (flow 红线 46). Clustering failure only degrades the highlights to the existing
+// tag-fallback mode — it never blocks the report body (spec: 降级不阻断日报).
 func finalizeDailyReportHighlights(ctx context.Context, report *repository.BoardDailyReport, inputs *reportHighlightInputs) {
 	// applyStoryDedupForReport depends on story_id, which this chain never writes
 	// anymore, so it stays a natural no-op. It is kept wired (not deleted) so the
@@ -193,11 +234,16 @@ func finalizeDailyReportHighlights(ctx context.Context, report *repository.Board
 	tags, fallbackClusters := inputs.tags, inputs.clusters
 
 	var candidates []repository.EventCluster
+	var sectionSignals []repository.ReportSectionSignal
 	clusterSet, clusterErr := buildDailyReportEventClusters(ctx, report.SemanticBoardID, report.ID, report.PeriodDate)
 	if clusterErr != nil {
 		logging.Warnf("daily-report: event cluster degraded report=%d: %v", report.ID, clusterErr)
 	} else if clusterSet != nil {
-		candidates = repository.RankEventClusterCandidates(clusterSet.Clusters, 8)
+		// 零聚簇时不读板块信号（读出来也没用）：candidates / sectionSignals 保持
+		// nil，直接走下方的标签回退模式。
+		if len(clusterSet.Clusters) > 0 {
+			candidates, sectionSignals = highlightCandidatePool(report.ID, clusterSet.Clusters)
+		}
 		if clusterSet.Truncated {
 			logging.Warnf("daily-report: event cluster truncated report=%d tags=%d", report.ID, clusterSet.TagCount)
 		}
@@ -217,6 +263,11 @@ func finalizeDailyReportHighlights(ctx context.Context, report *repository.Board
 	if err != nil {
 		logging.Warnf("daily-report: highlights failed: %v", err)
 		highlights = nil
+	}
+	if len(highlights) > 1 && sectionSignals != nil {
+		// 挑完再排：同一个贴题档稳定排序，同档保持候选序。只排序，不增删成员、
+		// 不改文案与快照；信号读失败时跳过（退回现状，见 design D9）。
+		highlights = rankPickedHighlights(highlights, candidates, sectionSignals)
 	}
 	if updated, err := repository.Repo.FinalizeReportHighlights(report, highlights); err != nil || !updated {
 		logging.Warnf("daily-report: final highlights write skipped report=%d updated=%t error=%v", report.ID, updated, err)
