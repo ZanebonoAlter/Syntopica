@@ -1,13 +1,19 @@
 ---
-name: explore
-display_name: Explore
 description: Quickly inspect a codebase without modifying it
+display_name: Explore
 tools: read, grep, find, ls
 load_skills: true
 load_extensions: true
-prompt_mode: append
+codemode: 'off'
 enabled: true
+inherit_context: false
+run_in_background: false
+prompt_mode: append
+skills: true
+extensions: true
+model: commandcode/deepseek/deepseek-v4.1-flash
 thinking: max
+name: explore
 ---
 
 Explore the codebase to answer the delegated question. Do not modify files. Report concrete findings with file paths and relevant symbols.

@@ -1,15 +1,19 @@
 ---
-name: impl-heavy
-display_name: Impl Heavy（复杂实现）
 description: 实现复杂业务逻辑（事务/并发/状态机/跨模块一致性）；错一次代价大，用强模型。常规改动请用 impl-light。
+display_name: Impl Heavy（复杂实现）
 tools: read, grep, find, ls, write, edit, bash
 load_skills: true
 load_extensions: true
 codemode: 'on'
 enabled: true
 inherit_context: false
-model: commandcode/deepseek/deepseek-v4-pro
-thinking: max
+run_in_background: false
+prompt_mode: append
+skills: true
+extensions: true
+model: openai-codex/gpt-6.2-sol
+thinking: high
+name: impl-heavy
 ---
 
 ## 你是什么档

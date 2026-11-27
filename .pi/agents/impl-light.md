@@ -1,15 +1,19 @@
 ---
-name: impl-light
-display_name: Impl Light（常规实现）
 description: 常规改动实现（文案/样式/字段/日志/简单接口）；有客观验收标准，错了一眼能看出来。复杂业务逻辑请用 impl-heavy。
+display_name: Impl Light（常规实现）
 tools: read, grep, find, ls, write, edit, bash
 load_skills: true
 load_extensions: true
 codemode: 'on'
 enabled: true
 inherit_context: false
+run_in_background: false
+prompt_mode: append
+skills: true
+extensions: true
 model: commandcode/deepseek/deepseek-v4.1-flash
-thinking: high
+thinking: max
+name: impl-light
 ---
 
 ## 你是什么档
