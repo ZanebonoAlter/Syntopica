@@ -25,7 +25,7 @@
 ### R-2 2026-11-27【High】降级链只有散文在执行：无代码读取，且省略 model 派发时主线程无从知道当前在链上第几位
 - **状态**：已修复
 - **处置**：已修复：`AGENTS.md` 与 `开发执行规范.md` 都写死「**走链的派发 MUST 显式传 `model` 参数**」+ 理由（不传则事后不知用的是链上第几个，429 会原样重派再撞墙），并加降级判定边界表（成功 / 429·401 换下一个 / 其他错误立刻返回 / 链耗尽停止且不许静默用链外模型）。
-- **位置**：`.pi/harness/model-chains.json:1`；`docs/reference/开发执行规范.md:133`；`AGENTS.md:143`；`.pi/harness/events.db`（`subagent.dispatch` 行 id=173374）
+- **位置**：`.pi/model-chains.json:1`；`docs/reference/开发执行规范.md:133`；`AGENTS.md:143`；`.pi/harness/events.db`（`subagent.dispatch` 行 id=173374）
 - **问题**：全仓无任何 `.ts`/`.sh` 读 `model-chains.json`（grep 只命中 md）。链完全靠主线程「读错误 → 换下一个重派」。但 tasks 11.1 记为已过的唯一一次 impl-light 实测，是省略 `model` 派发的：账本 `model=null`，实际模型由 `agentOverridesByProvider[当前 provider]` 解析。这种派发失败时，主线程手里没有「刚才用的是哪个模型」，无法判断该跳到链上第几个；更常见的是直接重派同一档、同一 provider override，等于原地重试。
 - **证据**：`events.db` id=173374：`type=impl-light, model=None, promptChars=137, status=completed`。近 7 天约 190 条 `subagent.dispatch`：凡显式传 model 的都记了全称，`NULL` 的均为主线程未传。`selectProviderOverrides()`（pi-subagents bundle）在省略 model 时取 provider 层覆盖。
 - **建议**：文档把动作写死成可执行的：「走链时派发**必须显式传** `model=<链首全称>`，省略 model = 不走链」。再加一条：账本 `subagent.dispatch` 行的 `model` 为空即视为未走链（可做成 retro 的一个口径）。spec「链可自行调整」场景也应补「且主线程每次派发前重读该文件」。

@@ -47,7 +47,7 @@ implement ↔ review    按模块来回，每个模块一轮
 
 关键区别：**429 是客观信号，不是我自报的状态**。主线程看到失败就会换，不存在「忘了换」的静默失败——因为派发直接失败了，失败是显式的。
 
-所以链存 `.pi/harness/model-chains.json`，主线程读它，改它即可调整顺序，无代码。
+所以链存 `.pi/model-chains.json`，主线程读它，改它即可调整顺序，无代码。
 
 ## D4 为什么子线程不给 AGENTS.md 全文
 
@@ -80,7 +80,7 @@ ui-design  → datamap + frontend/layout.md + frontend/prototype-content.md
 ```
 Role = explore | ui-design | impl-heavy | impl-light | change-review
 AgentDef = { name, model, thinking, tools[] }        # .pi/agents/<Role>.md
-Chain = { <Role>: [modelId, ...] }                   # .pi/harness/model-chains.json
+Chain = { <Role>: [modelId, ...] }                   # .pi/model-chains.json
 Brief = { 审什么, 对照什么, 往哪看 }                  # 审查档必填三件事
 ```
 
@@ -111,7 +111,7 @@ Brief = { 审什么, 对照什么, 往哪看 }                  # 审查档必�
 - **brief 缺三件事** → 审查档直接问，不猜着审
 - **impl-light 干到一半发现是复杂逻辑** → 停下来报告，不硬用简单思路糊过去
 - **非额度错误**（500/超时/内容问题）→ 立刻返回，不做链重试（重试也解决不了）
-- **`.pi/harness/model-chains.json` 缺某角色** → 用该档 frontmatter 的 `model`（兜底，不崩）
+- **`.pi/model-chains.json` 缺某角色** → 用该档 frontmatter 的 `model`（兜底，不崩）
 
 ## 成本
 

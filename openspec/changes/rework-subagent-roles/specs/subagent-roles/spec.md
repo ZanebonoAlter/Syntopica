@@ -48,7 +48,7 @@
 
 ### Requirement: 审查档模型按降级链切换
 
-系统 SHALL 在 `.pi/harness/model-chains.json` 维护审查档的模型优先顺序链，主线程在派发返回额度类错误（429/401）时 SHALL 按链切换到下一个模型重派。
+系统 SHALL 在 `.pi/model-chains.json` 维护审查档的模型优先顺序链，主线程在派发返回额度类错误（429/401）时 SHALL 按链切换到下一个模型重派。
 
 #### Scenario: 首选模型可用
 
@@ -68,7 +68,7 @@
 
 #### Scenario: 链可自行调整
 
-- **WHEN** 用户修改 `.pi/harness/model-chains.json` 中 `review` 数组的顺序或内容
+- **WHEN** 用户修改 `.pi/model-chains.json` 中 `review` 数组的顺序或内容
 - **THEN** 后续派发按新链执行，无需改代码
 
 ### Requirement: 子线程默认不注入 AGENTS.md 全文

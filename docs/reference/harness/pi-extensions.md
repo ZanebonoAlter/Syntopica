@@ -184,7 +184,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 
 ## 子线程通道矩阵
 
-**角色档（2026-11-27 rework-subagent-roles）**：四角色五档——`explore` / `ui-design`（原型制作与修改）/ `impl-heavy`·`impl-light`（实现按复杂度分）/ `change-review`（唯一审查档，范围由 brief 指定，允许一次审多模块）。上一轮按开发阶段的六档 `stage-*` 已删除（真实流程是 datamap↔原型、implement↔review 两个循环，阶段不是顺序流水线）。模型降级链在 `.pi/harness/model-chains.json`，429/401 时主线程按链换派（框架不自动换）。子线程不注入 AGENTS.md 全文，按角色给最小集。`ui-design-gate` 白名单同步为 `explore` / `plan` / `change-review` / `ui-design` / `impl-heavy` / `impl-light`。
+**角色档（2026-11-27 rework-subagent-roles）**：四角色五档——`explore` / `ui-design`（原型制作与修改）/ `impl-heavy`·`impl-light`（实现按复杂度分）/ `change-review`（唯一审查档，范围由 brief 指定，允许一次审多模块）。上一轮按开发阶段的六档 `stage-*` 已删除（真实流程是 datamap↔原型、implement↔review 两个循环，阶段不是顺序流水线）。模型降级链在 `.pi/model-chains.json`，429/401 时主线程按链换派（框架不自动换）。子线程不注入 AGENTS.md 全文，按角色给最小集。`ui-design-gate` 白名单同步为 `explore` / `plan` / `change-review` / `ui-design` / `impl-heavy` / `impl-light`。
 （harden-subagent-constraint-channel）
 
 子线程（子代理）能否收到 harness 约束取决于派发通道与模式，实测矩阵（2026-09-18，根因证据链见 `docs/research/subagent-constraint-gap/explore-findings.md`）：

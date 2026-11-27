@@ -1,7 +1,7 @@
 ---
 name: change-review
 display_name: Review（通用审查）
-description: 唯一的审查档，审查范围由派发 brief 指定（change 制品 / 代码实现 / UI 验收 / 跨模块一致性）；一档多用途，允许一次审多个模块。模型走 .pi/harness/model-chains.json 的 review 降级链。
+description: 唯一的审查档，审查范围由派发 brief 指定（change 制品 / 代码实现 / UI 验收 / 跨模块一致性）；一档多用途，允许一次审多个模块。模型走 .pi/model-chains.json 的 review 降级链。
 tools: read, grep, find, ls, bash, write
 load_skills: true
 load_extensions: true

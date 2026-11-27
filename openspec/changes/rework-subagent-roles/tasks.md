@@ -20,7 +20,7 @@
 
 ## 4. 降级链
 
-- [x] 4.1 `.pi/harness/model-chains.json`：按角色分链（review / impl-heavy / impl-light / explore / ui-design）
+- [x] 4.1 `.pi/model-chains.json`：按角色分链（review / impl-heavy / impl-light / explore / ui-design）
 - [x] 4.2 review 链 = glm-5.4 → gpt-6.2-sol → deepseek-v4.1-flash
 - [x] 4.3 链中所有模型 id 经 `pi --list-models` 校验存在
 

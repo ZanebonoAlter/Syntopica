@@ -1,0 +1,27 @@
+{
+  "_说明": "模型降级链。主线程派发返回 429/401 时按链换下一个重派；链耗尽则如实报错。改这个文件即可调整，无需改代码。",
+  "_排序原则": "能力优先、额度其次：审错不报错的角色放最前面；跑量角色放便宜的。",
+  "review": [
+    "zai-coding-cn/glm-5.4",
+    "openai-codex/gpt-6.2-sol",
+    "commandcode/deepseek/deepseek-v4.1-flash"
+  ],
+  "impl-heavy": [
+    "commandcode/deepseek/deepseek-v4-pro",
+    "zai-coding-cn/glm-5.4",
+    "openai-codex/gpt-6.2-sol"
+  ],
+  "impl-light": [
+    "commandcode/deepseek/deepseek-v4.1-flash",
+    "zai-coding-cn/glm-5.3-flash",
+    "openai-codex/gpt-6.1-terra"
+  ],
+  "explore": [
+    "commandcode/deepseek/deepseek-v4.1-flash",
+    "zai-coding-cn/glm-5.3-flash"
+  ],
+  "ui-design": [
+    "zai-coding-cn/glm-5.4",
+    "openai-codex/gpt-6.2-sol"
+  ]
+}

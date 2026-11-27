@@ -50,7 +50,7 @@
 
 **这推翻了上一轮「额度耗尽保持手工换，不做自动 fallback」的决定**，需要记录：pi-subagents 框架本身不会换模型（官方：「Provider errors are returned from that model rather than selecting another one」）。所以降级由**主线程按链执行**——派发返回 429/401 时读错误、换下一家重派。
 
-链存在 `.pi/harness/model-chains.json`，我不读它，主线程读。
+链存在 `.pi/model-chains.json`，我不读它，主线程读。
 
 **不用扩展自动换**的理由：自动降级会把额度问题藏到整条链都空才报错，那时更难查；而 429 是客观信号，主线程看到就能换，成本是每次多一个动作。
 
@@ -69,7 +69,7 @@ AGENTS.md 里 80% 是主线程流程约束（openspec 编排六步、归档门�
 
 - `.pi/agents/`：删 6 个 `stage-*`，新增 `impl-heavy.md` / `impl-light.md`，改 `change-review.md` / `ui-design.md` 提示词
 - `scripts/harness/stage-agent.sh` + `.smoke.sh`：**删除**（不再按阶段选档）
-- `.pi/harness/model-chains.json`：新增（review 降级链）
+- `.pi/model-chains.json`：新增（review 降级链）
 - `AGENTS.md` / `docs/reference/开发执行规范.md`：阶段映射表 → 角色映射表；补「子线程不给 AGENTS.md 全文」纪律
 - `docs/reference/harness/pi-extensions.md`：同步
 
