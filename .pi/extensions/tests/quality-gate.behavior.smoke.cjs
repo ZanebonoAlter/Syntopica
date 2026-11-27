@@ -3,7 +3,8 @@
 // 场景 A 正常态(windows) / B 探测故障短路 / C 兜底 diag 特征(粘性豁免) / D 真实失败粘性 /
 // E native 模式正常态 / F native 失败归因与链路标注（linux-native-dev-environment 新增）/
 // G native 工具链缺失侧级短路 / H native 工具缺失兑底归因 / I windows 不受工具链探测影响
-// （harden-gate-native-toolchain 新增）/ J 子线程 turn_end 降载 bypass（零命令+一条记账）/
+// （harden-gate-native-toolchain 新增）/ J 子线程 turn_end 降载 bypass（零命令，首回合一条
+// 记账、后续零新增，slim-harness-ledger D1）/ J2 reload 后判重走账本 /
 // K 主会话不受降载影响（harden-subagent-constraint-channel 新增）/
 // L 失败指纹状态机（首现完整块→⟳单行→未修→✓转绿；粘性重跑不变）+ M 会话边界重置指纹 +
 // N 启动基线外部归因/[外部]/不进粘性/基线不覆盖 + 混合与解析不出保守回现状（⑥）+
@@ -31,6 +32,9 @@ process.on('warning', (w) => {
 });
 
 const qualityGate = require('./.qgateb.cjs').default;
+// 事实库写法器（与 quality-gate bundle 内 harness-log 是同一张表/同一 schema，跨 bundle
+// 各持一个连接）：场景 J2 用它预置「上一个扩展实例已记过的 child-session 行」。
+const { logEvent: hlogEvent } = require('./.hlog.cjs');
 
 const checks = [];
 const check = (name, ok) => checks.push([name, ok]);
@@ -407,9 +411,11 @@ const setup = (router) => {
 		check('I3 零环境 steer', messages.length === 0);
 	}
 
-	// ============ 场景 J：子线程 turn_end 降载（harden-subagent-constraint-channel D4） ============
+	// ============ 场景 J：子线程 turn_end 降载（harden-subagent-constraint-channel D4；
+	// 记账粒度降为每会话一条见 slim-harness-ledger D1） ============
 	// 父子关系可证（header parentSession）→ turn_end 入口整体短路：git/探测/门禁命令一个
-	// 不跑，恰一条 bypass(child-session) 记账，零 gate.check，回合正常放行（零 steer）。
+	// 不跑，零 gate.check，回合正常放行（零 steer）；首回合记一条 bypass(child-session)，
+	// 后续回合照常降载但 MUST NOT 再记（spec「同会话后续回合不重复记账」）。
 	{
 		setPlatform('native');
 		const repo = mkrepo();
@@ -419,13 +425,39 @@ const setup = (router) => {
 		await handlers['turn_end'](EDIT_TURN, childCtx('smoke-j', repo));
 		const polJ = q(repo, "SELECT payload FROM events WHERE kind='policy.decision'");
 		check('J1 子线程 turn_end 零 exec（git 快照/探测/门禁全不跑）', execCalls.length === 0);
-		check('J2 恰一条 policy.decision 且形状精确（quality-gate/bypass/child-session）', polJ.length === 1
+		check('J2 首回合恰一条 policy.decision 且形状精确（quality-gate/bypass/child-session）', polJ.length === 1
 			&& JSON.stringify(JSON.parse(polJ[0].payload)) === JSON.stringify({ policy: 'quality-gate', action: 'bypass', reasonCode: 'child-session' }));
 		check('J3 零 gate.check（没跑命令零记账）', q(repo, "SELECT COUNT(*) n FROM events WHERE kind='gate.check'")[0].n === 0);
 		check('J4 回合正常放行零 steer', messages.length === 0);
 		await handlers['turn_end'](CHAT_TURN, childCtx('smoke-j', repo)); // 纯对话回合同样降载
-		check('J5 纯对话回合同样 bypass 记账（置顶于 touchedCode 早退，每回合一条）',
-			q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision'")[0].n === 2);
+		check('J5 后续回合零新增记账（每会话至多一条，spec「同会话后续回合不重复记账」）',
+			q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision'")[0].n === 1);
+		check('J6 后续回合仍整体降载（零 exec 零 gate.check）',
+			execCalls.length === 0 && q(repo, "SELECT COUNT(*) n FROM events WHERE kind='gate.check'")[0].n === 0);
+	}
+
+	// ============ 场景 J2：reload 后判重走账本（slim-harness-ledger D1） ============
+	// 库内已有同 session 的 child-session 行（模拟 /reload 前的扩展实例写过）→ 首回合即
+	// 不再记账（进程内 Set 只是快路径，未命中回落查库判重——库为准，不用纯内存判据）；
+	// 降载行为不受判重影响。
+	{
+		setPlatform('native');
+		const repo = mkrepo();
+		hlogEvent(repo, {
+			kind: 'policy.decision', sessionId: 'smoke-j2', change: null,
+			payload: { policy: 'quality-gate', action: 'bypass', reasonCode: 'child-session' },
+		});
+		const router = async (cmd, args) => { throw new Error(`unexpected exec in child session: ${cmd} ${args.join(' ')}`); };
+		const { handlers, execCalls } = setup(router);
+		await handlers['session_start']({ reason: 'startup' }, childCtx('smoke-j2', repo));
+		await handlers['turn_end'](EDIT_TURN, childCtx('smoke-j2', repo));
+		check('J7 库内已有同 session child-session 行 → 首回合不再记账（reload 不重复记）',
+			q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision'")[0].n === 1);
+		check('J8 判重失败/命中都不影响降载（零 exec 零 gate.check）',
+			execCalls.length === 0 && q(repo, "SELECT COUNT(*) n FROM events WHERE kind='gate.check'")[0].n === 0);
+		await handlers['turn_end'](CHAT_TURN, childCtx('smoke-j2', repo));
+		check('J9 同会话第二个回合仍零新增',
+			q(repo, "SELECT COUNT(*) n FROM events WHERE kind='policy.decision'")[0].n === 1);
 	}
 
 	// ============ 场景 K：主会话不受降载影响（harden-subagent-constraint-channel） ============

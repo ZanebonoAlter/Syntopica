@@ -14,8 +14,11 @@
  *     （闭区间）的按组 TERM → 轮询 2s（150ms 间隔）→ 仍存活 KILL（D4 状态机）；
  *     同 pgid 去重只发一轮信号；单组失败 fail-open 跳过（EPERM 不重试）；
  *     pgid ≤ 1 组信号红线双保险；落 orphan-killed 事件。
- *   - turn_end：存在泄漏（含窗口外历史遗留）→ 每会话至多一次 steer 软提醒（区分窗口
- *     内外，给 start-dev.sh 处置建议）＋落 orphan-warn 事件；零泄漏零输出零记录。
+ *   - turn_end：仅当存在**本会话窗口内制造**的泄漏时向后 steer 软提醒（slim-harness-ledger
+ *     D5）——纯窗口外历史残留不 steer、不记账；同 pgid 跨会话至多提醒一次（去重键
+ *     pgid+starttime，避免内核复用同号新进程永不提醒）；同一会话至多一次；给
+ *     start-dev.sh 处置建议，落 orphan-warn（payload 含 inWindow / historicalOnly /
+ *     deduped）；零泄漏或仅历史残留零输出零记录。
  *
  * 记账（design D6）：直写 logEvent(kind:"policy.decision", payload.decision="orphan-killed"
  *   |"orphan-warn")——不走 logPolicyDecision：其 action 白名单（block|warn|bypass|fail-open）
@@ -110,6 +113,15 @@ const defaultDeps: DevGuardDeps = {
 const windowsBySession = new Map<string, number>();
 /** 已软提醒过的会话（每会话至多一次，I-04 二次静默） */
 const warnedSessions = new Set<string>();
+/**
+ * 已提醒过的进程组（slim-harness-ledger D5）：同一进程组在一个扩展进程生命周期内
+ * 至多提醒一次——两个并发会话检出同一泄漏时后者静默（先到者提醒）。模块级而非会话级：
+ * 正是要跨会话去重（spec 场景「同进程组跨会话只提醒一次」）。
+ * 键 = `${pgid}:${starttimeSec}`（R-7）：pid/pgid 会被内核回收复用，裸 pgid 作键会让
+ * 同号的新进程代次被误当成「已提醒过」而永不提醒；starttime（进程启动时刻，取自
+ * /proc/<pid>/stat 快照）区分同一 pgid 上的不同代次。
+ */
+const warnedPgids = new Set<string>();
 /** 平台 no-op 的一次性 warn 标记（I-07 恰 warn 一次） */
 let platformWarned = false;
 /** /proc 可用性（真实 fs 探测，不走注入缝——平台边界说的是真实机器） */
@@ -123,6 +135,11 @@ const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
 function normalizeRepoRoot(p: string): string {
 	const s = String(p ?? "").replace(/\/+$/, "");
 	return s === "" ? "/" : s;
+}
+
+/** 提醒去重键（R-7）：pgid + 启动时刻（同 pgid 不同代次各提醒一次；同代次跨会话只提醒一次） */
+function warnKeyOf(p: ProcSnapshot): string {
+	return `${p.pgid}:${p.starttimeSec}`;
 }
 
 /** 事件用年龄（秒）：非有限值（btime 缺失等）→ 0 */
@@ -254,21 +271,29 @@ async function terminateGroup(d: DevGuardDeps, pgid: number): Promise<void> {
 	}
 }
 
-/** turn_end 软提醒文本（I-03 要素：pid/pgid/年龄 \\d+[hms]/cmdline 子串/start-dev.sh 建议；区分窗口内外） */
+/**
+ * turn_end 软提醒文本（I-03 要素：pid/pgid/年龄 \\d+[hms]/cmdline 子串/start-dev.sh 建议）。
+ * D5 后只列「本会话窗口内制造、尚未提醒过」的进程组——窗口外历史残留不列（静默，仅以
+ * historicalOnly 计数告知少报了多少），故文案不再提「窗口外历史遗留需人工处置」。
+ */
 function buildWarnMessage(
-	leaks: ProcSnapshot[],
-	kills: ProcSnapshot[],
+	warnList: ProcSnapshot[],
+	inWindow: number,
+	historicalOnly: number,
 	nowSec: number,
 ): string {
-	const lines = leaks.slice(0, EVENT_PROCS_MAX).map(
+	const lines = warnList.slice(0, EVENT_PROCS_MAX).map(
 		(p) =>
 			`- pid ${p.pid} ｜ pgid ${p.pgid} ｜ 年龄 ${formatAgeSec(ageOf(nowSec, p.starttimeSec))} ｜ ${truncateCmdline(p.cmdline)}`,
 	);
-	const inWindow = kills.length;
 	return [
-		`[dev-process-guard] 检测到 ${leaks.length} 个泄漏类 dev 进程（cmdline 命中 dev/agent-browser 特征 + cwd 在仓库内 + 无控制终端 + 非 start-dev.sh pidfile 接管）：`,
+		`[dev-process-guard] 检测到 ${inWindow} 个本会话制造、会话结束将被自动清理的泄漏类 dev 进程（cmdline 命中 dev/agent-browser 特征 + cwd 在仓库内 + 无控制终端 + 非 start-dev.sh pidfile 接管）：`,
 		...lines,
-		`其中 ${inWindow} 个启动于本会话窗口内（会话结束将被自动清理），${leaks.length - inWindow} 个为窗口外历史遗留（不自动杀，需人工确认后处置）。`,
+		...(historicalOnly > 0
+			? [
+					`另有 ${historicalOnly} 个窗口外历史遗留进程不自动杀、不在本提醒内（跨会话残留由定时回收与人工处置承担）。`,
+				]
+			: []),
 		`建议：接管栈用 bash scripts/dev/start-dev.sh stop 清理；无主进程先 ps 确认再 kill -- -<pgid>；新起 dev 服务一律走 bash scripts/dev/start-dev.sh（自动接管，会话结束自动清理）。`,
 	].join("\n");
 }
@@ -372,12 +397,37 @@ export function createDevProcessGuard(
 				ownPgid: ownPgidOf(d),
 				now: nowSec,
 			});
-			if (leaks.length === 0) return; // 零泄漏 → 零输出零记录（I-05）
+			// D5：只提醒「本会话制造」（kills = 窗口内、会话结束会被自动清理的那部分）。
+			// 纯历史残留不 steer、不记 orphan-warn（spec 场景「纯历史残留静默」）：那类提醒
+			// 139/541 是噪声，收件人既不是制造者也无法判断该不该杀。
+			if (kills.length === 0) return;
+			// 跨会话按「pgid + 启动时刻」去重（spec 场景「同进程组跨会话只提醒一次」）：先到者
+			// 提醒，后来会话的同一进程组静默；同组多进程只留一条（pid 列表不重复）。
+			const seenPgids = new Set<string>();
+			const warnList: ProcSnapshot[] = [];
+			for (const p of kills) {
+				const key = warnKeyOf(p);
+				if (warnedPgids.has(key) || seenPgids.has(key)) continue;
+				seenPgids.add(key);
+				warnList.push(p);
+			}
+			if (warnList.length === 0) return; // pgid 均已提醒过 → 不 steer 不记账
+			const historicalOnly = leaks.length - kills.length;
+			// 同 pgid 去重静默的条数（与 historicalOnly 不同：后者是窗口外历史残留）：本回合内
+			// 同组多进程只留一条 + 跨会话已提醒过的组，都被静默但仍在 kills 里——回检时据此
+			// 区分「提醒得少」是因为窗口外还是因为去重。
+			const deduped = kills.length - warnList.length;
 			warnedSessions.add(sessionId);
+			for (const p of warnList) warnedPgids.add(warnKeyOf(p)); // 先标记再发：发失败也不重复报
 			pi.sendMessage(
 				{
 					customType: "dev-process-guard-reminder",
-					content: buildWarnMessage(leaks, kills, nowSec),
+					content: buildWarnMessage(
+						warnList,
+						kills.length,
+						historicalOnly,
+						nowSec,
+					),
 				},
 				{ deliverAs: "steer", triggerTurn: true },
 			);
@@ -389,13 +439,18 @@ export function createDevProcessGuard(
 					payload: {
 						decision: "orphan-warn",
 						cmd: "dev-process-guard",
-						offenders: leaks.slice(0, EVENT_PROCS_MAX).map((p) => ({
+						offenders: warnList.slice(0, EVENT_PROCS_MAX).map((p) => ({
 							pid: p.pid,
 							pgid: p.pgid,
 							ageSec: ageOf(nowSec, p.starttimeSec),
 							cmdline: truncateCmdline(p.cmdline),
 						})),
 						inWindow: kills.length,
+						// 本轮被静默的历史残留条数（D5 回检点：窗口外、少报了多少）
+						historicalOnly,
+						// 同 pgid 去重静默条数（D5 回检点：已提醒过而同组未再报的有多少）；
+						// 与 historicalOnly 语义不同：一个是窗口外，一个是同 pgid 已提醒。
+						deduped,
 						windowStartedAt: windowStart ?? null,
 					},
 				});

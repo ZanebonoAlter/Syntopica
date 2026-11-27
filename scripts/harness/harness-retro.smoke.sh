@@ -200,6 +200,15 @@ ins "$FG" edit.map chg-w '{"paths":["backend-go/internal/topicgraph/model.go"],"
 ins "$FG" edit.map chg-w '{"paths":["backend-go/internal/topicgraph/model.go"],"n":1}' s-n1
 ins "$FG" edit.map chg-w '{"paths":["backend-go/internal/topicgraph/model.go"],"n":1}' s-n2
 
+# ---------- fixture S：子线程 token 占比（子会话 session.rollup parentSessionId 归父） ----------
+FS="$TMP/s.db"
+mk_db "$FS"
+# 主会话 rollup：tokens.total=4000 无 parentSessionId；子会话 rollup：tokens.total=1000 归父（s-main-sub）
+ins "$FS" session.rollup chg-sub '{"turns":4,"tokens":{"total":4000},"cost":0.4,"durationSec":400,"final":true}' s-main-sub
+ins "$FS" session.rollup '' '{"turns":1,"tokens":{"total":1000},"cost":0.1,"durationSec":100,"parentSessionId":"s-main-sub","final":true}' s-child-sub
+# 后台派发行存在但无任何 complete 事件（D4：占比改由子会话 rollup 归父，不再 join subagent.complete）
+ins "$FS" subagent.dispatch chg-sub '{"type":"general-purpose","background":true,"status":"running","agentId":"aaa-bbb-ccc","tokens":999}' s-main-sub
+
 # ---------- fixture H：测试欠账巡检（test-debt-patrol：patrol.check 流水 + test_debt 台账） ----------
 FH="$TMP/h.db"
 mk_db "$FH"
@@ -407,6 +416,30 @@ else
 	failn=$((failn + 1))
 fi
 check_absent "G8 无综合分措辞" "综合分" "综合评分"
+
+# ---------- S. 子线程 token 占比（子会话 session.rollup parentSessionId 归父） ----------
+run_retro --db "$FS" --days 7
+check 0 "S1 子线程 token 占比 20%（分子=子会话 rollup 1000，分母=全部 rollup 5000）" \
+	"子线程 token 占比 : 20%（子线程 1000 / 合计 5000；非空样本 1 条"
+"$RETRO" --db "$FS" --days 7 --json >"$TMP/fs.json" 2>/dev/null
+if python3 - "$TMP/fs.json" <<'FSPY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+sub = d['effectiveness']['subagent']
+assert sub['tokens'] == 1000, sub
+assert sub['samples'] == 1, sub
+assert sub['rollup_tokens'] == 5000, sub
+m = d['metrics']
+assert m['m7.sub_samples'] == 1, m.get('m7.sub_samples')
+assert m['m7.sub_tokens'] == 1000, m.get('m7.sub_tokens')
+FSPY
+then
+	echo "  ✓ S2 JSON effectiveness.subagent 与 m7.sub_samples/m7.sub_tokens 可复算"
+	pass=$((pass + 1))
+else
+	echo "  ✗ S2 JSON effectiveness.subagent 断言失败"
+	failn=$((failn + 1))
+fi
 
 # ---------- H. 测试欠账巡检（test-debt-patrol：patrol.check 流水 + test_debt 台账） ----------
 run_retro --db "$FH" --days 7

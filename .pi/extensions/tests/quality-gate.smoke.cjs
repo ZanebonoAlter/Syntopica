@@ -217,6 +217,21 @@ const check = (name, ok) => checks.push([name, ok]);
 		const before = lastPaths(t1, 'foo');
 		syncEditMap(t1, 's2', []);
 		check('Q4b 空 trigger 落库为原快照（幂等无害）', JSON.stringify(lastPaths(t1, 'foo')) === JSON.stringify(before));
+
+		// Q-D2 未变化不落库（slim-harness-ledger D2：merged 与 base 全等时零写入）：
+		// 新开临时库 + 新 change 名（避免模块内 editMapBound 缓存串味），逐条验证返回值与行数增量。
+		const t2 = mktmp(); tmps.push(t2);
+		logEvent(t2, { kind: 'stage.set', sessionId: 's1', change: 'd2-change', payload: { stage: 'implement', stageFamily: 'implementation', boundChange: 'd2-change', source: 'command' } });
+		const d2Rows = () => queryByChange(t2, 'd2-change', ['edit.map']).length;
+		const d2First = syncEditMap(t2, 's1', ['a.go', 'b.go']);
+		check('Q-D2 首次 sync 返回 true 且落库一条（a.go,b.go）',
+			d2First === true && d2Rows() === 1 && JSON.stringify(lastPaths(t2, 'd2-change')) === JSON.stringify(['a.go', 'b.go']));
+		const d2Same = syncEditMap(t2, 's1', ['a.go']); // 子集、并集未变化
+		check('Q-D2 集合未变化返回 false 且不落库（行数仍 1）——未变化不落库（slim-harness-ledger D2）',
+			d2Same === false && d2Rows() === 1);
+		const d2Grow = syncEditMap(t2, 's1', ['c.go']);
+		check('Q-D2 集合变化返回 true 且行数 +1（并集 {a,b,c}）',
+			d2Grow === true && d2Rows() === 2 && JSON.stringify(lastPaths(t2, 'd2-change')) === JSON.stringify(['a.go', 'b.go', 'c.go']));
 	} finally {
 		for (const t of tmps) fs.rmSync(t, { recursive: true, force: true });
 	}

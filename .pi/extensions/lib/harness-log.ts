@@ -16,7 +16,6 @@
  *   constraint.read    30 天（stage-driven-constraint-injection D6：约束文档读取记账；归档对账唯一事实源）
  *   mode.set           30 天（legacy：改造前既有行——只读 + TTL 自然消退，写侧已切 stage.set）
  *   spill.write        30 天（tool-output-spill：大工具结果 spill 记账）
- *   subagent.complete  30 天（harness-observability-fixes D3：后台子线程完成回填）
  *   policy.decision    30 天（harden-harness-policy-and-spill：spec-gate/quota-gate/test-scope-guard 显著裁决统一记账）
  *   edit.map           30 天（coordinate-concurrent-changes：change→编辑文件归属地图，quality-gate 落库侧并集快照）
  *   patrol.check       30 天（test-debt-patrol：测试欠账巡检分片流水，仅流水；欠账生命周期由台账表自身持久化）
@@ -26,6 +25,11 @@
  *                      专用登记脚本 scripts/harness/change-abandon.sh 直写，append-only 不去重；
  *                      消费侧同名 archive 并存时以 change.archive 为准并提示冲突）
  *   pin.write          永久
+ *
+ * 已退役 kind（不在写入词汇表 HarnessEventKind 内，只为清扫存量行而保留保留期——
+ * LEGACY_RETENTION_DAYS，不参与写入校验）：
+ *   subagent.complete  30 天（slim-harness-ledger D4：get_subagent_result 回填下线，
+ *                      新版本不再写入，历史行仍按 30 天保留期被 TTL 清扫）
  *
  * 安全开库（design D2）：
  *   - 所有写 PRAGMA（含 journal_mode=WAL）必须在 application_id/user_version 校验通过之后
@@ -126,7 +130,6 @@ export type HarnessEventKind =
 	| "stage.set"
 	| "mode.set"
 	| "spill.write"
-	| "subagent.complete"
 	| "policy.decision"
 	| "edit.map"
 	| "change.archive"
@@ -160,13 +163,23 @@ const RETENTION_DAYS: Partial<Record<HarnessEventKind, number>> = {
 	"stage.set": 30,
 	"mode.set": 30, // legacy：既有行 30 天自然消退（不改写不删除）
 	"spill.write": 30,
-	"subagent.complete": 30,
 	"policy.decision": 30,
 	"edit.map": 30,
 	"patrol.check": 30,
 	"change.archive": 30,
 	"change.abandon": 30,
 	// pin.write 永久，不列
+};
+
+/**
+ * 已退役 kind 的保留期：只为清扫存量行，不参与写入校验。
+ *
+ * kind 已从 `HarnessEventKind`（可写词汇表）移除，写不进来；但历史行仍须按承诺的保留期
+ * 自然消退（spec 场景「历史行 31 天后被 TTL 清扫」），故清扫循环合并本表与
+ * RETENTION_DAYS。新增退役 kind 时在此登记保留天数即可。
+ */
+const LEGACY_RETENTION_DAYS: Record<string, number> = {
+	"subagent.complete": 30,
 };
 
 const DDL = `
@@ -235,8 +248,13 @@ function openDb(cwd: string): DatabaseSyncLike | null {
 		db.exec("PRAGMA synchronous = NORMAL");
 		db.exec("PRAGMA busy_timeout = 5000");
 		db.exec(DDL);
-		// TTL 清扫：按 kind 分保留期（ISO 字符串字典序 = 时间序）
-		for (const [kind, days] of Object.entries(RETENTION_DAYS)) {
+		// TTL 清扫：按 kind 分保留期（ISO 字符串字典序 = 时间序）。
+		// 现役表 + legacy 表合并迭代：退役 kind 不再写入，但存量行照常到期清扫。
+		const retentionEntries: [string, number][] = [
+			...(Object.entries(RETENTION_DAYS) as [string, number][]),
+			...Object.entries(LEGACY_RETENTION_DAYS),
+		];
+		for (const [kind, days] of retentionEntries) {
 			const cutoff = new Date(Date.now() - days * 86400e3).toISOString();
 			db.prepare("DELETE FROM events WHERE kind = ? AND ts < ?").run(
 				kind,

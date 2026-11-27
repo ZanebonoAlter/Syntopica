@@ -9,7 +9,7 @@
  *                               session.rollup 终值（task-cost-metrics D3：自扫 sessions 目录定位
  *                               prev——mtime 最新且非本会话的 jsonl；pi 事件从不携带
  *                               previousSessionFile，旧依赖机制事实死亡）
- *   turn_end                    → session.rollup 节流快照（每 5 turn 或 token 增量>20%；
+ *   turn_end                    → session.rollup 节流快照（每 20 turn 或 token 增量>50%；
  *                               轮次/步数/工具调用/token 五值/成本/时长/模型/逐模型 models
  *                               map/子会话 parentSessionId，final=false，
  *                               同 session 取最新一条即终值——查询语义对齐 edit.map）
@@ -18,15 +18,11 @@
  *   tool_result(bash)         → change.archive（归档成功锚点：命令命中且非错误 → 记
  *                               change 名（正则语义同 spec-gate）；失败/提取不到零记录 fail-open）
  *   tool_result(Agent)         → subagent.dispatch（类型/模型/摘要/耗时/token/change 归属；
- *                               失败附白名单 failure；后台派发时暂存 agentId→change 绑定
- *                               供完成回填复用——add-review-trace-gate D2：change 列与
+ *                               失败附白名单 failure；add-review-trace-gate D2：change 列与
  *                               session.rollup 同源 detectActiveChange，历史无归属行不回填；
  *                               add-dispatch-constraint-digest D5：append-only 追加
  *                               constraintDigest/constraintDomains（派发文本约束段派生值，
  *                               只落派生值不落任务正文）
- *   tool_result(get_subagent_result) → subagent.complete（后台子线程完成回填，
- *                               harness-observability-fixes D3：解析结果摘要首两行；
- *                               13/17 条 dispatch 永停 background 态的审计断链修复）
  *
  * 其余采集点在各自扩展内自报（logEvent 是共享唯一写入方）：
  *   constraint.inject / pin.write / pin.read → constraint-injection.ts
@@ -65,10 +61,7 @@ let logFailNotified = false;
 const agentStarts = new Map<string, number>();
 // 归档命令暂存（toolCallId → command，task-cost-metrics D4）：tool_result 配对后记 change.archive
 const archiveCalls = new Map<string, string>();
-// 后台派发暂存 agentId → 当时 change 绑定（subagent.complete 复用，不重检测）
-const agentChangeBindings = new Map<string, string | null>();
-// 已回填完成的 agentId（幂等去重：同一 agent 至多一条 complete）
-const completedAgents = new Set<string>();
+
 // rollup 增量状态（session_start 重置）：jsonl 偏移 + 上次快照 token 基线 + turn 计数
 let rollupAcc: RollupAccumulator = newAccumulator();
 let rollupTurnCount = 0;
@@ -107,41 +100,6 @@ function errorTextOf(content: unknown): string {
 		})
 		.map((c) => c.text)
 		.join("\n");
-}
-
-/** get_subagent_result 结果摘要解析（harness-observability-fixes D3）。
- *  实测形态（session JSONL 考古 2026-08-24）：
- *    "Agent: 7d1245e1-35ca-45a"
- *    "Type: Agent | Status: completed | Tool uses: 79 | 2.0M token | Context: 54% | Duration: 3944.8s"
- *  提不出 agentId / "Agent not found" / 非终态（running）→ 返回 null（不记账，fail-safe：
- *  pi 升级改格式时退化为现状而非误记账）。纯函数，smoke 直测。 */
-export interface SubagentSummary {
-	agentId: string;
-	status: string;
-	toolUses: number | null;
-	tokens: number | null;
-	ms: number | null;
-}
-
-export function parseSubagentSummary(text: string): SubagentSummary | null {
-	if (/Agent not found|cleaned up/i.test(text)) return null;
-	const idMatch = text.match(/^Agent:\s*([0-9a-f-]{6,})/m);
-	if (!idMatch) return null;
-	const agentId = idMatch[1];
-	const statusMatch = text.match(/\bStatus:\s*(\w+)/);
-	if (!statusMatch) return null;
-	const status = statusMatch[1];
-	if (status.toLowerCase() === "running") return null; // 非终态（wait=false 轮询）不算完成
-	const toolUsesMatch = text.match(/Tool uses:\s*(\d+)/);
-	const tokenMatch = text.match(/([\d.]+)\s*([KMkm])\s*token/); // "2.0M token"
-	const durMatch = text.match(/Duration:\s*([\d.]+)s/);
-	return {
-		agentId,
-		status,
-		toolUses: toolUsesMatch ? Number.parseInt(toolUsesMatch[1], 10) : null,
-		tokens: tokenMatch ? parseTokenCount(`${tokenMatch[1]}${tokenMatch[2]}`) : null,
-		ms: durMatch ? Math.round(Number.parseFloat(durMatch[1]) * 1000) : null,
-	};
 }
 
 /** 派发任务文本的约束段解析结果（add-dispatch-constraint-digest D5）。
@@ -210,8 +168,6 @@ export default function (pi: ExtensionAPI) {
 		logFailNotified = false;
 		agentStarts.clear();
 		archiveCalls.clear();
-		agentChangeBindings.clear();
-		completedAgents.clear();
 		// rollup 状态重置：resume/重启后 offset 从 0 重读全量（rollup 是全会话累计口径，
 		// 快照覆盖取最新一条即终值，重读只浪费一次 IO 不影响正确性）
 		rollupAcc = newAccumulator();
@@ -372,33 +328,6 @@ export default function (pi: ExtensionAPI) {
 			}
 			return;
 		}
-		// 后台子线程完成回填（harness-observability-fixes D3）：父线程取结果走
-		// get_subagent_result，返回首两行是结构化摘要——解析后追加 subagent.complete
-		// （append-only，既有 dispatch 行不改写）。解析不出/not found/running 不伪造（fail-safe）。
-		if (event.toolName === "get_subagent_result") {
-			const sessionId = ctx.sessionManager?.getSessionId?.();
-			if (!sessionId) return;
-			const summary = parseSubagentSummary(errorTextOf(event.content));
-			if (!summary) return;
-			if (completedAgents.has(summary.agentId)) return; // 幂等：至多一条 complete
-			completedAgents.add(summary.agentId);
-			const change = agentChangeBindings.get(summary.agentId) ?? null; // reload 丢 map 落 null（parent_session_id 兕底）
-			guardedLog(ctx.cwd, ctx, {
-				kind: "subagent.complete",
-				sessionId,
-				change,
-				payload: {
-					agentId: summary.agentId,
-					status: summary.status, // completed/cancelled/error 等 pi 枚举原样透传
-					ms: summary.ms,
-					tokens: summary.tokens,
-					toolUses: summary.toolUses,
-					turnCount: null, // 结果摘要无此字段
-					isError: event.isError === true || /error|fail/i.test(summary.status),
-				},
-			});
-			return;
-		}
 		if (event.toolName !== "Agent") return;
 		const sessionId = ctx.sessionManager?.getSessionId?.();
 		if (!sessionId) return;
@@ -431,12 +360,9 @@ export default function (pi: ExtensionAPI) {
 		const tokens = usage?.totalTokens ?? parseTokenCount(tokenLabel);
 
 		// dispatch 落账补 change 归属（add-review-trace-gate design D2）：与 session.rollup
-		// 快照同源 detectActiveChange，一次判定两用——写 agentChangeBindings（complete 回填
-		// 复用，不二次调用）+ dispatch 事件 change 列；既有无归属历史行不改写（追加不改写）
+		// 快照同源 detectActiveChange，取派发落账时刻的活跃 change；既有无归属历史行不改写
+		// （追加不改写）。
 		const dispatchChange = detectActiveChange(ctx.cwd)?.name ?? null;
-		if (details?.agentId) {
-			agentChangeBindings.set(details.agentId, dispatchChange);
-		}
 
 		// A4 失败白名单：仅失败产出 failure（成功/取消不产出）；diag≤512B，原文不透传
 		let failure: FailureFact | undefined;
@@ -463,7 +389,7 @@ export default function (pi: ExtensionAPI) {
 		guardedLog(ctx.cwd, ctx, {
 			kind: "subagent.dispatch",
 			sessionId,
-			change: dispatchChange, // 派发落账时刻的活跃 change（解析不到 null；complete 分支不动）
+			change: dispatchChange, // 派发落账时刻的活跃 change（解析不到 null）
 			payload: {
 				parent_session_id: sessionId,
 				type: input.subagent_type ?? null,

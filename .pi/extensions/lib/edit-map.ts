@@ -13,8 +13,9 @@
  *     非目录 mtime 启发式（detectActiveChange 语义太弱，不适合归属判定）；
  *     无 stage.set / boundChange=null → 未绑定会话，零事件不计入任何 change
  *   - 跨 session 并集：落库侧合并（非查询侧）——首次绑定（或档位切换）时从库读该
- *     change 名下最新一条 edit.map 的 paths 作 base，之后每回合 base ∪= trigger 后
- *     落全量快照；「取最新一条即完整集合」因此成立
+ *     change 名下最新一条 edit.map 的 paths 作 base，之后每回合 base ∪= trigger，
+ *     集合有变化才落全量快照（未变化不落库：slim-harness-ledger D2）；
+ *     「取最新一条即完整集合」因此成立
  *   - 模块状态（base/bound）在 session_start/session_shutdown 由 quality-gate 调
  *     resetEditMapState() 重置（pi-subagents 共享模块实例，startup 不清——同
  *     quality-gate ownerSessionId 防御，由调用方保证时机）
@@ -184,8 +185,18 @@ export function resetEditMapState(): void {
 }
 
 /**
+ * 路径集合逐项全等（mergePaths 输出按字典序稳定排序，可直接顺序比较）。
+ * 不假设 base 已排序：存量行 base 若乱序/含重复，全等判定为假 → 归一化写一次即收敛。
+ */
+function samePaths(a: string[], b: string[]): boolean {
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+	return true;
+}
+
+/**
  * 归属聚合主入口：读同 session 最近 mode.set 取 boundChange，维护累计快照并落库。
- * 返回 true=落库成功；false=未落库（无档会话/异常，均属正常旁路）。
+ * 返回 true=落库成功；false=未落库（无档会话/集合未变化/异常，均属正常旁路）。
  * trigger 非空由调用方保证（quality-gate 在 trigger.size>0 时才调）。
  */
 export function syncEditMap(
@@ -220,6 +231,10 @@ export function syncEditMap(
 		);
 		const merged = mergePaths(editMapBase, triggerFiltered);
 		if (merged.length === 0) return false; // 全工具自管/空集：零事件不落库
+		// 未变化不落库（slim-harness-ledger D2，spec 场景「路径集合未变化时不追加快照」）：
+		// 归属集合是累计并集，多数回合只重复已有路径；每回合重写全量快照曾占
+		// 1,595 行 / 31MB 而信息增量近零。append-only 不变——只少写，不 UPDATE/DELETE 历史行。
+		if (samePaths(merged, editMapBase)) return false;
 		editMapBase = merged;
 		return logEvent(cwd, {
 			kind: "edit.map",

@@ -204,11 +204,11 @@ ok("多字节截断：残行整行重读后正确解码（offset 不动语义）
 });
 
 /* ---- 节流边界（白盒边界表） ---- */
-ok("节流边界：turn%5 / >20% 严格 / bootstrap / turn0", () => {
-	assert.equal(shouldWriteSnapshot(4, 1000, 1100), false); // 增量 10%、非 5 倍数
-	assert.equal(shouldWriteSnapshot(5, 1000, 1001), true); // 5 倍数
-	assert.equal(shouldWriteSnapshot(4, 1000, 1201), true); // >20% 严格
-	assert.equal(shouldWriteSnapshot(4, 1000, 1200), false); // =20% 整不写
+ok("节流边界：turn%20 / >50% 严格 / bootstrap / turn0", () => {
+	assert.equal(shouldWriteSnapshot(19, 1000, 1400), false); // 增量 40%、非 20 倍数
+	assert.equal(shouldWriteSnapshot(20, 1000, 1000), true); // 20 倍数
+	assert.equal(shouldWriteSnapshot(19, 1000, 1501), true); // >50% 严格
+	assert.equal(shouldWriteSnapshot(19, 1000, 1500), false); // =50% 整不写
 	assert.equal(shouldWriteSnapshot(1, null, 0), true); // bootstrap
 	assert.equal(shouldWriteSnapshot(0, 500, 500), false); // turn0 不写
 });

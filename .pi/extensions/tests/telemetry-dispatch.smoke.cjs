@@ -2,7 +2,7 @@
 /* telemetry-dispatch.smoke — subagent.dispatch change 归属记账白盒（add-review-trace-gate 2.2）
  *
  * 设计 D2：dispatch 落账补 change 列（与 session.rollup 快照同源 detectActiveChange，
- * 一次判定两用 agentChangeBindings + 事件 change 列）；既有行不可变（追加不改写）。
+ * 派发落账时刻判定）；既有行不可变（追加不改写）。
  *
  * 集成（仿 telemetry-archive.smoke.cjs）：mock pi 挂 tool_call/tool_result 钩子 →
  * 临时 cwd 落真库（events.db）→ 断言 change 列与行序：
@@ -170,13 +170,13 @@ ok("既有行不可变：先无归属（null）→ 后带值，追加不改写�
 	}
 });
 
-ok("后台派发 agentChangeBindings 复用同一次判定（complete 回填 change 与 dispatch 同源）", () => {
+ok("后台派发 get_subagent_result 不再产生 subagent.complete（D4：完成回填已下线）", () => {
 	const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "tdisp-d-"));
 	try {
 		fs.mkdirSync(path.join(tmp, "openspec", "changes", "bind-change"), { recursive: true });
 		fs.writeFileSync(path.join(tmp, "openspec", "changes", "bind-change", "proposal.md"), "<!-- ui-impact: none -->\n");
 		const { handlers, ctx } = makeTelemetry(tmp);
-		// 后台派发（run_in_background=true + agentId）→ dispatch 带 change；complete 回填同值
+		// 后台派发（run_in_background=true + agentId）→ dispatch 带 change
 		handlers["tool_call"](
 			{ toolName: "Agent", toolCallId: "tc-bg", input: { subagent_type: "general-purpose", description: "后台任务", prompt: "y", run_in_background: true } },
 			ctx,
@@ -204,10 +204,10 @@ ok("后台派发 agentChangeBindings 复用同一次判定（complete 回填 cha
 		const { DatabaseSync } = require("node:sqlite");
 		const db = new DatabaseSync(dbFile);
 		const disp = db.prepare("SELECT change FROM events WHERE kind='subagent.dispatch'").get();
-		const comp = db.prepare("SELECT change FROM events WHERE kind='subagent.complete'").get();
+		const comp = db.prepare("SELECT COUNT(*) AS n FROM events WHERE kind='subagent.complete'").get();
 		db.close();
 		assert.equal(disp.change, "bind-change", "dispatch 行带 change");
-		assert.equal(comp.change, "bind-change", "complete 回填与 dispatch 同源同值");
+		assert.equal(comp.n, 0, "不再产生 subagent.complete 事件");
 	} finally {
 		fs.rmSync(tmp, { recursive: true, force: true });
 	}

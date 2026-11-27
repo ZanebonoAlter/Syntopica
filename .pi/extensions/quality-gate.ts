@@ -82,7 +82,7 @@ import {
 	mkdirSync,
 } from "node:fs";
 import { join, delimiter } from "node:path";
-import { logEvent } from "./lib/harness-log";
+import { logEvent, queryBySession } from "./lib/harness-log";
 import { detectActiveChange } from "./lib/active-change";
 import {
 	syncEditMap,
@@ -308,6 +308,11 @@ let baselineDegradedNoted = false;
 // 「干净仓库基线为空」的合法空集——空集是已证实的无外部脏文件，缺席是快照没拍成
 // （「本可判外部的路径无法判」）。lazy 兜底路径不回填基线，维持缺席语义。
 let baselineAbsent = true;
+// 子线程降载记账的进程内快路径（slim-harness-ledger D1/R-8）：已确认记过账的会话 ID。
+// 只是快路径，库才是判据——`/reload`/进程重启后 Set 重建、命中不了就回落 queryBySession
+// 查库判重（因此不会重复写）；命中时省掉每回合一次库查询。会话边界随其他会话状态清零，
+// 避免无界增长。
+let childDecisionRecorded = new Set<string>();
 
 /** gate.check ok=false 的归属四态（design D2）：mine/foreign/mixed 透传
  *  classifyFailureOwnership 结果；attribution-degraded = 归因信号缺席/判定异常的
@@ -380,6 +385,31 @@ function expandPkgAnchorDirs(
 	return out;
 }
 
+/**
+ * 子线程降载记账判重（slim-harness-ledger D1）：该会话是否已有 child-session 记账行。
+ * 判据落在事实库（跨 `/reload`、pi 重启有效）——调用方另有一个进程内 Set 只做快路径，
+ * Set 未命中时回到本函数查库，因此库始终是判据、Set 只是省一次查询。
+ * 单行 payload 损坏只跳过该行（不得因一行坏数据把整会话判成未记账 → 重复写）。
+ * 查询异常向上抛，由调用方 fail-open。
+ */
+function hasChildSessionDecision(cwd: string, sessionId: string): boolean {
+	for (const row of queryBySession(cwd, sessionId, ["policy.decision"])) {
+		if (typeof row.payload !== "string") continue;
+		try {
+			const p = JSON.parse(row.payload) as {
+				policy?: unknown;
+				reasonCode?: unknown;
+			};
+			if (p.policy === "quality-gate" && p.reasonCode === "child-session") {
+				return true;
+			}
+		} catch {
+			/* payload 损坏：跳过该行继续判重 */
+		}
+	}
+	return false;
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (event, ctx) => {
 		// ⚠ reason "startup" 跳过（与 constraint-injection 同款防御）：pi-subagents 派发
@@ -397,6 +427,7 @@ export default function (pi: ExtensionAPI) {
 		degradedEdges = new Set(); // 归因降级 (cmd,fp) 边沿随会话边界清零（attribution D3）
 		baselineDegradedNoted = false; // 基线缺席会话级降级随会话边界清零（attribution D3）
 		baselineAbsent = true; // 基线信号缺席待快照证伪（快照成功即 false；空集=干净≠缺席）
+		childDecisionRecorded = new Set(); // 子线程记账快路径随会话边界清零（库仍为准）
 		execPlatform = null; // 平台判定随会话边界重判（spec：判定在会话内稳定）
 		nativeToolchain = { backend: null, frontend: null }; // 工具链探测随会话边界重探（D3）
 		toolchainDownNotified = { backend: false, frontend: false }; // 短路边沿状态随会话边界清零（D5）
@@ -450,6 +481,7 @@ export default function (pi: ExtensionAPI) {
 		nativeToolchain = { backend: null, frontend: null };
 		toolchainDownNotified = { backend: false, frontend: false };
 		ownerSessionId = null;
+		childDecisionRecorded = new Set(); // 子线程记账快路径随会话边界清零（库仍为准）
 		resetEditMapState();
 	});
 
@@ -457,19 +489,35 @@ export default function (pi: ExtensionAPI) {
 		// 0. 子线程降载短路（harden-subagent-constraint-channel D4）：判定与 constraint-injection
 		//    继承同源（lib/child-session，header parentSession / fork 路径）。命中即本回合整体
 		//    放行——git 快照、interop/工具链探测、lint/vet/test/eslint 一个不跑，零 gate.check
-		//    （没跑命令，与同根因短路未执行零记账同口径）；显式记账一条 bypass（MUST NOT 静默），
+		//    （没跑命令，与同根因短路未执行零记账同口径）；显式记一条 bypass（MUST NOT 静默），
 		//    无 sessionId 的 stub 语境跳过记账但照常放行（与既有记账门控一致）。置顶于 touchedCode
-		//    早退之前：spec 场景对子线程每个 turn_end 无条件要求降载+记账。主会话判定为假，
+		//    早退之前：spec 场景对子线程每个 turn_end 无条件要求降载。主会话判定为假，
 		//    落到下方既有路径逐行为不变。
+		//    记账粒度 = 每会话至多一条（slim-harness-ledger D1）：child-session 曾占
+		//    policy.decision 的 96.6%（48,527/50,244），每回合一条把这本账变成噪声背景，
+		//    剩下的真实决策无法一眼捞出。判重以事实库既有记录为准（queryBySession），因此
+		//    `/reload`/进程重启后仍不重复记；进程内 Set 只做快路径（命中即跳过查询，未命中
+		//    或重建后回落查库）——库始终是判据。查询或记账异常一律 fail-open，不阻断降载放行。
 		if (isChildSession(ctx)) {
-			const childSessionId = ctx.sessionManager?.getSessionId?.();
-			if (childSessionId) {
-				logPolicyDecision(ctx.cwd, {
-					sessionId: childSessionId,
-					policy: "quality-gate",
-					action: "bypass",
-					reasonCode: "child-session",
-				});
+			try {
+				const childSessionId = ctx.sessionManager?.getSessionId?.();
+				if (childSessionId && !childDecisionRecorded.has(childSessionId)) {
+					if (hasChildSessionDecision(ctx.cwd, childSessionId)) {
+						childDecisionRecorded.add(childSessionId); // 库里已有：后续回合免查
+					} else if (
+						logPolicyDecision(ctx.cwd, {
+							sessionId: childSessionId,
+							policy: "quality-gate",
+							action: "bypass",
+							reasonCode: "child-session",
+						})
+					) {
+						// 写账成功才进快路径：写失败（返回 false）不进 Set，下回合重试而非静默丢账
+						childDecisionRecorded.add(childSessionId);
+					}
+				}
+			} catch {
+				/* fail-open：判重/记账失败不影响降载与放行 */
 			}
 			return;
 		}

@@ -1084,7 +1084,7 @@ else:
         out.append('   催修时距        : 无样本（%s）' % ('剔除 %s 条无解除信号' % rep.get('excluded') if rep.get('excluded') else '无 block/warn 或无 gate.check 红→绿'))
     out.append('   回归翻转        : %s 次（同 session+cmd 曾绿变红）' % (health.get('regressions') or 0))
     waves = health.get('waves') or []
-    out.append('   返工波次        : %s 个文件 ≥2 session（累计快照口径，含被动携带）' % len(waves))
+    out.append('   返工波次        : %s 个文件 ≥2 session（口径：为该文件贡献过新增路径的 session 数；slim-harness-ledger D2 后集合未变化不落库，不再计被动携带）' % len(waves))
     for it in waves[:6]:
         out.append('     - %s ×%s session' % (pad((it.get('path') or '')[:56], 58), it.get('sessions')))
     out.append('')
@@ -1281,7 +1281,8 @@ ru_t AS (SELECT session_id, COALESCE(change,'') chg,
     CAST(json_extract(payload,'$.tokens.total') AS INTEGER) tok,
     CAST(json_extract(payload,'$.tokens.output') AS INTEGER) tok_out,
     CAST(json_extract(payload,'$.cost') AS REAL) cost,
-    CAST(json_extract(payload,'$.durationSec') AS INTEGER) dur
+    CAST(json_extract(payload,'$.durationSec') AS INTEGER) dur,
+    COALESCE(json_extract(payload,'$.parentSessionId'),'') parent
   FROM ru),
 sess_total AS (SELECT COUNT(DISTINCT session_id) n FROM win),
 inj_raw AS (SELECT COALESCE(change,'') chg,
@@ -1379,13 +1380,6 @@ hit_chg AS (SELECT ed.chg, COUNT(DISTINCT ed.domain) edited,
 hit_sum AS (SELECT IFNULL(SUM(hit),0) hit, IFNULL(SUM(edited),0) edited FROM hit_chg),
 wave AS (SELECT p, COUNT(DISTINCT session_id) n FROM emap_flat GROUP BY 1 HAVING n >= 3 ORDER BY n DESC, p LIMIT 10),
 arch_retry AS (SELECT chg, IFNULL(SUM(n),0) n FROM pblock WHERE reason='archive-check-failed' GROUP BY 1 ORDER BY n DESC LIMIT 8),
-sub_pairs AS (SELECT id, kind, COALESCE(NULLIF(json_extract(payload,'$.agentId'),NULL),'row'||id) aid,
-    CAST(json_extract(payload,'$.tokens') AS INTEGER) t
-  FROM win WHERE kind IN ('subagent.dispatch','subagent.complete') AND json_valid(payload)),
-sub_one AS (SELECT aid, (SELECT x.t FROM sub_pairs x WHERE x.aid=s.aid AND x.t IS NOT NULL
-      ORDER BY CASE WHEN x.kind='subagent.complete' THEN 1 ELSE 0 END DESC, x.id DESC LIMIT 1) t
-  FROM (SELECT DISTINCT aid FROM sub_pairs) s),
-sub_sum AS (SELECT IFNULL(SUM(t),0) s, COUNT(t) n FROM sub_one WHERE t IS NOT NULL),
 /* 派发带域比例（add-dispatch-constraint-digest D5/D7）：present/(present+absent)。
    三态解析：payload 非法 / 缺 constraintDigest 键 / 值不在枚举内 → 一律计「未知」并剔除分母，
    绝不回溯记 absent（否则把改造前的历史派发算成「遗漏」）；ratio 与报告其余百分比同口径（整数百分比）。 */
@@ -1400,6 +1394,7 @@ disp_dig_x AS (SELECT present, absent, unknown, (present+absent) AS decidable,
     CASE WHEN (present+absent) > 0 THEN (present*200 + (present+absent)) / (2*(present+absent)) END AS ratio
   FROM disp_dig),
 ru_sum AS (SELECT IFNULL(SUM(tok),0) s FROM ru_t),
+ru_child_sum AS (SELECT IFNULL(SUM(tok),0) s, COUNT(tok) n FROM ru_t WHERE parent != ''),
 ru_chg AS (SELECT chg, SUM(tok) tok, SUM(cost) cost, SUM(turns) turns FROM ru_t WHERE chg != '' GROUP BY 1),
 top_chg AS (SELECT chg, tok, cost FROM ru_chg ORDER BY tok DESC LIMIT 5),
 /* 分位（nearest-rank：p50 行号=(n+1)/2、p75 行号=(3n+3)/4，整数除法；空集→NULL） */
@@ -1552,8 +1547,8 @@ SELECT json_object(
     ),
     'top_changes', (SELECT json_group_array(json_object('change', chg, 'tokens', tok, 'cost', cost)) FROM top_chg),
     'subagent', json_object(
-      'tokens', (SELECT s FROM sub_sum),
-      'samples', (SELECT n FROM sub_sum),
+      'tokens', (SELECT s FROM ru_child_sum),
+      'samples', (SELECT n FROM ru_child_sum),
       'rollup_tokens', (SELECT s FROM ru_sum)
     ),
     'dispatch_digest', json_object(
@@ -1763,6 +1758,7 @@ metrics.update({
     'm7.chg_tok_p50': _e('chg_dist.tok_p50'),
     'm7.chg_tok_p75': _e('chg_dist.tok_p75'),
     'm7.sub_samples': _e('subagent.samples'),
+    'm7.sub_tokens': _e('subagent.tokens'),
     'm7.wave_files': len(_e('waves.items') or []),
     'm7.archive_retry_changes': len(_e('archive_retry.items') or []),
     # ⑦H 无档 JIT（enable-unbound-jit-injection D5）：按 tier 分组的无档编辑路径命中
@@ -2068,9 +2064,9 @@ else:
     sub = _e('subagent') or {}
     sub_tok = sub.get('tokens') or 0
     ru_tok = sub.get('rollup_tokens') or 0
-    if (sub.get('samples') or 0) > 0 and (sub_tok + ru_tok) > 0:
-        out.append('     子线程 token 占比 : %d%%（子线程 %s / 合计 %s；非空样本 %s 条）'
-                   % (_pct(sub_tok, sub_tok + ru_tok), sub_tok, sub_tok + ru_tok, sub['samples']))
+    if (sub.get('samples') or 0) > 0 and ru_tok > 0:
+        out.append('     子线程 token 占比 : %d%%（子线程 %s / 合计 %s；非空样本 %s 条；源：子会话 session.rollup parentSessionId 归父）'
+                   % (_pct(sub_tok, ru_tok), sub_tok, ru_tok, sub['samples']))
     else:
         out.append('     子线程 token 占比 : —（无子线程 token 样本）')
 
@@ -2128,7 +2124,7 @@ else:
 
     out.append('   C 返工信号')
     waves = _e('waves.items') or []
-    out.append('     跨 session 编辑波次: %s 个文件 ≥3 session（累计快照口径：含被动携带）' % len(waves))
+    out.append('     跨 session 编辑波次: %s 个文件 ≥3 session（口径：贡献过新增路径的 session 数；不再计被动携带）' % len(waves))
     for it in waves[:8]:
         out.append('       - %s ×%s session' % (pad((it['path'] or '')[:56], 58), it['sessions']))
     ars = _e('archive_retry.items') or []

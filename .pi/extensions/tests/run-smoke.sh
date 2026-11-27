@@ -3,7 +3,7 @@
 # ① constraint-injection 全量回归：stub typebox，esbuild 打包 extension，以真实事件形状
 #    （args 字段）回放切档→绑定→注入→JIT→pin 链路，含 pi-web 子会话继承用例（19.13）；
 # ② 委托 run-harness-smoke.sh 跑 harness 全家桶：含 lib/child-session isChildSession 判定
-#    矩阵、quality-gate 子线程 turn_end 降载 bypass（零命令+一条记账）与主会话不受影响、
+#    矩阵、quality-gate 子线程 turn_end 降载 bypass（零命令+每会话至多一条记账）与主会话不受影响、
 #    policy.decision 形状/源码断言。
 # 用法：bash .pi/extensions/tests/run-smoke.sh
 set -euo pipefail

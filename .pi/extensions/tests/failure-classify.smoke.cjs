@@ -204,38 +204,6 @@ const check = (name, ok) => checks.push([name, ok]);
 			details: { tokens: '37.4k', durationMs: 12345, status: 'background', agentId: '7d1245e1-35ca-45a' },
 		});
 
-		// 完成回填（harness-observability-fixes D3）：真实样本回放（session JSONL 考古 2026-08-24）
-		const doneText = 'Agent: 7d1245e1-35ca-45a\nType: Agent | Status: completed | Tool uses: 79 | 2.0M token | Context: 54% | Duration: 3944.8s\n\nDescription: Luna 真实 UI 验收\n\n验收报告正文……';
-		await emit('tool_result', {
-			toolName: 'get_subagent_result', toolCallId: 'tc3', isError: false,
-			input: { agent_id: '7d1245e1-35ca-45a', wait: true },
-			content: [{ type: 'text', text: doneText }],
-		});
-		// 同一 agent 取两次结果 → 幂等（至多一条 complete）
-		await emit('tool_result', {
-			toolName: 'get_subagent_result', toolCallId: 'tc4', isError: false,
-			input: { agent_id: '7d1245e1-35ca-45a' },
-			content: [{ type: 'text', text: doneText }],
-		});
-		// 取消样本：status=cancelled 透传且 isError=false
-		await emit('tool_result', {
-			toolName: 'get_subagent_result', toolCallId: 'tc5', isError: false,
-			input: { agent_id: 'aaa-bbb-ccc' },
-			content: [{ type: 'text', text: 'Agent: aaa-bbb-ccc\nType: Agent | Status: cancelled | Duration: 10.5s\n\n（用户取消）' }],
-		});
-		// 断链/清理形态：不伪造完成事件
-		await emit('tool_result', {
-			toolName: 'get_subagent_result', toolCallId: 'tc6', isError: false,
-			input: { agent_id: 'c8e0d181-ba74-4ce' },
-			content: [{ type: 'text', text: 'Agent not found: "c8e0d181-ba74-4ce". It may have been cleaned up.' }],
-		});
-		// running 非终态：不算完成
-		await emit('tool_result', {
-			toolName: 'get_subagent_result', toolCallId: 'tc7', isError: false,
-			input: { agent_id: 'ddd-eee-fff' },
-			content: [{ type: 'text', text: 'Agent: ddd-eee-fff\nType: Agent | Status: running' }],
-		});
-
 		const rows = queryBySession(tmp, 'tel-s1', ['subagent.dispatch']);
 		check('telemetry 落库 subagent.dispatch 2 条', rows.length === 2);
 		const fail = rows[0] && JSON.parse(rows[0].payload);
@@ -246,18 +214,13 @@ const check = (name, ok) => checks.push([name, ok]);
 		check('成功派发无 failure 对象', ok && ok.failure === undefined);
 		check('成功派发 tokens 规范化（37.4k→37400）', ok && ok.tokens === 37400);
 
-		// subagent.complete 断言（D3）
-		const comps = queryBySession(tmp, 'tel-s1', ['subagent.complete']);
-		check('完成回填幂等（两次取结果仅一条 complete）', comps.length === 2); // completed + cancelled 各一
-		const done = comps.find((r) => JSON.parse(r.payload).agentId === '7d1245e1-35ca-45a');
-		const doneP = done && JSON.parse(done.payload);
-		check('complete 解析真实样本（status/toolUses/tokens/ms）', doneP && doneP.status === 'completed' && doneP.toolUses === 79 && doneP.tokens === 2000000 && doneP.ms === 3944800);
-		check('complete 复用派发时 change 绑定（tmp 无 change → null）', doneP && done.change === null);
-		const cancelled = comps.find((r) => JSON.parse(r.payload).agentId === 'aaa-bbb-ccc');
-		const cancelledP = cancelled && JSON.parse(cancelled.payload);
-		check('cancelled 透传且 isError=false', cancelledP && cancelledP.status === 'cancelled' && cancelledP.isError === false);
-		check('断链（not found/cleaned up）不伪造 complete', !comps.some((r) => JSON.parse(r.payload).agentId === 'c8e0d181-ba74-4ce'));
-		check('running 非终态不记 complete', !comps.some((r) => JSON.parse(r.payload).agentId === 'ddd-eee-fff'));
+		// subagent.complete 已退役（slim-harness-ledger D4）：get_subagent_result 不再回填任何事件。
+		// 该 kind 已不在 HarnessEventKind 联合内，故用裸 SQL 计数（同 telemetry-dispatch.smoke.cjs:207）。
+		const { DatabaseSync } = require('node:sqlite');
+		const evDb = new DatabaseSync(path.join(tmp, '.pi', 'harness', 'events.db'));
+		const comps = evDb.prepare("SELECT COUNT(*) AS n FROM events WHERE kind='subagent.complete'").get();
+		evDb.close();
+		check('不再产生 subagent.complete 事件', comps.n === 0);
 		check('session.start 落库', queryBySession(tmp, 'tel-s1', ['session.start']).length === 1);
 
 		fs.rmSync(tmp, { recursive: true, force: true });

@@ -21,7 +21,7 @@
  * 每 turn 只读新增字节；offset 精确推进到最后一个完整 \n 之后，残行区域下次整行重读
  * （重读不拼接：多字节截断自愈，且不会把残行内容计两次——重复读同一文件零变化）。
  *
- * 纯函数直测：.pi/extensions/tests/session-rollup.smoke.cjs（对齐 parseSubagentSummary 先例）；
+ * 纯函数直测：.pi/extensions/tests/session-rollup.smoke.cjs；
  * task-cost-metrics 扩展：models 逐模型聚合、readParentSessionId/findPrevSessionFile
  * （子会话父链提取 + prev 会话定位，D1/D2/D3）。
  */
@@ -237,16 +237,16 @@ export function parseSessionText(text: string): SessionUsageSummary {
 	return acc.summary;
 }
 
-/** 节流判定（design D1：turn%5==0 或 token 增量>20%；首次必写 bootstrap）。
- *  严格大于 20%（=20.0% 整不写，白盒边界表）。 */
+/** 节流判定（design D3：turn%20==0 或 token 增量>50%；首次必写 bootstrap）。
+ *  严格大于 50%（=50.0% 整不写，白盒边界表）。 */
 export function shouldWriteSnapshot(
 	turnCount: number,
 	lastTotalTokens: number | null,
 	currentTotalTokens: number,
 ): boolean {
 	if (lastTotalTokens === null) return true;
-	if (turnCount > 0 && turnCount % 5 === 0) return true;
-	return currentTotalTokens > lastTotalTokens * 1.2;
+	if (turnCount > 0 && turnCount % 20 === 0) return true;
+	return currentTotalTokens > lastTotalTokens * 1.5;
 }
 
 /** prev 回填判定：文件路径在 && 会话非空（turns>0）&& 账本尚无 final 终值 */

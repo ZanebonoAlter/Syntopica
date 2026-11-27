@@ -86,11 +86,9 @@ function preExistingDb(setup) {
 
 		// ---- 2.6 新 kind 随词汇扩展落库（harden-harness-policy-and-spill：十类词汇补齐）----
 		logEvent(t1, { kind: 'policy.decision', sessionId: 's1', change: 'demo-change', payload: { policy: 'spec-gate', action: 'block', reasonCode: 'archive-check-failed' } });
-		logEvent(t1, { kind: 'subagent.complete', sessionId: 's3', change: 'demo-change', payload: { agentId: 'a1', status: 'completed' } });
 		const pdRows = queryBySession(t1, 's1', ['policy.decision']);
 		check('policy.decision 可写可查（kinds 过滤 + payload 透传）', pdRows.length === 1 && JSON.parse(pdRows[0].payload).action === 'block' && pdRows[0].change === 'demo-change');
-		const sacRows = queryBySession(t1, 's3', ['subagent.complete']);
-		check('subagent.complete 可写可查（kind 为 TEXT 列，无 DDL）', sacRows.length === 1 && sacRows[0].kind === 'subagent.complete');
+		// subagent.complete 已退役（slim-harness-ledger D4）：该 kind 从词汇表移除，不再产生
 		// 既有 v1 库写入新 kind 后 user_version 不变（无 schema 迁移）
 		const db1b = new DatabaseSync(dbOf(t1));
 		check('既有库写入新 kind 后 user_version 仍为 1', db1b.prepare('PRAGMA user_version').get().user_version === 1);
@@ -250,7 +248,6 @@ function preExistingDb(setup) {
 		logEvent(t5, { kind: 'gate.check', sessionId: 's1', payload: {} });          // 30 天
 		logEvent(t5, { kind: 'mode.set', sessionId: 's1', payload: {} });            // 30 天（tier-b）
 		logEvent(t5, { kind: 'spill.write', sessionId: 's1', payload: {} });       // 30 天（tool-output-spill）
-		logEvent(t5, { kind: 'subagent.complete', sessionId: 's1', payload: {} });   // 30 天
 		logEvent(t5, { kind: 'policy.decision', sessionId: 's1', payload: {} });     // 30 天（本 change：过期对照）
 		logEvent(t5, { kind: 'policy.decision', sessionId: 's1', payload: {} });     // 新鲜保留对照（30 天边界内）
 		logEvent(t5, { kind: 'edit.map', sessionId: 's1', payload: { paths: ['x.go'], n: 1 } });      // 30 天（过期对照）
@@ -267,11 +264,11 @@ function preExistingDb(setup) {
 		const old90 = new Date(Date.now() - 100 * 86400e3).toISOString();
 		const old31 = new Date(Date.now() - 31 * 86400e3).toISOString();
 		const old29 = new Date(Date.now() - 29 * 86400e3).toISOString();
+		const old40 = new Date(Date.now() - 40 * 86400e3).toISOString();
 		db5.prepare("UPDATE events SET ts = ? WHERE kind = 'constraint.inject'").run(old30);
 		db5.prepare("UPDATE events SET ts = ? WHERE kind = 'gate.check'").run(old30);
 		db5.prepare("UPDATE events SET ts = ? WHERE kind = 'mode.set'").run(old30);
 		db5.prepare("UPDATE events SET ts = ? WHERE kind = 'spill.write'").run(old30);
-		db5.prepare("UPDATE events SET ts = ? WHERE kind = 'subagent.complete'").run(old30);
 		db5.prepare("UPDATE events SET ts = ? WHERE kind = 'change.archive'").run(old30);
 		db5.prepare("UPDATE events SET ts = ? WHERE kind = 'session.start'").run(old90);
 		// 只把第一条 policy.decision 篡改为过期（按 id 定位，新鲜对照不动）
@@ -289,17 +286,24 @@ function preExistingDb(setup) {
 		db5.prepare('UPDATE events SET ts = ? WHERE id = ?').run(old30, staleSs);
 		const staleCr = db5.prepare("SELECT id FROM events WHERE kind = 'constraint.read' ORDER BY id LIMIT 1").get().id;
 		db5.prepare('UPDATE events SET ts = ? WHERE id = ?').run(old30, staleCr);
+		// legacy kind（subagent.complete 已退役，不在写入词汇表）：直插模拟存量行，
+		// 验证 LEGACY_RETENTION_DAYS 清扫生效（slim-harness-ledger R-1）——40 天前应被清。
+		db5.prepare("INSERT INTO events (ts, session_id, kind, change, payload) VALUES (?, 's1', 'subagent.complete', NULL, ?)").run(old40, JSON.stringify({ legacy: true }));
 		db5.close();
 		// 子进程冷开库：openDb 跑 TTL 清扫后查询
 		const script = `const m=${JSON.stringify(path.join(__dirname, '.hlog.cjs'))};const c=${JSON.stringify(t5)};const {DatabaseSync}=require('node:sqlite');const q=m===null?null:require(m);const rows=q.queryBySession(c,'s1');console.log(rows.map(r=>r.kind).sort().join(','))`;
 		const out = execSync(`node -e ${JSON.stringify(script)}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-		check('TTL 清扫：30 天过期行删除（含 mode.set/stage.set/constraint.read/spill.write/subagent.complete/policy.decision/edit.map/change.archive）、pin.write 永久保留', out === 'constraint.read,edit.map,patrol.check,pin.write,policy.decision,stage.set');
+		check('TTL 清扫：30 天过期行删除（含 mode.set/stage.set/constraint.read/spill.write/policy.decision/edit.map/change.archive）、pin.write 永久保留', out === 'constraint.read,edit.map,patrol.check,pin.write,policy.decision,stage.set');
 		check('TTL 边界：30 天内的新鲜 policy.decision 与 edit.map 保留', out.split(',').includes('policy.decision') && out.split(',').includes('edit.map'));
 		check('TTL 边界：30 天内的新鲜 stage.set 与 constraint.read 保留', out.split(',').includes('stage.set') && out.split(',').includes('constraint.read'));
 		// patrol.check 边界需计数区分「31 天前被清」与「29 天前保留」（kinds 输出看不出被清的是哪一条）
 		const scriptPc = `const m=${JSON.stringify(path.join(__dirname, '.hlog.cjs'))};const c=${JSON.stringify(t5)};const q=require(m);const r=q.queryBySession(c,'s1',['patrol.check']);console.log(r.length+':'+(r[0]?JSON.parse(r[0].payload).shard:'-'))`;
 		const outPc = execSync(`node -e ${JSON.stringify(scriptPc)}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 		check('TTL 边界（patrol.check 30 天）：31 天前被清扫、29 天前的 shard=fe-core 保留', outPc === '1:fe-core');
+		// legacy 表清扫：subagent.complete 已退役不可写，但存量行必须按 30 天保留期被清（R-1）
+		const scriptLegacy = `const m=${JSON.stringify(path.join(__dirname, '.hlog.cjs'))};const c=${JSON.stringify(t5)};const q=require(m);console.log(q.queryBySession(c,'s1',['subagent.complete']).length)`;
+		const outLegacy = execSync(`node -e ${JSON.stringify(scriptLegacy)}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+		check('TTL 清扫 legacy 已退役 kind：40 天前的 subagent.complete 存活行被删除（LEGACY_RETENTION_DAYS）', outLegacy === '0');
 
 		let fail = 0;
 		for (const [name, ok] of checks) {

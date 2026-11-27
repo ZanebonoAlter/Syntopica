@@ -262,7 +262,16 @@ const duoTable = [
 			check('I-02 窗口外遗留：零杀零事件不抛异常', !threw && s.killCalls.length === 0 && s.logCalls.length === 0);
 		}
 		{
-			const s = await scenario({ table: [{ pid: 4242, pgid: 4343, cmdline: 'go run cmd/server/main.go', starttimeSec: 999 }] });
+			// D5：只有本会话窗口内制造的泄漏才提醒。表里两条：4242（starttimeSec 1010 ∈
+			// [窗口 1000, now 2000]，本会话制造）＋ 5151（999 ＜ 1000，历史残留）——提醒列表
+			// 只含 4242，historicalOnly=1。
+			const s = await scenario({
+				table: [
+					{ pid: 4242, pgid: 4343, cmdline: 'go run cmd/server/main.go', starttimeSec: 1010 },
+					{ pid: 5151, pgid: 5151, cmdline: 'go run cmd/server/main.go', starttimeSec: 999 },
+				],
+			});
+			await s.start('s1', 1000);
 			await s.turnEnd('s1', 2000);
 			const st = s.steerCalls[0];
 			const text = st ? String(st.msg.content) : '';
@@ -274,8 +283,55 @@ const duoTable = [
 				s.logCalls.length === 1 && s.logCalls[0].kind === 'policy.decision' &&
 				s.logCalls[0].payload.decision === 'orphan-warn' &&
 				s.logCalls[0].payload.offenders.some((p) => p.pid === 4242));
+			check('I-03b 提醒列表只含窗口内、payload 记 inWindow / historicalOnly / deduped（默认 0）',
+				s.logCalls.length === 1 && s.logCalls[0].payload.inWindow === 1 &&
+				s.logCalls[0].payload.historicalOnly === 1 &&
+				s.logCalls[0].payload.deduped === 0 &&
+				s.logCalls[0].payload.offenders.length === 1 &&
+				s.logCalls[0].payload.offenders[0].pgid === 4343 &&
+				!text.includes('5151'));
 			await s.turnEnd('s1', 2000);
 			check('I-04 二次 turn_end 静默（每会话至多一次）', s.steerCalls.length === 1 && s.logCalls.length === 1);
+		}
+		{
+			// D5：纯历史残留（全部 starttimeSec ＜ 窗口起点）→ 零 steer 零记账（spec 场景
+			// 「纯历史残留静默」）。旧版此处会提醒＋落一条 orphan-warn（139/541 噪声源）。
+			const s = await scenario({ table: [{ pid: 4242, pgid: 4343, cmdline: 'go run cmd/server/main.go', starttimeSec: 999 }] });
+			await s.start('s1', 1000);
+			await s.turnEnd('s1', 2000);
+			check('I-04b 仅历史残留：零 steer 零记账',
+				s.steerCalls.length === 0 && s.logCalls.length === 0 && s.killCalls.length === 0);
+		}
+		{
+			// D5：同一 pgid 在两个并发会话中只提醒一次（先到者提醒，后者静默）。
+			const s = await scenario({ table: [leak(4242, 4242)] });
+			await s.start('s1', 1000);
+			await s.start('s2', 1000);
+			await s.turnEnd('s1', 2000);
+			await s.turnEnd('s2', 2000);
+			check('I-04c 同进程组跨会话只提醒一次（s2 静默）',
+				s.steerCalls.length === 1 && s.logCalls.length === 1 &&
+				s.logCalls[0].sessionId === 's1');
+		}
+		{
+			// R-7：pgid 复用——去重键含 starttime，同一 pgid 的不同进程代次各提醒一次。
+			// 两个代次分属两个会话窗口：s1 窗口 [1000,1100] 只含 1010 代次，s2 窗口
+			// [1500,1700] 只含 1610 代次。裸 pgid 作键会让 s2 被误判「已提醒过」而沉默。
+			const s = await scenario({
+				table: [
+					{ pid: 4242, pgid: 4343, cmdline: 'go run cmd/server/main.go', starttimeSec: 1010 },
+					{ pid: 4243, pgid: 4343, cmdline: 'go run cmd/server/main.go', starttimeSec: 1610 },
+				],
+			});
+			await s.start('s1', 1000);
+			await s.turnEnd('s1', 1100);
+			await s.start('s2', 1500);
+			await s.turnEnd('s2', 1700);
+			check('I-04d 同 pgid 不同 starttime 各提醒一次（去重键 pgid:starttime）',
+				s.steerCalls.length === 2 && s.logCalls.length === 2 &&
+				s.logCalls[0].sessionId === 's1' && s.logCalls[1].sessionId === 's2' &&
+				s.logCalls[0].payload.offenders[0].pid === 4242 &&
+				s.logCalls[1].payload.offenders[0].pid === 4243);
 		}
 		{
 			const s = await scenario({ table: [] });
@@ -361,10 +417,13 @@ const duoTable = [
 			const s = await scenario({ table: [leak(4242, 4242)], noBtime: true });
 			let threw = false;
 			try { await s.start('s1', 1000); await s.shutdown('s1', 2000); await s.turnEnd('s1', 2000); } catch { threw = true; }
-			check('B-05 无 btime：无法归因保守不杀，leaks/turn_end 提醒照常',
+			// D5（slim-harness-ledger）后：无 btime → starttimeSec=NaN → 无法归因到本会话窗口
+			// （kills=∅），因此不构成「本会话制造」，turn_end 零 steer 零 warn 记账。
+			check('B-05 无 btime：无法归因保守不杀，turn_end 也不提醒（非本会话制造）',
 				!threw && s.killCalls.length === 0 &&
 				s.logCalls.filter((l) => l.payload.decision === 'orphan-killed').length === 0 &&
-				s.steerCalls.length === 1);
+				s.steerCalls.length === 0 &&
+				s.logCalls.filter((l) => l.payload.decision === 'orphan-warn').length === 0);
 		}
 		{
 			const s = await scenario({ table: [leak(4242, 4242)] }); // 默认存活谓词「TERM 后即死」
