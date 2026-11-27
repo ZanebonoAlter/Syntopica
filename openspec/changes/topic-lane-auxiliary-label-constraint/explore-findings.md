@@ -149,3 +149,55 @@ major 判据 = 新页面/面板/弹窗/导航/多步/信息架构/布局模式�
 **引用**：backend-go/internal/topicgraph/repository/daily_report_manual_topic.go:CreateManualTopicWithConstraints、backend-go/internal/topicgraph/service/daily_report_constraint.go:PrepareManualLaneConstraints、backend-go/internal/topicgraph/handler/daily_report_handler.go:createManualTopic、front/app/features/tags/components/console/LaneConstraintScope.vue、front/app/features/tags/composables/useLaneConstraint.ts
 
 <!-- pinned 2026-11-25T07:23:57Z -->
+
+## 日报召回链路 + lane-first-recall 参数标定
+
+【日报召回链路事实 + lane-first-recall 参数标定（2026-11-26 实测）】
+
+## 管线顺序（决定性 —— 问题在"新标签到不了聚类"）
+```
+daily_report_orchestrator.go:GenerateDailyReport
+  Step 1   collectBoardTags(boardID, date)       // 主查询(已挂载) + fallback(未挂载 Limit 50, 无 ORDER BY)
+  Step 2   DeduplicateTags(...)                  // tiebreak: 文章数 > identity×board cosine > id
+  Step 2.5 filterTagsByQuality(tags)             // ★ 二元硬开关，新标签在这里死
+  Step 3   ClusterTagsLane(...)                  // line 111；L1/L2/L3 泳道吸附在这里（BucketTagsByCentroid）
+  Step 3后 ApplyLaneConstraintGate(...)          // 辅助标签约束闸门
+```
+
+## filterTagsByQuality 的真实语义（backend 硬开关）
+- kept = match_reason ∈ {direct_hit, hit_rate, max_sim}；(composite_hit 也走 kept? 实测统计里把它计入 quality)
+- weighted/unknown 进 `weighted`
+- `len(kept) < 10` → **全部 weighted 放回**（噪声也进）
+- `len(kept) >= 10` → **weighted 全部丢弃**（新事件全灭），kept>30 再按 tier/score/疑似AI占比 截断到 30
+- 单篇文章产出的新事件永远是 weighted（max_sim 要求 score≥0.8 + hits≥min(2,N) + hitRate≥0.3；hits 恒为 1 时 score 只有 0.6~0.73 → 掉到 weighted 兜底）
+
+## collectBoardTags 主查询口径
+- `topic_tag_board_labels.semantic_board_id = boardID` AND `NOT direction_mismatch` AND `topic_tags.status='active'` AND `category='event'` AND `articles.pub_date ∈ [当日 00:00, 次日 00:00)`
+- 跨版块排他：`NOT EXISTS (stronger.score >= 本板score + semantic_board_report_exclusive_gap)`；gap=0 关闭（Go 侧分支，不能内联 SQL 参数——pgx 会把左侧参数绑定判错）
+- fallback（未挂载 event 标签现场匹配）：`Limit(50)` **无 ORDER BY** → 11-26 有 363 个未挂载标签，313 个不可见
+
+## 向量空间与索引（实现必读）
+- 管线用 `embedding_type='semantic'`（`ListTagSemanticEmbeddings`，daily_report_topic_repository.go:505）
+- 现成 HNSW：`idx_topic_tag_embeddings_semantic_halfvec_hnsw` on `((embedding)::halfvec(2560)) halfvec_cosine_ops WHERE embedding_type='semantic'`
+- 查询必须用同表达式 `(embedding)::halfvec(2560) <=> $1::halfvec(2560)` 才能命中索引；最终裁决用原列 float32 距离
+- `board_persistent_topics.embedding` **无向量索引**（只有 btree id / (board,status)）→ 泳道侧是查 61 条，标签侧是 42644 条，所以索引加在标签侧正确
+
+## 参数标定（12 版块 / 61 泳道 / 2026-11-25~26 / 122 lane-day / 307 对人工样本）
+- 召回量 K×τ：K=8 时 τ0.15→106 对、τ0.17→156、τ0.20→237；K=8→12 只多 22%（K=8 是拐点）
+- 人工精度：距离<0.15 ≈95%；0.15~0.17 ≈72%；0.17~0.195 ≈65%
+- K=8 τ=0.16 放行的标签身份：约 30% 已质量、30% 救 weighted、40% 救未挂载（fallback 截断受害者）
+- **默认值定为 `lane_recall_top_k=8`、`lane_recall_max_distance=0.16`**
+- 量纲警告：以上全是**标签级**距离，section 级聚类门槛 L1=0.18 / L2=0.30 不可搬用（section 是聚合向量，天然更靠近质心）
+
+## 关键反例（别用分数做判据统计背书）
+- 11-26 board 15220 weighted 区间 board score 全 0.700 并列：`英伟达暂停东南亚芯片交付`=0.700 与 `索尼公布PS+会免名单`=0.700、`微软弃用 Windows 11 蓝牙`=0.700、`绿媒态度急转弯`=0.700 同分
+- 按 score 取 Top-8 会捞进 Google 刷脸(0.733)/PS+(0.700)/Windows(0.700)，即 2026-10-04 非农事故重演
+
+## 泳道侧数据形状
+- 61 条 active 泳道 / 12 个版块；122 条 lane-day 中 71 条（58%）rank1 距离 ≥0.20 → 这些泳道当天确实没有专属新闻
+- 干净泳道 rank1：沙特胡塞 0.075、美伊博弈 0.082、以色列选举 0.108、黄仁勋 0.076、芯片算力 0.103
+- 被污染泳道 rank1：以黎冲突 0.241（拉进 海湾/美伊/加沙/俄乌）、旅游 0.264、能源 0.247 → «没新闻就空着» 是正确行为
+
+**引用**：backend-go/internal/topicgraph/service/daily_report_orchestrator.go:collectBoardTags、backend-go/internal/topicgraph/service/daily_report_orchestrator.go:filterTagsByQuality、backend-go/internal/topicgraph/repository/daily_report_topic_repository.go:ListTagSemanticEmbeddings、backend-go/internal/topicgraph/service/daily_report_lane.go:ClusterTagsLane、backend-go/internal/topicgraph/service/daily_report_lane.go:BucketTagsByCentroid
+
+<!-- pinned 2026-11-26T16:08:27Z -->
