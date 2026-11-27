@@ -93,6 +93,15 @@ centroid = α·首义 embedding + (1-α)·最近 centroid_window 条命中 secti
 
 **存量重算端点**：`POST /api/daily-reports/recompute-topic-centroids?board_id=<可选>` —— 按当前公式与配置把既有话题质心重算一遍（幂等可重跑、单话题失败不中断其余话题），异步执行（返回 `{"success":true,"data":{"status":"processing"}}`，`board_id` 非法返 `400 invalid board_id`）。用途：公式升级后一次性纠正存量漂移（部署后手动调一次，全局无 `board_id` 即全站）。
 
+**泳道召回参数（lane-first-recall）**：日报生成时，每条 `status='active'` 且向量可用的泳道会在**当日全量 event 标签池**里按语义距离召回标签（blogs详见 `flow/daily-report.md` 约束 71/72）。两个参数进 `ai_settings`、与 `persistent_topic_lane_l1_threshold` 同模式（在线可调、缺失/非法回退默认并告警、不重启不发布）：
+
+| key | 默认 | 含义 |
+| --- | --- | --- |
+| `lane_recall_top_k` | `8` | 每条泳道一天最多召回的标签数（合法区间 `1..64`；超区间回退 8） |
+| `lane_recall_max_distance` | `0.16` | 标签到泳道锚点（`centroid`，缺则首义 `embedding`）的余弦距离上限，`>=` 此值不收（合法区间 `(0,1]`） |
+
+量纲警告：这两个值是**标签级**距离，与 section 级分桶门槛（`persistent_topic_lane_l1_threshold` 0.18 / `persistent_topic_lane_l2_threshold` 0.30）不是同一把尺——section 是聚合向量，天然更靠近质心，直接搬用会把邻座内容拉进来。换 embedding 模型后须重标（阈值是模型相关的距离量纲，不写死）。召回只读：不写 `topic_tag_board_labels`、不改话题状态与命中计数。
+
 ### 关系双轨
 
 ```text

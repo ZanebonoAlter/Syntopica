@@ -137,6 +137,10 @@
 
 **候选展示门槛**：`consecutive_hits < upgrade_threshold`（默认 3）的 candidate（"observing"）在话题管理 UI 中隐藏，但仍持久化并参与可锚定集合。达门槛后自动可见。
 
+**泳道召回（lane-first-recall，本表只读）**：日报生成时，每条 `status='active'` 的泳道以本表 `centroid`（NULL 则退化 `embedding`）为锚，在 `topic_tag_embeddings`（`embedding_type='semantic'`）上做 halfvec HNSW ANN 召回并逐条用原列 float32 距离复核（表达式写成 `(embedding)::halfvec(2560) <=> $1::halfvec(2560)` 以匹配 `idx_topic_tag_embeddings_semantic_halfvec_hnsw`；当日池仅千级时实测 EXPLAIN 走 Sort、索引不参与，`ef_search` 实际不生效——这是预期，不是配置错误）。两个参数进 `ai_settings`（迁移 `20261126_0001` 播种，在线可调、缺失/非法回退默认并告警）：`lane_recall_top_k`（默认 `8`）、`lane_recall_max_distance`（默认 `0.16`，标签级余弦距离）。
+
+> **关键口径：泳道召回不写本表、也不写挂载表**。`embedding` / `centroid` / `hit_count` / `status` 均不被召回修改；召回的标签也**不会**新增 `topic_tag_board_labels` 行（挂载是永久事实，召回是单日行为）。泳道向量缺失或维度不可用（`IS NULL` / 非有限值 / 超 halfvec 4000 维）时跳过该泳道并记日志，不中断日报生成。详见 [`flow/daily-report.md`](../../flow/daily-report.md) 约束 71/72 与 [`flow/topic-graph.md`](../../flow/topic-graph.md)「泳道召回参数」。
+
 **一次性清理迁移 `20260628_0001`**：幂等硬删所有 `status=candidate AND consecutive_hits < upgrade_threshold` 的历史 candidate。删除采用 `DeleteTopic` 语义：先将引用 section 的 `persistent_topic_id` / `topic_match_distance` / `topic_match_confidence` / `topic_status_at_report` 置 NULL（section 内容保留，仍可渲染为"其他动态"独立节点），再硬删 candidate 行，最后按 board 重建 relations 以清除指向已删 topic 的 identity/similarity 边。不可逆但 section 内容完整保留。第二次执行是 no-op。
 
 ### 9.6 board_topic_watches（用户声明的话题 Watch 标签）

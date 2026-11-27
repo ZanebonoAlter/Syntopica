@@ -265,6 +265,8 @@ AI 相关配置不存储在文件或环境变量中 — 通过 Web UI 管理并�
 | `persistent_topic_centroid_anchor_weight` | 质心混合的**首义权重** α：`centroid = α·首义 embedding + (1-α)·滚动窗口均值`。默认 `0.5`——质心因此只做有界漂移（移动幅度 ≤ 纯滚动位移的 `1-α`），宽口径话题不会漂成「泛新闻磁铁」。α 为线性混合权重（匹配走 cosine 角度，滚动均值模长收缩，实际锚定效果略强于标称比例）。`0` = 纯滚动（旧行为），`1` = 纯首义（话题冻结）；值域外或解析失败回退默认 `0.5` 并告警。见 `flow/topic-graph.md` §话题质心 |
 | `persistent_topic_vacuum_window` | 吸尘器吸引统计窗口（天）：按近 N 天归属该 topic 的 section 统计 strong/mid。默认 `7` |
 | `persistent_topic_l2_candidate_k` | L2 LLM prompt 注入的 top-K 候选 topic 数（按质心距离排序）。默认 `5` |
+| `lane_recall_top_k` | **泳道优先召回**每条 active 泳道一天最多召回的标签数（lane-first-recall）。默认 `8`（召回量拐点：8→12 只多 22%、8→6 掉 15%）；合法区间 `1..64`，缺失/非法/越界回退默认并记 warn。见 `flow/topic-graph.md`「泳道召回参数」 |
+| `lane_recall_max_distance` | 泳道召回的距离上限：标签到泳道锚点（`centroid`，缺则首义 `embedding`）的余弦**距离** `>=` 此值不收。默认 `0.16`（≈90% 精度）；合法区间 `(0,1]`，缺失/非法回退默认并记 warn。**量纲**：标签级距离，不可与 section 级 `persistent_topic_lane_l1_threshold`(0.18) / `l2`(0.30) 混用 |
 | `daily_report_section_merge_enabled` | 同日 section 两阶段合并（确定性 <0.20 + 灰区 LLM 仲裁）总开关。默认 `false`（关）——关闭时 section 按lane 管线原始分组落库；开启时合并仍受锚定边界约束（不同 `persistent_topic_id` / 新叙事↔锚定跨界禁止合并）。见 `flow/daily-report.md` 业务约束 12 |
 | `persistent_topic_candidate_l1_gate_enabled` | **观察期门禁**：candidate topic 是否享有 L1 直挂资格。默认 `true`（开）——开启时最近话题为 candidate 的近距离 tag（距离 < `lane_l1_threshold`）降级进 L2 band 交 LLM 裁决，阻断「一次性新闻标题 candidate 靠同域 tag 无限续命」；关闭时回退 active/candidate 均可直挂的旧行为（在线回滚用，无需发版）。见 `flow/daily-report.md` 业务约束 14 |
 | `daily_report_intra_bucket_enabled` | 泳道内主题分桶总开关（add-intra-lane-theme-bucketing）。默认 `true`——域型泳道的一条过宽 section 会被拆成 2-6 个主题方向；置 `false` 即回滚到「话题 × 天 = 单 section」现状（新列留空不影响读取）。见 `flow/daily-report.md` 业务约束 32 |

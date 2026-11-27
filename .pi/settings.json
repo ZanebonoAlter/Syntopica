@@ -13,62 +13,6 @@
       }
     },
     "agentOverridesByProvider": {
-      "minimax-cn": {
-        "general-purpose": {
-          "model": "minimax-cn/MiniMax-M3.1-Flash",
-          "thinking": "max"
-        },
-        "explore": {
-          "model": "minimax-cn/MiniMax-M3.1-Flash",
-          "thinking": "max"
-        },
-        "plan": {
-          "model": "minimax-cn/MiniMax-M3.1-Flash",
-          "thinking": "max"
-        }
-      },
-      "deepseek": {
-        "general-purpose": {
-          "model": "deepseek/deepseek-flash",
-          "thinking": "high"
-        },
-        "explore": {
-          "model": "deepseek/deepseek-flash",
-          "thinking": "high"
-        },
-        "plan": {
-          "model": "deepseek/deepseek-flash",
-          "thinking": "high"
-        }
-      },
-      "zai-coding-cn": {
-        "general-purpose": {
-          "model": "zai-coding-cn/glm-5.4",
-          "thinking": "max"
-        },
-        "explore": {
-          "model": "zai-coding-cn/glm-5.3-flash",
-          "thinking": "max"
-        },
-        "plan": {
-          "model": "zai-coding-cn/glm-5.4",
-          "thinking": "max"
-        }
-      },
-      "openai-codex": {
-        "general-purpose": {
-          "model": "openai-codex/gpt-6.2-sol",
-          "thinking": "high"
-        },
-        "explore": {
-          "model": "openai-codex/gpt-6.2-sol",
-          "thinking": "medium"
-        },
-        "plan": {
-          "model": "openai-codex/gpt-6.2-sol",
-          "thinking": "high"
-        }
-      },
       "commandcode": {
         "general-purpose": {
           "model": "commandcode/deepseek/deepseek-v4.1-flash",
@@ -76,10 +20,106 @@
         },
         "explore": {
           "model": "commandcode/deepseek/deepseek-v4.1-flash",
-          "thinking": "max"
+          "thinking": "high"
         },
         "plan": {
+          "model": "commandcode/deepseek/deepseek-v4-pro",
+          "thinking": "high"
+        },
+        "impl-light": {
           "model": "commandcode/deepseek/deepseek-v4.1-flash",
+          "thinking": "high"
+        },
+        "impl-heavy": {
+          "model": "commandcode/deepseek/deepseek-v4-pro",
+          "thinking": "max"
+        }
+      },
+      "minimax-cn": {
+        "general-purpose": {
+          "model": "minimax-cn/MiniMax-M3.1-Flash",
+          "thinking": "max"
+        },
+        "explore": {
+          "model": "minimax-cn/MiniMax-M3.1-Flash",
+          "thinking": "high"
+        },
+        "plan": {
+          "model": "minimax-cn/MiniMax-M3.1-Flash",
+          "thinking": "high"
+        },
+        "impl-light": {
+          "model": "minimax-cn/MiniMax-M3.1-Flash",
+          "thinking": "high"
+        },
+        "impl-heavy": {
+          "model": "minimax-cn/MiniMax-M3.1-Flash",
+          "thinking": "max"
+        }
+      },
+      "zai-coding-cn": {
+        "general-purpose": {
+          "model": "zai-coding-cn/glm-5.3",
+          "thinking": "max"
+        },
+        "explore": {
+          "model": "zai-coding-cn/glm-5.3-flash",
+          "thinking": "high"
+        },
+        "plan": {
+          "model": "zai-coding-cn/glm-5.3",
+          "thinking": "high"
+        },
+        "impl-light": {
+          "model": "zai-coding-cn/glm-5.3-flash",
+          "thinking": "high"
+        },
+        "impl-heavy": {
+          "model": "zai-coding-cn/glm-5.4",
+          "thinking": "max"
+        }
+      },
+      "openai-codex": {
+        "general-purpose": {
+          "model": "openai-codex/gpt-6.1-terra",
+          "thinking": "max"
+        },
+        "explore": {
+          "model": "openai-codex/gpt-6.1-terra",
+          "thinking": "high"
+        },
+        "plan": {
+          "model": "openai-codex/gpt-6.1-terra",
+          "thinking": "high"
+        },
+        "impl-light": {
+          "model": "openai-codex/gpt-6.1-terra",
+          "thinking": "high"
+        },
+        "impl-heavy": {
+          "model": "openai-codex/gpt-6.2-sol",
+          "thinking": "max"
+        }
+      },
+      "deepseek": {
+        "general-purpose": {
+          "model": "deepseek/deepseek-v4-pro",
+          "thinking": "max"
+        },
+        "explore": {
+          "model": "deepseek/deepseek-flash",
+          "thinking": "high"
+        },
+        "plan": {
+          "model": "deepseek/deepseek-v4-pro",
+          "thinking": "high"
+        },
+        "impl-light": {
+          "model": "deepseek/deepseek-flash",
+          "thinking": "high"
+        },
+        "impl-heavy": {
+          "model": "deepseek/deepseek-v4-pro",
           "thinking": "max"
         }
       }

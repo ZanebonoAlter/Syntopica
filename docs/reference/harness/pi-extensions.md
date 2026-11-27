@@ -20,6 +20,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 | ui-design-gate | `tool_call` | implementation 族阶段（stageFamily==implementation）绑定 syntopica-ui schema change：**具备写能力的** Agent 派发与 edit/write 项目代码，major 原型未批准（合同 block）时拦截；只读档（explore/plan/change-review）与原型编辑档（ui-design）派发放行并留痕（写侧边界不放宽——子线程经 `edit`/`write` 工具的每次写入仍逐个过门禁，shell 类通道不在本门禁覆盖范围——既有边界）；当前 change 的 ui-design.md/ui-prototype/** 修复不受限 | 硬 block（legacy schema 仅 front mutation 每会话/change warn 一次） | fail-open（检查异常放行+告警+记账）；`UI_DESIGN_GATE_BYPASS=1` 显式旁路留痕 | policy.decision（ui-impact-missing/ui-impact-mismatch/ui-design-missing/ui-prototype-missing/ui-approval-pending=block、explicit-bypass=bypass、ui-gate-check-failed=fail-open、**ui-dispatch-allowed=warn**（合同未就绪时放行只读档/原型编辑档派发，add-ui-prototype-editor-agent）；放行侧 pass 两码：ui-approval-approved（审批通过时刻）/ ui-design-satisfied（block 后补齐放行）——账本上有未解除 block 才记，健康放行仍零记录，add-change-lifecycle-retro；归档侧 ui-verification-missing 的解除由 spec-gate 记）；**按路径触发的 stage 记账通道**（add-ui-stage-accounting）：写入目标落在 `openspec/changes/<name>/` 下即触发，change 名由路径解析、**不依赖 mode 与 boundChange**，因此能看见 planning 族/未绑定阶段发生的原型生产（ui-approval 只在 implementation 族生效，实测看不见 34/34 次 ui-design 派发）；读 `ui-design.md` 的 `<!-- ui-stage: l0\|skeleton\|interaction\|data\|approved -->`，`l0` 禁写 `ui-prototype/`、`skeleton` 只许 `ui-prototype/skeleton/`，越域/缺失/非法各记一条 warn，**只记账、不改任何 block/pass 裁决**（去重键 session×change×码） |
 | test-scope-guard | `tool_call` | bash + `ctx_execute`(仅 shell) + `ctx_batch_execute` 命中真·全量 `go test`（判定纯函数：裸 `./...` + 生效 cwd = 仓库根/backend-go；掩蔽引号/#注释/heredoc/`cat` 目标；影响包/子树/单包/写文档放行） | 软提醒（日常只跑影响包；文案列归档与依赖变更两条合法路径） | fail-open | policy.decision（full-go-test：soft=warn / hard=block；归档/依赖变更语境与 `# archive-gate`/`# allow-full-test` 逃生注释放行零记账） |
 | sql-safety-guard | `tool_call` | bash + `ctx_execute`(仅 shell) + `ctx_batch_execute` 命中 psql 入口 ∧ TRUNCATE/DROP（判定基于命令原文、不掩蔽引号，`-f`/`--file` 形态读文件扫两词、不可读保守拦） | 硬 block（`SQL_SAFETY_GUARD` hard 默认 / soft 提醒 / off 关；逃生口：`# allow-truncate-drop` 注释、BEGIN+ROLLBACK 事务包裹、一次性容器放行；仅拦 TRUNCATE/DROP，DELETE/UPDATE/ALTER/INSERT 不拦） | fail-open（判定异常放行） | policy.decision（sql-safety：block/warn、逃生=bypass；off/未命中、事务与容器放行零记录） |
+| quant-claim-gate | `session_start` + `tool_call` | design.md 头部 `<!-- quant-claims: … -->` 与 `## 可量化断言` 表合规性（**只校验声明格式，不判断断言真假**） | **软 warn（观察期）** | fail-open（扩展异常放行 + steer） | policy.decision warn（`quant-*` reasonCode） |
 | tool-output-spill | `tool_result` | 工具输出 >32KB（`.pi/harness.json`） | 落盘替换+有界预览 | fail-open（spill 失败原样通过） | spill.write |
 | dev-process-guard | `session_start`/`turn_end`/`session_shutdown` | 会话结束扫描仓库内泄漏类 dev 进程（go run/pnpm dev/nuxt dev 等且无终端、非 pidfile 白名单）：窗口内自动清，遗留软提醒 | 自动清（仅 session_shutdown，组杀 TERM→2s→KILL）+ 软 steer 提醒（每会话一次） | fail-open（扫描/杀/记账异常逐目标跳过）；非 Linux no-op | policy.decision（orphan-killed / orphan-warn；健康路径零记录） |
 | （非门禁）browser-leak-guard | 用户级 systemd timer（10 分钟） | `bash scripts/harness/browser-leak-guard.sh --apply --quiet`：回收窗口外无主 agent-browser 栈（跨轮次冻结 × 无客户端 × 年龄 ≥1800s × 组首自证） | 自动回收（优雅 close 优先，失败降级组杀）；手动跑默认 dry-run | fail-open（状态目录不可写/单目标异常 → 只跳过不回收） | journal（不写 events.db，D7） |
@@ -125,6 +126,52 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 
 白盒用例缺件提醒和逐 Scenario 对账已退出工作流。旧映射可用于历史检索；新 change 在 verify 阶段记录主路径与已知回归的实际结果。
 
+## 可量化断言声明（quant-claim-gate，自动，warn 观察期）
+
+**动机**：2026-11-27 change `lane-first-recall` 审查 R-11——design.md 声称「查询 MUST 用该表达式才能命中索引」，审查员跑三份 EXPLAIN 全部走 Sort、索引零出现。问题不是判断错，而是**声称了量化结果却没有证据**；同类还有数据口径断言（「矩阵日格 = 该日各桶线索数之和」）从未在生产数据上复算过。
+
+**为什么不做关键词扫描**：关键词靠措辞运气——写「不会拖慢日报」就漏；写成「索引」也会误报。判据必须落在**结构化单元格**上。
+
+**载体**（`design.md`，与 `complexity` / `ui-impact` 同级）：
+
+```markdown
+<!-- quant-claims: none -->      ← 本 change 无可量化断言
+<!-- quant-claims: declared -->  ← 有，且正文必须有下表
+```
+
+```markdown
+## 可量化断言
+
+| 类别 | 断言 | 观测值 | 复算方式 | 观测日期 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| 性能 | 召回查询命中 halfvec HNSW | 未命中，三份 EXPLAIN 均走 Sort | `EXPLAIN (COSTS) …` | 2026-11-27 | measured |
+| 数据 | 矩阵日格 = 该日各桶线索数之和 | 372 = 372（9 条泳道全等） | `scripts/audit/matrix_cell.sql` | 2026-11-26 | measured |
+| 性能 | 单次 ANN < 50ms | — | — | — | unmeasured |
+```
+
+`状态 ∈ measured / unmeasured / n/a`；`measured` 行**后三列必填**（观测值 / 复算方式 / 观测日期）。
+
+**与既有验证载体的分工**（不得重叠）：
+
+| 载体 | 位置 | 判据性质 |
+| --- | --- | --- |
+| ① spec Scenario | `specs/**/spec.md` | 行为契约：对所有输入成立 |
+| ② Scenario → 测试映射 | `tasks.md` 验证节 | 契约被测试覆盖（`scenario-trace.sh`） |
+| ③ 验证命令 | `tasks.md` 验证节 | 跑完即知 PASS/FAIL |
+| **④ 可量化断言** | **`design.md`** | **对某一时刻真实数据/真实查询计划的观测（会漂移）** |
+
+判据一句话：**能被一次 `go test` 完整判定的写测试（①②）；不能的（依赖真实数据集 / 真实查询计划 / 采样分布）才进 ④。**
+
+三条反混淆规则（写表时不得违反）：
+
+1. 表内 **SHALL NOT 出现 Scenario 名**——Scenario 只在 `tasks.md` 映射表，避免第二本账。
+2. 表内 **SHALL NOT 写门禁命令**（`go build` / `lint` / `go test`）——那是 ③ 的辖区。
+3. 断言 **MUST 可比较**（数值 / 计划特征 / 结构判据）；「更快」「无明显开销」这类纯形容词单独出现即视为未声明。
+
+**观察期策略**：当前**只 warn、不 block**；存量活跃 change 不 retrofit，每 `(session, change)` 只提醒一次。累计一个迭代后按 `.pi/harness/events.db` 里 `quant-*` 命中率决定是否转硬 block（同 `check-standards` J 段节奏）。逃生口：`QUANT_CLAIM_GATE=0` 关闭本门禁。
+
+**明示不做**：不扫代码注释 / flow 文档 / proposal（只认 `design.md`）；不判断断言真假（交给 review 复核）；不存数据快照（只存 SQL/命令 + 观测日期）。
+
 ## 归档门禁 warn 边沿触发（spec-gate 检查⑤/⑤'，edge-trigger-archive-gate-warns）
 
 归档是「block → 修一项 → 重试」循环，warn 内容在循环内通常不变；spec-gate 检查⑤（验收措辞）与⑤'（并发脏树）的 warn 投递改 per-sessionId 指纹态驱动（与 quality-gate 失败指纹状态机、constraint-injection 指纹 diff 同家族语义）：
@@ -137,7 +184,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 
 ## 子线程通道矩阵
 
-**阶段档（2026-11-27 stage-agent-routing）**：六档 `stage-explore` / `stage-propose` / `stage-design` / `stage-implement` / `stage-verify` / `stage-archive`，由 `scripts/harness/stage-agent.sh <change>` 按 `stage.md` 的 marker 选取（fail-open 兜底 `general-purpose`）。权限按阶段收窄（`stage-explore` 无 bash/write/edit，是真只读；有 bash 的档「只读」靠纪律，见各档正文）。六档已加入 `ui-design-gate` 的 `UI_DISPATCH_ALLOWED_AGENTS` 白名单——否则 UI 合同未就绪时会被误拦（review R-1）。smoke：`bash scripts/harness/stage-agent.smoke.sh`（38 断言）。
+**角色档（2026-11-27 rework-subagent-roles）**：四角色五档——`explore` / `ui-design`（原型制作与修改）/ `impl-heavy`·`impl-light`（实现按复杂度分）/ `change-review`（唯一审查档，范围由 brief 指定，允许一次审多模块）。上一轮按开发阶段的六档 `stage-*` 已删除（真实流程是 datamap↔原型、implement↔review 两个循环，阶段不是顺序流水线）。模型降级链在 `.pi/harness/model-chains.json`，429/401 时主线程按链换派（框架不自动换）。子线程不注入 AGENTS.md 全文，按角色给最小集。`ui-design-gate` 白名单同步为 `explore` / `plan` / `change-review` / `ui-design` / `impl-heavy` / `impl-light`。
 （harden-subagent-constraint-channel）
 
 子线程（子代理）能否收到 harness 约束取决于派发通道与模式，实测矩阵（2026-09-18，根因证据链见 `docs/research/subagent-constraint-gap/explore-findings.md`）：
@@ -152,7 +199,7 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 
 已知限制（设计裁决见 change design.md D6）：
 
-> **原型编辑档的模型选择**：`ui-design` 档**不绑模型**（原型审美质量对模型敏感，固定默认会锁死）——模型由派发时按 AGENTS.md「子线程模型偏好」指定，**原型审美任务建议用强模型**；档位定义不代替用户拍板模型。
+> **原型编辑档的模型选择**：`ui-design` 档钉死 `zai-coding-cn/glm-5.4`（2026-11-27 起）。要换模型改其 frontmatter 或 `.pi/settings.json` 的 `agentOverrides` 一行——不再靠每次派发手写。
 
 1. **AGENTS.md 不自动进 pi-web 子线程**：`noContextFiles` 恒真（包硬编码）——约束注入补的是 harness 层，项目上下文仍靠派发任务文本（必读文件清单）。
 2. **内置档默认是盲区，已由项目覆盖档修复（覆盖可被 pi-web 升级冲掉）**：pi-web 内置三档写死 codemode off / loadSkills false / loadExtensions false；项目以 `.pi/agents/` 同名覆盖档（2026-10-13）开启 codemode/skills/插件，AGENTS.md 仍不注入（限制 1 不可改），覆盖档 addendum 写「开工先自读 AGENTS.md」兑底。pi-web 升级若改 profile 字段名或覆盖机制，子线程会静默退回内置盲区（可观测：事件库三事件消失、探针报告无 codemode/插件）；前台派发须任务文本带红线（编排纪律兑底——取数三步与 brief 模板见《开发执行规范》§0.6 步骤 3；带没带可观测：`subagent.dispatch` 的 `constraintDigest`/`constraintDomains` 字段，见上「派发期红线取数」）。

@@ -12,4 +12,6 @@ thinking: max
 
 Produce an implementation-ready plan for the delegated task. Inspect the repository as needed, do not modify files, and call out dependencies, risks, and verification steps.
 
-项目覆盖档说明：skills / 插件已开（约束注入与 ctx 工具可用），无写工具。AGENTS.md 不会自动注入本会话——需要项目规范上下文时自行用 read 读仓库根 `AGENTS.md` 与任务 brief 指定的必读文件。
+项目覆盖档说明：skills / 插件已开（约束注入与 ctx 工具可用），无写工具。
+
+**不要读 `AGENTS.md` 全文**——它 80% 是主线程的流程约束，对方案设计是噪音。按 brief 给的最小集工作：目标路径 + 相关域红线摘要 + 该模块的 tasks 条目。需要业务规则细节时自行 `read docs/reference/flow/<域>.md` 的相关小节。
