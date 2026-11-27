@@ -252,7 +252,7 @@ export const ROUTING_ACCEPTANCE_DOCS: readonly {
 }[] = [
 	{
 		path: "docs/reference/standard/shared/test-design.md",
-		section: "单元模型：一个能力一个故事，用例文档串起来",
+		section: "永久业务测试只留两类",
 	},
 	{ path: "docs/reference/standard/shared/commit-pr.md", section: "提交前检查" },
 	{ path: "docs/reference/standard/shared/doc-authoring.md", section: "目录职责表" },
@@ -292,7 +292,7 @@ export const ROUTING_DOC_CATALOG: Readonly<Record<string, string | null>> =
 			// 图与伪代码约定（marker 在 propose 产出，故 explore/propose 即可读）
 			[
 				"docs/reference/开发执行规范.md",
-				"13. change 图表达与伪代码层（design-diagram.md / design.md）",
+				"13. change 头部声明与图表达（stage / 域 / diagrams marker）",
 			],
 		]),
 	);
