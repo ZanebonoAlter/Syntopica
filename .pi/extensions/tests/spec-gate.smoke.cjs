@@ -140,7 +140,8 @@ try {
 				&& rowsA[0].payload.policy === 'ui-design-gate' && rowsA[0].payload.action === 'block' && rowsA[0].payload.reasonCode === 'ui-verification-missing'
 				&& rowsA[1].payload.policy === 'spec-gate' && rowsA[1].payload.action === 'block' && rowsA[1].payload.reasonCode === 'archive-check-failed');
 		check('block 事件 change 绑定被归档 change（fake-change）', rowsA.every((r) => r.change === 'fake-change'));
-		check('block 事件 target 只含失败检查名（无输出正文；④ 场景映射对账已退役）', rowsA[1].payload.target === 'doc-impact,standards,tasks,review,ui-evidence,constraint-read' && !JSON.stringify(rowsA[1].payload).includes('boom'));
+		// roster = spec-gate.ts 第 2 节全部 block 级检查（stub 下 bash 全败 → 全部命中）；新增检查时同步此串
+		check('block 事件 target 只含失败检查名（无输出正文；④ 场景映射对账已退役）', rowsA[1].payload.target === 'doc-impact,standards,tasks,review,ui-evidence,constraint-read,diagrams,ui-prototype-mechanics' && !JSON.stringify(rowsA[1].payload).includes('boom'));
 		check('block 路径不发 custom_message', gA.messages.length === 0);
 
 		// 7b. 显式 bypass（--force）→ 放行 + policy.decision(bypass, explicit-bypass)
