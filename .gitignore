@@ -58,7 +58,8 @@ analysis-reports/
 !.pi/constraint-injection.json
 !.pi/harness.json
 # 排除项（顺序在下、后匹配胜出）：事实库 DB + spill + 本机技能/提示词副本 + smoke 构建产物
-.pi/harness/
+# `.pi/harness/` 带 `**/` 前缀：任意深度都拦（smoke 偶发把 events.db 漏写到 tests/.pi/harness/）
+**/.pi/harness/
 .pi/prompts/
 .pi/skills/
 .pi/extensions/tests/.*.cjs
