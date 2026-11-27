@@ -132,13 +132,15 @@ bash scripts/dev/start-dev.sh status       # 看端口 / PID / 健康 / 入口�
 - **子线程派发 model 硬规则**：Agent 的 `model` 参数必须用 `provider/modelId` 全称（如 `zai-coding-cn/glm-5.3`），**禁止 fuzzy 名**（会按字母序落到错误供应商）；想用默认供应商省略 `model` 即可。fuzzy 名黑名单与派发纪律见开发执行规范 §0.6「供应商与模型选择」。
 - **子线程角色档（2026-11-27 rework-subagent-roles，四角色五档）**：按**角色**分，不按开发阶段分（用户真实流程里 datamap↔原型、implement↔review 是两个反复循环，`propose`/`design`/`archive` 从不是独立环节）。
 
-| 角色 | 档 | 首选模型 |
-|---|---|---|
-| 探路 | `explore` | deepseek-v4.1-flash |
-| 原型制作/修改 | `ui-design` | glm-5.4 |
-| 复杂实现（事务/并发/状态机） | `impl-heavy` | deepseek-v4-pro |
-| 常规实现 | `impl-light` | deepseek-v4.1-flash |
-| 审查（一档多用途） | `change-review` | 走降级链 |
+| 角色 | 档 |
+|---|---|
+| 探路 | `explore` |
+| 原型制作/修改 | `ui-design` |
+| 复杂实现（事务/并发/状态机） | `impl-heavy` |
+| 常规实现 | `impl-light` |
+| 审查（一档多用途） | `change-review` |
+
+**各档用哪个模型不写进本表**（同上「看配置，不看文档」）：按「子线程模型」的优先级查 `.pi/settings.json` 覆盖 → `.pi/agents/<档>.md` frontmatter；走降级链派发看 `.pi/model-chains.json`。
 
 **审查范围靠 brief 不靠分档**：brief 必写三件事（审什么 / 对照哪条 spec / 往哪看），一次可审多个模块。**模型降级链**在 `.pi/model-chains.json`：**走链派发 MUST 显式传 `model`**（不传则不知道用的是链上第几个，429 时会原样重派再撞墙）；只有 429/401 换下一个，其他错误立刻返回；链耗尽如实报错，不许静默改用链外模型。框架本身不换模型（官方：「Provider errors are returned from that model rather than selecting another one」）。**子线程不注入 AGENTS.md 全文**——那 80% 是主线程流程约束，对 review/implement 是噪音且会误导；按角色给最小集（红线摘要 + 代码规范节 + tasks 条目）。映射细则见 `开发执行规范.md` §主线程纪律。
 
