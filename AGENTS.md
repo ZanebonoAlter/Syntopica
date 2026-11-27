@@ -140,8 +140,6 @@ bash scripts/dev/start-dev.sh status       # 看端口 / PID / 健康 / 入口�
 | 常规实现 | `impl-light` |
 | 审查（一档多用途） | `change-review` |
 
-**各档用哪个模型不写进本表**（同上「看配置，不看文档」）：按「子线程模型」的优先级查 `.pi/settings.json` 覆盖 → `.pi/agents/<档>.md` frontmatter；走降级链派发看 `.pi/model-chains.json`。
-
 **审查范围靠 brief 不靠分档**：brief 必写三件事（审什么 / 对照哪条 spec / 往哪看），一次可审多个模块。**模型降级链**在 `.pi/model-chains.json`：**走链派发 MUST 显式传 `model`**（不传则不知道用的是链上第几个，429 时会原样重派再撞墙）；只有 429/401 换下一个，其他错误立刻返回；链耗尽如实报错，不许静默改用链外模型。框架本身不换模型（官方：「Provider errors are returned from that model rather than selecting another one」）。**子线程不注入 AGENTS.md 全文**——那 80% 是主线程流程约束，对 review/implement 是噪音且会误导；按角色给最小集（红线摘要 + 代码规范节 + tasks 条目）。映射细则见 `开发执行规范.md` §主线程纪律。
 
 **通用档（2026-11-03 收敛为四档 + ui-design = 五档；2026-11-27 均已在 frontmatter 绑定模型）**：`explore` / `plan`（只读探索，skills/插件开、无写工具、不开 codemode）；`general-purpose`（实现/通用，codemode/skills/插件全开）；`change-review`（**唯一审查档**，钉死 `zai-coding-cn/glm-5.4`，范围由 brief 指定：change 制品 / 代码实现 / UI 验收 / 跨模块一致性，一次可审多个模块）；`ui-design`（原型制作与修改档，钉死 `zai-coding-cn/glm-5.4`——UI 合同未就绪期间只改当前 change 的 `ui-prototype/**` 与 `ui-design.md` 的 Prototype 节，经 `edit`/`write` 的写入仍逐个过 `ui-design-gate`，越出 change 目录照常阻断；shell 通道为既有边界）。**两个档名不可改**——`ui-design-gate` 的 `UI_DISPATCH_ALLOWED_AGENTS` 按名匹配。全部档位定义即 `.pi/agents/*.md`，pi-web Subagents 页可可视化编辑；**frontmatter 的 model 只是兜底**，实际生效优先级见 `docs/reference/开发执行规范.md` §供应商与模型选择。**子线程不注入 AGENTS.md 全文**（pi-web 硬编码 `noContextFiles`），派发 brief MUST 带：相关域红线摘要（`bash scripts/harness/constraint-digest.sh --brief --paths <路径>` 输出原样）+ 该模块 tasks 条目 + 验收命令；**不要要求子线程「先自读 AGENTS.md」**（2026-11-27 用户拍板：那是主线程的流程约束，对 review/implement 是噪音且会误导）。
