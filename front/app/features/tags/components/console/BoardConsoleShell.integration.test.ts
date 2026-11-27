@@ -11,10 +11,12 @@
  */
 import { describe, expect, it } from 'vitest'
 import { nextTick } from 'vue'
-import { flushPromises } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
+import AppConfirmDialog from '~/components/ui/AppConfirmDialog.vue'
 import {
   installShellTestHooks,
   mediaControl,
+  mounted,
   getLaneDynamics,
   getBoardDailyReports,
   getDailyReportDetail,
@@ -41,6 +43,15 @@ import {
 import ObservationMatrix from './ObservationMatrix.vue'
 
 installShellTestHooks()
+
+/** 全局二次确认弹窗（`AppConfirmDialog`）的确认按钮——按文案定位，避开其他弹层的同名按钮。 */
+function confirmAcceptButton(): HTMLButtonElement {
+  const dialog = [...document.body.querySelectorAll('.app-dialog')]
+    .find(el => el.querySelector('.confirm-dialog__message'))
+  const button = dialog?.querySelector('.app-dialog__footer button:last-child') as HTMLButtonElement | undefined
+  if (!button) throw new Error('未找到二次确认的确认按钮')
+  return button
+}
 
 describe('BoardConsoleShell 集成 — 报日轴与当日其他话题组（真实组件链）', () => {
   it('0 正式泳道：真实报日列头可点、其他组默认展开、真实分区可读，网格不被旧空态挡', async () => {
@@ -513,12 +524,12 @@ describe('BoardConsoleShell 集成 — 受控重试与生成后刷新', () => {
 
 /**
  * `lane-matrix-coverage-and-others-row` 壳层接线（真实组件链）：
- *  - 覆盖组：板块话题清单 → 「窗口内未进日报」组（名字 + 最近一次）；
+ *  - 覆盖组：板块话题清单 → 「窗口内未进日报」折叠条（名字常显）→ 列表项（名字 + 最近命中 + ⋯）；
  *  - 行头就地改名：⋯ → 「重命名」→ 行内输入框 → Enter → 既有 PATCH；
  *  - 「其他话题（未入泳道）」整行：点有日报的格 → 同一 selectedDate + 展开当日其他话题组。
  */
 describe('BoardConsoleShell 集成 — 覆盖组 / 就地改名 / 其他话题整行', () => {
-  it('覆盖组：活跃但窗口内无分区的泳道进矩阵底部组（名字 + 最近一次）；窗口内泳道与候选不重复', async () => {
+  it('覆盖组：活跃但窗口内无分区的泳道进折叠条（名字常显），展开后列表项写「最近命中」；窗口内泳道与候选不重复', async () => {
     mature()
     listBoardTopics.mockResolvedValue({
       success: true,
@@ -536,10 +547,105 @@ describe('BoardConsoleShell 集成 — 覆盖组 / 就地改名 / 其他话题�
     expect(summary.exists()).toBe(true)
     expect(summary.text()).toContain('窗口内未进日报')
     expect(summary.text()).toContain('以色列内部选举')
-    expect(summary.text()).toContain('最近一次 11-09')
+    // 默认折叠：日期不在折叠条上，矩阵网格里也没有它的行
+    expect(summary.text()).toContain('展开查看')
+    expect(summary.text()).not.toContain('最近命中')
+    expect(wrapper.find('[data-testid="coverage-list"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="matrix-lane-99"]').exists()).toBe(false)
     // 窗口内泳道与候选话题不进覆盖组（不重复、不混口径）
     expect(summary.text()).not.toContain('主线 A')
     expect(summary.text()).not.toContain('候选话题')
+
+    await wrapper.find('[data-testid="coverage-toggle"]').trigger('click')
+    const items = wrapper.findAll('[data-testid="coverage-list"] > li')
+    expect(items).toHaveLength(1)
+    expect(items[0]!.text()).toContain('以色列内部选举')
+    expect(items[0]!.text()).toContain('最近命中 11-09')
+  })
+
+  it('列表项 ⋯「重命名」→ 行内输入框 → Enter 走既有 PATCH 并重取清单（展开态保持）', async () => {
+    mature()
+    listBoardTopics.mockResolvedValue({
+      success: true,
+      data: {
+        topics: [
+          { id: 99, semantic_board_id: 1974, label: '以色列内部选举', description: '', status: 'active', first_seen_date: '2026-10-27', last_seen_date: '2026-11-09', hit_count: 5, consecutive_hits: 1, section_count: 5, color: '#fff', can_activate: true },
+        ],
+      },
+    })
+    const wrapper = await mountReady()
+
+    await wrapper.find('[data-testid="coverage-toggle"]').trigger('click')
+    expect(wrapper.find('[data-testid="coverage-list"] > li').exists()).toBe(true)
+    const callsBefore = listBoardTopics.mock.calls.length
+
+    ;(document.body.querySelector('[data-testid="lane-menu-trigger-99"]') as HTMLButtonElement).click()
+    await flushPromises()
+    ;(document.body.querySelector('[data-testid="lane-menu-trigger-99-rename"]') as HTMLButtonElement).click()
+    await flushPromises()
+
+    const input = wrapper.find('[data-testid="matrix-lane-rename-99"]')
+    expect(input.exists()).toBe(true)
+    await input.setValue('改名后的覆盖泳道')
+    await input.trigger('keydown.enter')
+    await flushPromises()
+
+    expect(updateTopic).toHaveBeenCalledWith(99, { label: '改名后的覆盖泳道' })
+    expect(wrapper.find('[data-testid="matrix-lane-rename-99"]').exists()).toBe(false)
+    // 成功后重取覆盖清单；展开态不因清单刷新而被重置
+    expect(listBoardTopics.mock.calls.length).toBeGreaterThan(callsBefore)
+    expect(wrapper.find('[data-testid="coverage-toggle"]').attributes('aria-expanded')).toBe('true')
+  })
+
+  it('列表项 ⋯「归档泳道」→ 弹层文案带泳道名 → 二次确认后走既有归档接口，项消失且展开态保持', async () => {
+    mature()
+    const coverageTopic = (id: number, label: string) => ({
+      id, semantic_board_id: 1974, label, description: '', status: 'active',
+      first_seen_date: '2026-10-27', last_seen_date: '2026-11-09', hit_count: 5,
+      consecutive_hits: 1, section_count: 5, color: '#fff', can_activate: true,
+    })
+    listBoardTopics.mockResolvedValue({
+      success: true,
+      data: { topics: [coverageTopic(99, '以色列内部选举'), coverageTopic(97, '欧洲能源')] },
+    })
+    const wrapper = await mountReady()
+    // 二次确认的渲染端（生产挂在 app.vue）：测试里同挂一份，点其确认按钮 = 用户确认。
+    mounted.push(mount(AppConfirmDialog, { attachTo: document.body }))
+
+    await wrapper.find('[data-testid="coverage-toggle"]').trigger('click')
+    expect(wrapper.find('[data-testid="coverage-list"] > li').exists()).toBe(true)
+
+    ;(document.body.querySelector('[data-testid="lane-menu-trigger-99"]') as HTMLButtonElement).click()
+    await flushPromises()
+    ;(document.body.querySelector('[data-testid="lane-menu-trigger-99-archive"]') as HTMLButtonElement).click()
+    await flushPromises()
+
+    // R-1：覆盖泳道不在 A 档名单，名字靠板块话题清单回退取到（不再是空「」）。
+    // 归档弹层内的 `AppDialog` 会 Teleport 出壳层，所以文案与按钮都查 `document.body`。
+    const archiveText = document.body.querySelector('[data-testid="lane-archive-text"]')?.textContent ?? ''
+    expect(archiveText).toContain('以色列内部选举')
+    expect(archiveText).not.toContain('「」')
+
+    // 归档成功后清单里只剩另一条覆盖泳道（组仍在 → 展开态可断言）。
+    listBoardTopics.mockResolvedValue({
+      success: true,
+      data: { topics: [coverageTopic(97, '欧洲能源')] },
+    })
+
+    ;(document.body.querySelector('[data-testid="lane-archive-confirm"]') as HTMLButtonElement).click()
+    await flushPromises()
+    // 危险操作必须过二次确认：确认前不落库
+    expect(updateTopic).not.toHaveBeenCalled()
+    confirmAcceptButton().click()
+    await flushPromises()
+
+    expect(updateTopic).toHaveBeenCalledWith(99, { status: 'archived' })
+    const items = wrapper.findAll('[data-testid="coverage-list"] > li')
+    expect(items).toHaveLength(1)
+    expect(items[0]!.text()).toContain('欧洲能源')
+    expect(wrapper.find('[data-testid="coverage-toggle"]').attributes('aria-expanded')).toBe('true')
+    // 归档弹层已关，不再悬在页面上
+    expect(document.body.querySelector('[data-testid="lane-archive-text"]')).toBeNull()
   })
 
   it('覆盖清单失败：矩阵底部一行提示 + 重试（既有行照常渲染）', async () => {

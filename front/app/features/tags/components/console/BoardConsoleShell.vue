@@ -228,9 +228,17 @@ const {
   closeWorkface,
 } = overlays
 
-/** 泳道显示名（修正工作面标题 / 归档弹窗文案用；名单里没有该泳道时留空）。 */
+/**
+ * 泳道显示名（修正工作面标题 / 归档弹窗文案用）。
+ *
+ * 先查 A 档名单（本窗口有分区的泳道）；查不到再回退板块话题清单——覆盖组（窗口内未进
+ * 日报）的泳道按定义不在 A 档名单里，但「归档泳道」这类危险操作必须先让用户看清对象。
+ * 两处都没有才留空。
+ */
 function laneLabelOf(topicId: string): string {
-  return allLanes.value.find(row => row.topicId === topicId)?.label ?? ''
+  return allLanes.value.find(row => row.topicId === topicId)?.label
+    ?? boardTopics.value.find(topic => String(topic.id) === topicId)?.label
+    ?? ''
 }
 
 /** 修正工作面的泳道名。 */

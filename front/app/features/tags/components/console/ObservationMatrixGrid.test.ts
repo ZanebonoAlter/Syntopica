@@ -9,8 +9,8 @@
  *    0 休眠仍保留同级 summary（本窗无、禁用展开、不造行）
  *  - 新事件透传：`toggleOthers` / `selectOther`
  */
-import { describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
 import ObservationMatrixGrid from './ObservationMatrixGrid.vue'
 import type { OtherTopicsView } from './dayOtherTopics'
 import type { LaneDayResolution, ObservationLaneRow } from './observationLanes'
@@ -364,45 +364,99 @@ describe('ObservationMatrixGrid — 其他话题整行', () => {
 })
 
 /**
- * 覆盖组「窗口内未进日报」（`lane-matrix-coverage-and-others-row` 4.1）：
- *  活跃但当前窗口无分区的泳道进底部独立组，默认展开，组标题列出名字与最近一次；
- *  清单失败只出一行提示 + 重试；成功且为空则整组不渲染。
+ * 覆盖组「窗口内未进日报」（`lane-coverage-entry-list`）：
+ *  矩阵网格之外一条折叠条入口（名字常显、默认折叠）+ 点击展开的无格列表；
+ *  网格里 MUST NOT 再有这些泳道的行或日期格。清单失败只出一行提示 + 重试；
+ *  读取中 / 成功且为空则整组不渲染。
  */
 describe('ObservationMatrixGrid — 覆盖组（窗口内未进日报）', () => {
-  const coverage = [{ topicId: '20', label: '以色列内部选举', lastSeenDate: '2026-11-09' }]
+  const coverage = [
+    { topicId: '20', label: '以色列内部选举', lastSeenDate: '2026-11-09' },
+    { topicId: '21', label: '无记录线', lastSeenDate: null },
+  ]
 
-  it('默认展开：组 summary 带数量 + 名字 + 最近一次，组内行格全为「—」', () => {
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('默认折叠：只有折叠条（数量 + 两个名字），网格内无覆盖行 / 日期格', () => {
     const wrapper = mountGrid({ coverageLanes: coverage })
     const summary = wrapper.find('[data-testid="coverage-group-summary"]')
     expect(summary.exists()).toBe(true)
     expect(summary.text()).toContain('窗口内未进日报')
-    expect(summary.text()).toContain('1')
+    expect(summary.text()).toContain('· 2')
     expect(summary.text()).toContain('以色列内部选举')
-    expect(summary.text()).toContain('最近一次 11-09')
-    expect(wrapper.find('[data-testid="coverage-group-lanes"]').attributes('title')).toContain('以色列内部选举')
+    expect(summary.text()).toContain('无记录线')
+    expect(summary.text()).toContain('展开查看')
+    // 日期只在展开后的列表项里出现（折叠条不重复一遍）
+    expect(summary.text()).not.toContain('最近命中')
+    expect(wrapper.find('[data-testid="coverage-group-lanes"]').attributes('title')).toBe('以色列内部选举、无记录线')
 
-    const row = wrapper.find('[data-testid="matrix-lane-20"]')
-    expect(row.exists()).toBe(true)
-    // 覆盖行名字是静态标签（不在本窗名单，不可选中）；行容器沿用休眠行弱化样式
-    expect(row.element.tagName).toBe('SPAN')
-    expect(row.element.parentElement!.className).toContain('is-dormant')
-    // 身份由组标题表达，行内不重复小标（不挤占窄标签列的名字）
-    expect(row.text()).toContain('以色列内部选举')
-    expect(row.text()).not.toContain('未进日报')
-    // 覆盖行是静态标签（非 button）：身份与「未进日报」只在 aria-label，不挂原生 title。
-    expect(row.attributes('title')).toBeUndefined()
-    expect(row.attributes('aria-label')).toContain('窗口内未进日报')
-    expect(wrapper.find('[data-testid="matrix-cell-20-2026-10-23"]').text()).toBe('—')
+    const toggle = wrapper.find('[data-testid="coverage-toggle"]')
+    expect(toggle.element.tagName).toBe('BUTTON')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+
+    expect(wrapper.find('[data-testid="coverage-list"]').exists()).toBe(false)
+    // 覆盖组退出矩阵网格：网格里没有它们的行，也没有逐日「—」格
+    expect(summary.element.closest('[data-testid="matrix-grid"]')).toBeNull()
+    expect(wrapper.find('[data-testid="matrix-lane-20"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid^="matrix-cell-20-"]')).toHaveLength(0)
   })
 
-  it('最近一次缺失 → 写「无记录」（不拿今天冒充）', () => {
-    const wrapper = mountGrid({ coverageLanes: [{ topicId: '21', label: '无记录线', lastSeenDate: null }] })
-    expect(wrapper.find('[data-testid="coverage-group-lanes"]').text()).toContain('无记录')
+  it('点折叠条 → 展开无格列表：每项名 + 最近命中 / 无记录，名字静态不产生行选中', async () => {
+    const wrapper = mountGrid({ coverageLanes: coverage })
+
+    await wrapper.find('[data-testid="coverage-toggle"]').trigger('click')
+    const toggle = wrapper.find('[data-testid="coverage-toggle"]')
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect(toggle.text()).toContain('收起')
+
+    const items = wrapper.findAll('[data-testid="coverage-list"] > li')
+    expect(items).toHaveLength(2)
+    expect(items[0]!.text()).toContain('以色列内部选举')
+    expect(items[0]!.text()).toContain('最近命中 11-09')
+    expect(items[1]!.text()).toContain('无记录线')
+    expect(items[1]!.text()).toContain('无记录')
+
+    // 列表项是普通列表（无日期格），且名字是静态标签（点不动、不 emit selectLane）
+    expect(wrapper.findAll('[data-testid^="matrix-cell-20-"]')).toHaveLength(0)
+    expect(wrapper.findAll('[data-testid^="matrix-cell-21-"]')).toHaveLength(0)
+    const name = wrapper.find('[data-testid="matrix-lane-20"]')
+    expect(name.element.tagName).toBe('SPAN')
+    expect(name.attributes('aria-label')).toContain('最近命中 11-09')
+    await name.trigger('click')
+    expect(wrapper.emitted('selectLane')).toBeUndefined()
+    expect(wrapper.emitted('selectCell')).toBeUndefined()
+
+    // 再点一次收起
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('[data-testid="coverage-list"]').exists()).toBe(false)
+  })
+
+  it('列表项 ⋯ 提供重命名 / 编辑泳道 / 归档泳道，且不动选中', async () => {
+    const wrapper = mountGrid({ coverageLanes: coverage, renameLane: vi.fn().mockResolvedValue(true) })
+    await wrapper.find('[data-testid="coverage-toggle"]').trigger('click')
+
+    const trigger = wrapper.find('[data-testid="lane-menu-trigger-20"]')
+    expect(trigger.exists()).toBe(true)
+    await trigger.trigger('click')
+    await flushPromises()
+
+    const items = [...document.body.querySelectorAll('.row-menu-item')].map(el => el.textContent?.trim())
+    expect(items).toEqual(['重命名', '编辑泳道', '归档泳道'])
+
+    ;(document.body.querySelector('[data-testid="lane-menu-trigger-20-archive"]') as HTMLButtonElement).click()
+    await flushPromises()
+    expect(wrapper.emitted('archiveLane')![0]).toEqual(['20'])
+    expect(wrapper.emitted('selectLane')).toBeUndefined()
+    expect(wrapper.emitted('selectDate')).toBeUndefined()
   })
 
   it('清单失败：只出一行提示 + 重试（不把失败渲染成「没有窗口外泳道」）', async () => {
     const wrapper = mountGrid({ coverageLanes: [], coverageError: '接口挂了' })
     expect(wrapper.find('[data-testid="coverage-group-summary"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="coverage-list"]').exists()).toBe(false)
     const errorRow = wrapper.find('[data-testid="coverage-error-row"]')
     expect(errorRow.exists()).toBe(true)
     expect(errorRow.text()).toContain('窗口外泳道清单未取到')
@@ -413,14 +467,7 @@ describe('ObservationMatrixGrid — 覆盖组（窗口内未进日报）', () =>
   it('读取中 / 成功且为空 → 不渲染组（不占位、不冒「0 条」）', () => {
     expect(mountGrid({ coverageLanes: [], coverageLoading: true }).find('[data-testid="coverage-group-summary"]').exists()).toBe(false)
     expect(mountGrid({ coverageLanes: [] }).find('[data-testid="coverage-group-summary"]').exists()).toBe(false)
-  })
-
-  it('覆盖行有泳道维护菜单（重命名/编辑/归档），且不提供行选中', () => {
-    const wrapper = mountGrid({ coverageLanes: coverage, renameLane: vi.fn().mockResolvedValue(true) })
-    const row = wrapper.find('[data-testid="matrix-lane-20"]')
-    expect(row.element.tagName).toBe('SPAN')
-    expect(row.find('button').exists()).toBe(false)
-    expect(document.body.querySelector('[data-testid="lane-menu-trigger-20"]')).toBeNull()
+    expect(mountGrid({ coverageLanes: [], coverageLoading: true }).find('[data-testid="coverage-toggle"]').exists()).toBe(false)
   })
 })
 

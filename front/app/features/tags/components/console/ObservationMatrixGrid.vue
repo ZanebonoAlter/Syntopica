@@ -22,12 +22,14 @@
  *  - **「其他话题（未入泳道）」整行**：活跃行之后、当日其他话题组之前；逐日格 = 当日未入
  *    泳道分区的非综合稿线索数（与泳道格同口径）。后端旧版本没有该字段时**整行不渲染**
  *    （`otherTopicDaysAvailable` 为 false），不显示全「—」的空壳行。
- *  - **覆盖组「窗口内未进日报」**：休眠组之后；活跃但当前窗口无分区的泳道（壳层用既有
- *    topics 清单派生）默认展开，组标题列出泳道名与最近一次日期；清单读取失败只出一行
- *    提示 + 重试（不冒「没有窗口外泳道」），成功且为空则整组不渲染。
+ *  - **覆盖组「窗口内未进日报」**（`lane-coverage-entry-list` 起）：活跃但当前窗口无分区的
+ *    泳道（壳层用既有 topics 清单派生）**不再占矩阵网格行**，改为 `.omx-scroll` 之外、`.omx-matrix`
+ *    内的一条折叠条入口（名字常显、默认折叠）+ 点击展开的无格列表（列表项复用
+ *    `ObservationMatrixLaneRow` 的 `coverage` 分支，`cells=[]`）；清单读取失败只出一行提示 + 重试
+ *    （不冒「没有窗口外泳道」），成功且为空则整组不渲染。展开态是本组件本地状态。
  *  - **行头就地重命名**：`renameLane` 逐层下传（缺省 = 无该入口，菜单不显示「重命名」）。
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { ObservedDayNode } from '~/features/tags/composables/useOtherTopicObservation'
 import { Icon } from '@iconify/vue'
 import { useNotify } from '~/composables/useNotify'
@@ -141,25 +143,28 @@ const activeEntries = computed<RenderEntry[]>(() => props.activeRows.map(row => 
 const dormantEntries = computed<RenderEntry[]>(() => props.dormantRows.map(row => project(row, true)))
 
 /**
- * 覆盖组行（窗口内未进日报的活跃泳道）。
+ * 覆盖组行（窗口内未进日报的活跃泳道）：列表项只带行头，不投影逐日格。
  *
- * 这些泳道不在 A 档名单里，`resolveDay` 在档窗内解析为断档（gap）→ 格值自然为「—」、
- * 不可点（该窗口确实无分区，不造 0）。
+ * 这些泳道不在 A 档名单里，没有格可读（向右看也只是在重复「这行没数据」），
+ * 所以不再经 `project()` 造“—”格；日期与名字都在折叠条 / 列表项里只出现一次。
  */
-const coverageEntries = computed<RenderEntry[]>(() => (props.coverageLanes ?? []).map(lane => project({
-  topicId: lane.topicId,
-  label: lane.label,
-  watchLinked: false,
-  sectionTotal: 0,
-  clueTotal: 0,
-  dormant: true,
-  snapshot: null,
-}, true)))
+const coverageEntries = computed<{ row: ObservationLaneRow }[]>(() => (props.coverageLanes ?? []).map(lane => ({
+  row: {
+    topicId: lane.topicId,
+    label: lane.label,
+    watchLinked: false,
+    sectionTotal: 0,
+    clueTotal: 0,
+    dormant: false,
+    snapshot: null,
+  },
+})))
 
-/** 覆盖组摘要行文案：泳道名 + 最近一次（缺失写「无记录」）；超长由 CSS 截断（title/aria 保留全文）。 */
-const coverageSummaryText = computed(() => (props.coverageLanes ?? [])
-  .map(lane => `${lane.label} · 最近一次 ${lastSeenText(lane.lastSeenDate)}`)
-  .join(' · '))
+/** 覆盖组折叠条的名字清单（只列名字；日期只在展开后的列表项里出现一次）。 */
+const coverageSummaryText = computed(() => (props.coverageLanes ?? []).map(lane => lane.label).join('、'))
+
+/** 折叠条的展开态（本地状态：刷新清单后不重置，只此一处消费）。 */
+const coverageOpen = ref(false)
 
 /**
  * 「其他话题（未入泳道）」整行是否渲染。
@@ -176,14 +181,9 @@ const showCoverageGroup = computed(() =>
   props.coverageLoading !== true && !props.coverageError && (props.coverageLanes?.length ?? 0) > 0,
 )
 
-/** 覆盖组行的最近一次日期（供行 title 用）。 */
+/** 覆盖行的最近命中日期（供列表项的行头 title 与「最近命中」标用）。 */
 function coverageLastSeenOf(topicId: string): string | null {
   return (props.coverageLanes ?? []).find(lane => lane.topicId === topicId)?.lastSeenDate ?? null
-}
-
-/** 最近一次日期的展示形（YYYY-MM-DD → MM-DD；缺失 → 「无记录」）。 */
-function lastSeenText(date: string | null): string {
-  return date ? date.slice(5) : '无记录'
 }
 
 /** 休眠折叠条的泳道名（既有 spec：折叠条显示数量**与**泳道名）。 */
@@ -323,45 +323,57 @@ function onSelectCell(payload: { row: ObservationLaneRow, cell: MatrixCellView, 
             @archive-lane="emit('archiveLane', $event)"
           />
         </template>
+      </div>
+    </div>
 
-        <!-- 覆盖组「窗口内未进日报」：休眠组之后，默认展开（无折叠态）；
-             读取失败只出一行提示 + 重试（不把失败渲染成「没有窗口外泳道」）。 -->
-        <div v-if="coverageError" class="omx-group-noterow" data-testid="coverage-error-row">
-          <span class="omx-group-notetext">窗口外泳道清单未取到</span>
-          <button type="button" class="omx-coverage-retry" data-testid="coverage-retry" @click="emit('retryCoverage')">重试</button>
-        </div>
+    <!-- 覆盖组「窗口内未进日报」：休眠组之后、矩阵网格之外（不随横滚漂移、不受滚动容器裁切）。
+         折叠条入口（名字常显、默认折叠）+ 点击展开的无格列表；读取失败只出一行提示 + 重试
+         （不把失败渲染成「没有窗口外泳道」）。 -->
+    <div v-if="coverageError" class="omx-group-noterow" data-testid="coverage-error-row">
+      <span class="omx-group-notetext">窗口外泳道清单未取到</span>
+      <button type="button" class="omx-coverage-retry" data-testid="coverage-retry" @click="emit('retryCoverage')">重试</button>
+    </div>
 
-        <template v-else-if="showCoverageGroup">
-          <div class="omx-group-summary is-coverage" data-testid="coverage-group-summary">
-            <span class="omx-group-title">窗口内未进日报<span class="omx-group-count"> · {{ coverageLanes?.length ?? 0 }}</span></span>
-            <span
-              class="omx-coverage-list"
-              :title="coverageSummaryText"
-              :aria-label="coverageSummaryText"
-              data-testid="coverage-group-lanes"
-            >{{ coverageSummaryText }}</span>
-          </div>
+    <template v-else-if="showCoverageGroup">
+      <div class="omx-group-summary is-coverage" data-testid="coverage-group-summary">
+        <button
+          type="button"
+          class="omx-group-btn"
+          :aria-expanded="coverageOpen"
+          data-testid="coverage-toggle"
+          @click="coverageOpen = !coverageOpen"
+        >
+          <Icon :icon="coverageOpen ? 'mdi:chevron-down' : 'mdi:chevron-right'" width="14" />
+          <span class="omx-group-title">窗口内未进日报<span class="omx-group-count"> · {{ coverageLanes?.length ?? 0 }}</span></span>
+          <span
+            class="omx-coverage-list"
+            :title="coverageSummaryText"
+            :aria-label="coverageSummaryText"
+            data-testid="coverage-group-lanes"
+          >{{ coverageSummaryText }}</span>
+          <span class="omx-group-note">{{ coverageOpen ? '收起' : '展开查看' }}</span>
+        </button>
+      </div>
 
+      <ul v-if="coverageOpen" class="omx-coverage-items" data-testid="coverage-list">
+        <li v-for="entry in coverageEntries" :key="entry.row.topicId" class="omx-coverage-item">
           <ObservationMatrixLaneRow
-            v-for="entry in coverageEntries"
-            :key="entry.row.topicId"
             :row="entry.row"
-            :cells="entry.cells"
-            :axis="axis"
+            :cells="[]"
+            :axis="[]"
             :today="today"
             :selected-lane-id="selectedLaneId"
             :selected-date="selectedDate"
-            :dormant="true"
+            :dormant="false"
             :coverage="true"
             :coverage-last-seen="coverageLastSeenOf(entry.row.topicId)"
             :rename-lane="renameLane"
-            @select-cell="onSelectCell"
             @edit-lane="emit('editLane', $event)"
             @archive-lane="emit('archiveLane', $event)"
           />
-        </template>
-      </div>
-    </div>
+        </li>
+      </ul>
+    </template>
   </div>
 </template>
 
@@ -494,6 +506,7 @@ function onSelectCell(payload: { row: ObservationLaneRow, cell: MatrixCellView, 
   max-width: 40%;
 }
 
+.omx-group-noterow,
 .omx-grid :deep(.omx-group-noterow) {
   grid-column: 1 / -1;
   padding: 0.35rem 0.6rem;
@@ -502,7 +515,7 @@ function onSelectCell(payload: { row: ObservationLaneRow, cell: MatrixCellView, 
   color: var(--color-text-muted);
 }
 
-/* 覆盖组（窗口内未进日报）：组标题 + 泳道名清单（超长截断，title/aria 保留全文）。 */
+/* 覆盖组（窗口内未进日报）：折叠条里的泳道名清单（超长截断，title/aria 保留全文）。 */
 .omx-coverage-list {
   flex: 1 1 auto;
   min-width: 0;
@@ -511,6 +524,24 @@ function onSelectCell(payload: { row: ObservationLaneRow, cell: MatrixCellView, 
   white-space: nowrap;
   font-size: 0.68rem;
   color: var(--color-text-muted);
+}
+
+/* 覆盖列表（窗口内未进日报）：普通列表而不是网格（没有日期格）。
+   左缩进对齐折叠条标题：按钮内边距 0.6rem + chevron 14px + gap 0.4rem。 */
+.omx-coverage-items {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 1.85rem;
+}
+
+.omx-coverage-item + .omx-coverage-item {
+  border-top: 1px dotted var(--color-border-subtle);
+}
+
+/* 行头的 sticky / 手型光标是给网格准备的：列表里没有横滚，也不可选行 → 就地改回静态。 */
+.omx-coverage-item :deep(.omx-lane) {
+  position: static;
+  cursor: default;
 }
 
 /* 休眠折叠条里的泳道名（既有 spec：折叠条显示数量与泳道名）。 */

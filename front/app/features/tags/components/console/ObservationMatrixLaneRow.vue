@@ -21,8 +21,10 @@
  * /daily-reports/topics/:id`），Esc / 失焦取消，空名拒收。`renameLane` 缺省时**不显示**
  * 「重命名」项（旧调用/老测试零改动）。编辑态不触发行选中（输入框不 emit `selectLane`）。
  *
- * 覆盖组行（`coverage` = 窗口内未进日报的活跃泳道）：名字是**静态标签**（该泳道不在本窗
- * 名单，选不动），只留「⋯」维护入口；格与活跃行同款（全「—」）。
+ * 覆盖分支（`coverage` = 窗口内未进日报的活跃泳道）：名字是**静态标签**（该泳道不在本窗
+ * 名单，选不动），后面跟一条状态结论「最近命中 MM-DD」（缺失写「无记录」），只留「⋯」维护入口。
+ * `coverage` 分支同时服务矩阵底部列表（无格形态）：列表项传 `cells=[]`，本组件就只剩行头
+ * （没有日期格，也不会 emit `selectCell`），不要因为矩阵里看不到格就把它删掉。
  *
  * 色深（2026-11-11 用户看版后修订，tasks 3.5）：格底色 = 格视图自带的 `depth`（当日线索合计在
  * 本行**可见窗**内的归一深浅，行内峰值最深、0/未知不着色）；颜色只是冗余强化通道，格值数字与
@@ -51,9 +53,9 @@ const props = defineProps<{
   selectedDate: string | null
   /** 休眠行：弱化 + 「休眠」标（分组/折叠态由父持有）。 */
   dormant: boolean
-  /** 覆盖组行（窗口内未进日报）：弱化 + 「未进日报」标；名字静态（不在本窗名单）。 */
+  /** 覆盖行（窗口内未进日报）：名字静态（不在本窗名单）+ 「最近命中」结论，无日期格。 */
   coverage?: boolean
-  /** 覆盖组行的最近一次出现日期（YYYY-MM-DD；null = 无记录），只进 title。 */
+  /** 覆盖行的最近命中日期（YYYY-MM-DD；该泳道最近被线索命中的那天，null = 无记录）。 */
   coverageLastSeen?: string | null
   /**
    * 就地重命名（缺省 = 无该入口，菜单不显示「重命名」）。
@@ -135,11 +137,15 @@ function onMenuSelect(key: string): void {
   else if (key === 'archive') emit('archiveLane', props.row.topicId)
 }
 
+/** 覆盖行的状态结论：「最近命中 MM-DD」/「无记录」（它是命中日期，不是进日报的日期）。 */
+const coverageSeenText = computed(() =>
+  props.coverageLastSeen ? `最近命中 ${props.coverageLastSeen.slice(5)}` : '无记录',
+)
+
 /** 行头用 source 全窗指标；不随可见日期裁切重算排序或统计。 */
 function rowTitle(): string {
   if (props.coverage) {
-    const lastSeen = props.coverageLastSeen ? ` · 最近一次 ${props.coverageLastSeen.slice(5)}` : ' · 无记录'
-    return `${props.row.label}：窗口内未进日报${lastSeen}`
+    return `${props.row.label}：窗口内未进日报 · ${coverageSeenText.value}`
   }
   return `${props.row.label}：${props.row.clueTotal} 条线索 · ${props.row.sectionTotal} 个主题桶`
 }
@@ -155,11 +161,7 @@ const {
 
 /** 卡片元信息行（与 `rowTitle` 同一套指标，只是拆成「全名 / 指标」两行排版）。 */
 const nameCardMeta = computed(() => {
-  if (props.coverage) {
-    return props.coverageLastSeen
-      ? `窗口内未进日报 · 最近一次 ${props.coverageLastSeen.slice(5)}`
-      : '窗口内未进日报 · 无记录'
-  }
+  if (props.coverage) return `窗口内未进日报 · ${coverageSeenText.value}`
   const parts = [`${props.row.clueTotal} 条线索`, `${props.row.sectionTotal} 个主题桶`]
   if (props.row.watchLinked) parts.push('已追踪')
   if (props.dormant) parts.push('休眠')
@@ -252,6 +254,7 @@ function cellStyle(cell: MatrixCellView): Record<string, string> {
       @mouseleave="hideNameCard"
     >
       <span ref="nameTextRef" class="omx-lane-name-text">{{ row.label }}</span>
+      <span class="omx-lane-coverage-seen">{{ coverageSeenText }}</span>
     </span>
     <RowActionMenu
       :items="laneMenuItems"

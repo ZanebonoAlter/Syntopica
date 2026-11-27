@@ -290,6 +290,50 @@ describe('ObservationMatrixLaneRow — 行头就地改名', () => {
 })
 
 /**
+ * 覆盖行（`lane-coverage-entry-list`）：矩阵底部列表项复用本组件的 `coverage` 分支，
+ * 传 `cells=[]` 时只剩行头——名字静态 + 「最近命中 MM-DD」/「无记录」+ ⋯，无任何日期格。
+ * 「最近命中」是话题最近一次被线索命中的日期，不是进日报的日期（不得写回「最近一次」）。
+ */
+describe('ObservationMatrixLaneRow — 覆盖行（无格形态）', () => {
+  function mountCoverage(overrides: Record<string, unknown> = {}) {
+    return mountRow({ cells: [], axis: [], coverage: true, ...overrides })
+  }
+
+  it('cells=[] → 不渲染任何日期格', () => {
+    const w = mountCoverage({ coverageLastSeen: '2026-11-09' })
+    expect(w.findAll('.omx-cell')).toHaveLength(0)
+    expect(w.find('[data-testid^="matrix-cell-"]').exists()).toBe(false)
+  })
+
+  it('行头写「最近命中 MM-DD」，全文（含窗口内未进日报）在 aria-label', () => {
+    const w = mountCoverage({ coverageLastSeen: '2026-11-09' })
+    const name = w.find('[data-testid="matrix-lane-10"]')
+    expect(name.element.tagName).toBe('SPAN')
+    expect(name.text()).toContain(ROW.label)
+    expect(name.text()).toContain('最近命中 11-09')
+    expect(name.text()).not.toContain('最近一次')
+    expect(name.attributes('aria-label')).toContain('窗口内未进日报 · 最近命中 11-09')
+  })
+
+  it('缺日期 → 写「无记录」（不拿今天冒充）', () => {
+    const w = mountCoverage({ coverageLastSeen: null })
+    expect(w.find('[data-testid="matrix-lane-10"]').text()).toContain('无记录')
+  })
+
+  it('名字是静态标签（点不动）；⋯ 仍提供重命名 / 编辑 / 归档', async () => {
+    const w = mountCoverage({ coverageLastSeen: '2026-11-09', renameLane: vi.fn().mockResolvedValue(true) })
+    ;(w.find('[data-testid="matrix-lane-10"]').element as HTMLElement).click()
+    await flushPromises()
+    expect(w.emitted('selectLane')).toBeUndefined()
+
+    trigger().click()
+    await flushPromises()
+    const items = [...document.body.querySelectorAll('.row-menu-item')].map(el => el.textContent?.trim())
+    expect(items).toEqual(['重命名', '编辑泳道', '归档泳道'])
+  })
+})
+
+/**
  * 名称看全卡片（2026-11-26 用户反馈「泳道名展示不全」）：标签列放不下全名时，星停/聚焦出卡；
  * 名字放得下时零噪声；卡片只是视觉冗余（全名已在 `aria-label`，卡片 `aria-hidden`）。
  */

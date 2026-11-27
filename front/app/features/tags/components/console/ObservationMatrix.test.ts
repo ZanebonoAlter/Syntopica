@@ -364,20 +364,28 @@ describe('ObservationMatrix — 交互与状态', () => {
   })
 })
 
-// ── lane-matrix-coverage-and-others-row：覆盖组 / 其他话题整行（纯受控透传） ─────
+// ── lane-matrix-coverage-and-others-row + lane-coverage-entry-list：覆盖组 / 其他话题整行（纯受控透传） ─
 
 describe('ObservationMatrix — 覆盖组与「其他话题」整行', () => {
   const coverage = [{ topicId: '20', label: '以色列内部选举', lastSeenDate: '2026-11-09' }]
 
-  it('覆盖组默认展开：组标题带数量 + 名字 + 最近一次日期，组内行在场', () => {
+  it('覆盖组默认折叠：只有折叠条（数量 + 名字），展开后才是列表项', async () => {
     const wrapper = mountMatrix({ coverageLanes: coverage })
     const summary = wrapper.find('[data-testid="coverage-group-summary"]')
     expect(summary.exists()).toBe(true)
     expect(summary.text()).toContain('窗口内未进日报')
     expect(summary.text()).toContain('1')
     expect(summary.text()).toContain('以色列内部选举')
-    expect(summary.text()).toContain('最近一次 11-09')
-    expect(wrapper.find('[data-testid="matrix-lane-20"]').exists()).toBe(true)
+    expect(summary.text()).toContain('展开查看')
+    // 矩阵网格里不再有为它渲染的行 / 日期格
+    expect(wrapper.find('[data-testid="matrix-lane-20"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid^="matrix-cell-20-"]')).toHaveLength(0)
+
+    await wrapper.find('[data-testid="coverage-toggle"]').trigger('click')
+    const items = wrapper.findAll('[data-testid="coverage-list"] > li')
+    expect(items).toHaveLength(1)
+    expect(items[0]!.text()).toContain('以色列内部选举')
+    expect(items[0]!.text()).toContain('最近命中 11-09')
   })
 
   it('覆盖清单失败：底部一行提示 + 重试（既有行/格照常渲染）', async () => {
