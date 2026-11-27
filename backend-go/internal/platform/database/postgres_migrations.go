@@ -2492,7 +2492,7 @@ ON CONFLICT (route_id, param_name, value) DO NOTHING`,
 	migrations = append(migrations, boardSignalMigration(), boardSignalResearchProgressMigration(), dropProfileTablesMigration(), boardHealthSnapshotMigration(), signalDispositionMigration(), questionResearchBriefMigration(), searchSemanticHalfvecIndexMigration(), intraLaneBucketColumnsMigration(), auxiliaryDescriptionRepairMigration(), embeddingModelColumnWidthMigration(), embeddingModelNotNullMigration(), storyHeatTablesMigration())
 	migrations = append(migrations, laneManualCorrectionPendingMigration(), laneManualCorrectionOverridesTableMigration(), laneManualCorrectionAssignmentTraceMigration(), laneManualCorrectionAssignmentOverridesTableMigration())
 	migrations = append(migrations, dailyReportBackfillRunsMigration())
-	return append(migrations, storySignalContentKeyMigration(), unifyVectorColumnDimensionMigration(), ensureTopicTagHalfvecIndexMigration(), aiDetectionSchemaMigration(), tagJobUniqueMigration(), detectionJobUniqueMigration(), topicLaneConstraintMigration(), ensureSemanticLabelMergeHalfvecIndexMigration())
+	return append(migrations, storySignalContentKeyMigration(), unifyVectorColumnDimensionMigration(), ensureTopicTagHalfvecIndexMigration(), aiDetectionSchemaMigration(), tagJobUniqueMigration(), detectionJobUniqueMigration(), topicLaneConstraintMigration(), ensureSemanticLabelMergeHalfvecIndexMigration(), laneRecallConfigMigration())
 }
 
 // intraLaneBucketColumnsMigration implements 20261024_0001

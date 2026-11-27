@@ -73,7 +73,7 @@ func TestCollectBoardTags_PGHonorsGroupBy(t *testing.T) {
 	require.NoError(t, db.Create(&models.ArticleTopicTag{ArticleID: art2.ID, TopicTagID: tagDowngraded.ID}).Error)
 
 	// --- act: run the real query. Pre-fix this returned SQLSTATE 42803.
-	tags, articleIDSets, err := collectBoardTags(board.ID, now)
+	tags, articleIDSets, _, err := collectBoardTags(board.ID, now)
 	require.NoError(t, err, "collectBoardTags must not fail on PostgreSQL (GROUP BY must include all non-aggregated SELECT columns)")
 	require.Len(t, tags, 2, "both seeded event tags should be collected")
 	require.Len(t, articleIDSets, 2)
@@ -123,7 +123,7 @@ func TestCollectBoardTags_PopulatesArticleContext(t *testing.T) {
 	require.NoError(t, db.Create(&art).Error)
 	require.NoError(t, db.Create(&models.ArticleTopicTag{ArticleID: art.ID, TopicTagID: tag.ID}).Error)
 
-	tags, _, err := collectBoardTags(board.ID, now)
+	tags, _, _, err := collectBoardTags(board.ID, now)
 	require.NoError(t, err)
 	require.Len(t, tags, 1)
 

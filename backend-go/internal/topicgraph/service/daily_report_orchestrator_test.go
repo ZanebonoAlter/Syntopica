@@ -79,7 +79,7 @@ func TestFilterTagsByQuality_PreservesDirectHitHitRateMaxSim(t *testing.T) {
 		{ID: 3, MatchReason: "max_sim", Score: 0.8},
 		{ID: 4, MatchReason: "weighted", Score: 0.5},
 	}
-	result := filterTagsByQuality(tags)
+	result := filterTagsByQuality(tags, nil)
 	assert.Len(t, result, 4) // weighted pulled back since < 10
 }
 
@@ -91,7 +91,7 @@ func TestFilterTagsByQuality_PullsBackWeightedWhenFew(t *testing.T) {
 		{ID: 4, MatchReason: "weighted", Score: 0.5},
 		{ID: 5, MatchReason: "weighted", Score: 0.4},
 	}
-	result := filterTagsByQuality(tags)
+	result := filterTagsByQuality(tags, nil)
 	// < 10 kept → weighted pulled back
 	assert.Len(t, result, 5)
 }
@@ -103,7 +103,7 @@ func TestFilterTagsByQuality_TruncatesAbove30(t *testing.T) {
 			ID: uint(i + 1), MatchReason: "max_sim", Score: float64(100 - i),
 		})
 	}
-	result := filterTagsByQuality(tags)
+	result := filterTagsByQuality(tags, nil)
 	assert.Len(t, result, 30)
 }
 
@@ -120,7 +120,7 @@ func TestFilterTagsByQuality_TierTruncation(t *testing.T) {
 	tags = append(tags, repository.TagInput{ID: 32, MatchReason: "max_sim", Score: 0.95})
 	tags = append(tags, repository.TagInput{ID: 35, MatchReason: "weighted", Score: 0.5})
 
-	result := filterTagsByQuality(tags)
+	result := filterTagsByQuality(tags, nil)
 	assert.Len(t, result, 30)
 	for _, r := range result {
 		assert.Equal(t, "direct_hit", r.MatchReason, "tier 0 满额时低档不得挤占")

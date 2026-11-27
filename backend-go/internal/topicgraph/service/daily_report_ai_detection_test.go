@@ -133,7 +133,7 @@ func TestFilterTagsByQuality_SuspectRatioBreaksTie(t *testing.T) {
 		repository.TagInput{ID: 501, MatchReason: "direct_hit", Score: 0.5, AISuspectRatio: 0.1},
 	)
 
-	kept := filterTagsByQuality(tags)
+	kept := filterTagsByQuality(tags, nil)
 
 	require.Len(t, kept, 30, "超上限按既有口径截断到 30")
 	keptIDs := make(map[uint]bool, len(kept))
@@ -158,7 +158,7 @@ func TestFilterTagsByQuality_RatioKeepsCandidateMembers(t *testing.T) {
 		})
 	}
 
-	kept := filterTagsByQuality(tags)
+	kept := filterTagsByQuality(tags, nil)
 
 	require.Len(t, kept, len(tags), "占比不得把标签移出候选集合")
 	for i := range tags {

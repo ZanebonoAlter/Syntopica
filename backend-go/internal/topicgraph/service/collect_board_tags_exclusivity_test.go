@@ -74,7 +74,7 @@ func TestCollectBoardTags_CrossBoardExclusivity(t *testing.T) {
 	}
 
 	// --- act: weak board's candidates
-	tags, _, err := collectBoardTags(boardWeak.ID, now)
+	tags, _, _, err := collectBoardTags(boardWeak.ID, now)
 	require.NoError(t, err)
 	labels := make(map[string]bool, len(tags))
 	for _, tg := range tags {
@@ -85,7 +85,7 @@ func TestCollectBoardTags_CrossBoardExclusivity(t *testing.T) {
 	assert.True(t, labels["深交所问询"], "sole-mount tag must stay")
 
 	// --- act: strong board's candidates are unaffected
-	tagsHome, _, err := collectBoardTags(boardHome.ID, now)
+	tagsHome, _, _, err := collectBoardTags(boardHome.ID, now)
 	require.NoError(t, err)
 	labelsHome := make(map[string]bool, len(tagsHome))
 	for _, tg := range tagsHome {
@@ -130,7 +130,7 @@ func TestCollectBoardTags_ExclusivityDisabledAtZeroGap(t *testing.T) {
 	require.NoError(t, db.Create(&art).Error)
 	require.NoError(t, db.Create(&models.ArticleTopicTag{ArticleID: art.ID, TopicTagID: tagBorrowed.ID}).Error)
 
-	tags, _, err := collectBoardTags(boardWeak.ID, now)
+	tags, _, _, err := collectBoardTags(boardWeak.ID, now)
 	require.NoError(t, err)
 	require.Len(t, tags, 1, "gap=0 disables exclusivity: legacy behavior collects the weak mount")
 	assert.Equal(t, "美国非农g0", tags[0].Label)
@@ -233,7 +233,7 @@ func TestCollectBoardTags_FallbackCrossBoardExclusivity(t *testing.T) {
 	}
 
 	// --- act: weak board's fallback candidates
-	tagsWeak, _, err := collectBoardTags(boardWeak.ID, now)
+	tagsWeak, _, _, err := collectBoardTags(boardWeak.ID, now)
 	require.NoError(t, err)
 	labelsWeak := make(map[string]bool, len(tagsWeak))
 	for _, tg := range tagsWeak {
@@ -244,7 +244,7 @@ func TestCollectBoardTags_FallbackCrossBoardExclusivity(t *testing.T) {
 
 	// --- act: home board's candidates (first call persisted the computed
 	// matches, so this rides the main query; matches[0] is home itself there)
-	tagsHome, _, err := collectBoardTags(boardHome.ID, now)
+	tagsHome, _, _, err := collectBoardTags(boardHome.ID, now)
 	require.NoError(t, err)
 	labelsHome := make(map[string]bool, len(tagsHome))
 	for _, tg := range tagsHome {

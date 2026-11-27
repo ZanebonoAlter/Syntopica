@@ -25,8 +25,8 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 
 	startOfDay := repository.NormalizeReportDate(date)
 
-	// Step 1: Collect board event tags
-	tags, articleCounts, err := collectBoardTags(boardID, date)
+	// Step 1: Collect board event tags (both channels: board-mounted + lane recall)
+	tags, articleCounts, laneRecalled, err := collectBoardTags(boardID, date)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("collect board tags: %w", err)
 	}
@@ -45,8 +45,9 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 	// degrades to the legacy ID order — the pipeline must not break).
 	tags = DeduplicateTags(ctx, tags, articleCounts, loadDedupRelevance(boardID, tags))
 
-	// Step 2.5: Quality filter
-	tags = filterTagsByQuality(tags)
+	// Step 2.5: Quality filter (lane-recalled tags pass regardless of the
+	// `kept >= 10` board-evidence switch — lane-first-recall D3)
+	tags = filterTagsByQuality(tags, laneRecalled)
 	if len(tags) == 0 {
 		return nil, nil, nil, nil
 	}
@@ -108,7 +109,7 @@ func GenerateDailyReport(ctx context.Context, boardID uint, date time.Time) (*re
 			}
 		}
 	}
-	clusters, err := ClusterTagsLane(ctx, tags, existingTopics, tagEmb, topicBriefs, topicCfg, LoadLaneConstraintOption(existingTopics, tagIDs))
+	clusters, err := ClusterTagsLane(ctx, tags, existingTopics, tagEmb, topicBriefs, topicCfg, LoadLaneConstraintOption(existingTopics, tagIDs), WithLaneRecalledTags(laneRecalled))
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("cluster tags (lane): %w", err)
 	}
@@ -568,7 +569,30 @@ func loadDailyReportCollectConfig(db *gorm.DB) dailyReportCollectConfig {
 	return cfg
 }
 
-func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]uint, error) {
+// laneRecallTagReason marks tags whose only admission evidence is the lane
+// channel (lane-first-recall). It is deliberately a new match_reason instead of
+// borrowing "weighted": the quality filter, the quality_breakdown payload and
+// the L3 gate all need to tell "board statistical guess" from "lane semantic
+// witness" apart. Unknown reasons degrade safely downstream (MatchTier → the
+// weighted tier, the report UI → a neutral chip).
+const laneRecallTagReason = "lane_recall"
+
+// collectBoardTags collects the day's candidate tags from BOTH recall channels
+// (lane-first-recall design D1):
+//
+//   - board channel (existing): tags mounted on this board, plus a fallback that
+//     live-matches a random `Limit(50)` slice of unmounted tags;
+//   - lane channel (new): for every active lane, the nearest at most
+//     `lane_recall_top_k` tags from the day's FULL event tag pool within
+//     `lane_recall_max_distance`.
+//
+// The returned `laneRecalled` set marks the tags whose seat in the candidate set
+// rests on lane evidence; `filterTagsByQuality` lets those through the
+// `kept >= 10` switch and the L3 gate refuses to let them seed a new lane.
+//
+// The lane channel SHALL NOT write topic_tag_board_labels: a mount is a permanent
+// fact, a recall is a single-day decision.
+func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]uint, map[uint]bool, error) {
 	startOfDay := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
 	endOfDay := startOfDay.Add(24 * time.Hour)
 	collectCfg := loadDailyReportCollectConfig(repository.Repo.DB())
@@ -617,11 +641,21 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 		Order("article_count DESC, topic_tags.id ASC").
 		Scan(&rows).Error
 	if err != nil {
-		return nil, nil, fmt.Errorf("query board event tags: %w", err)
+		return nil, nil, nil, fmt.Errorf("query board event tags: %w", err)
 	}
 
 	if len(rows) == 0 {
-		return nil, nil, nil
+		// No mounted tags means the board channel (main query + live-match
+		// fallback) has nothing to work with, but the lane channel reads the
+		// full day pool and may still find lane-witnessed tags.
+		logging.Infof("[daily-report] board %d has no mounted event tags on %s; lane channel is the only ingress",
+			boardID, startOfDay.Format("2006-01-02"))
+		laneTags, laneSets, laneRecalled := collectLaneRecalledTags(boardID, nil, startOfDay, endOfDay, collectCfg)
+		if len(laneTags) == 0 {
+			return nil, nil, nil, nil
+		}
+		applyAISuspectRatios(laneTags, laneSets)
+		return laneTags, laneSets, laneRecalled, nil
 	}
 
 	var tags []repository.TagInput
@@ -715,11 +749,246 @@ func collectBoardTags(boardID uint, date time.Time) ([]repository.TagInput, [][]
 		}
 	}
 
+	// Lane channel (lane-first-recall D1): union in the tags witnessed by this
+	// board's active lanes. Same cross-board exclusivity rule as the board
+	// channel; a dual-channel hit keeps its board row (task 3.4).
+	laneTags, laneArticleSets, laneRecalled := collectLaneRecalledTags(boardID, tags, startOfDay, endOfDay, collectCfg)
+	tags = append(tags, laneTags...)
+	articleIDSets = append(articleIDSets, laneArticleSets...)
+
 	// 疑似占比（design D9）：只给 filterTagsByQuality 的名额竞争截断当末位排序因子，
 	// 不参与「进日报」判定、不改变候选成员。查询失败时占比保持 0（= 不影响排序）。
 	applyAISuspectRatios(tags, articleIDSets)
 
-	return tags, articleIDSets, nil
+	return tags, articleIDSets, laneRecalled, nil
+}
+
+// boardQualityMatchReason reports whether a match reason already proves board
+// membership by the quality filter's own standard. Used only to decide whether a
+// dual-channel hit owes its seat to the lane channel.
+func boardQualityMatchReason(reason string) bool {
+	switch reason {
+	case "direct_hit", "hit_rate", "max_sim":
+		return true
+	default:
+		return false
+	}
+}
+
+// laneRecallAdmission splits the lane channel's witnesses into what the
+// candidate set actually gains (lane-first-recall task 3.4):
+//
+//   - newIDs: tags the board channel does not have at all — they enter with
+//     match_reason=lane_recall so nothing downstream mistakes them for a board
+//     statistical match;
+//   - rescued: tags the board channel did have, but at a non-quality tier
+//     (weighted/unknown). Their row is kept untouched and the lane evidence is
+//     only an additional marker, so the quality filter stops dropping them;
+//   - a tag whose board row is already quality-tier is neither moved nor
+//     marked: the board row wins on a dual hit.
+//
+// Tags denied by cross-board exclusivity are dropped. Everything returned in
+// `rescued` (plus everything successfully loaded from `newIDs`) forms the
+// laneRecalled marker set used by the quality filter and the L3 gate.
+func laneRecallAdmission(hits []repository.LaneRecalledTag, existingReason map[uint]string, allowed map[uint]bool) ([]uint, map[uint]bool) {
+	rescued := make(map[uint]bool)
+	newIDs := make([]uint, 0, len(hits))
+	seen := make(map[uint]bool, len(hits))
+	for _, hit := range hits {
+		if seen[hit.TagID] {
+			continue
+		}
+		seen[hit.TagID] = true
+		if reason, onBoard := existingReason[hit.TagID]; onBoard {
+			if !boardQualityMatchReason(reason) {
+				rescued[hit.TagID] = true
+			}
+			continue
+		}
+		if !allowed[hit.TagID] {
+			continue
+		}
+		newIDs = append(newIDs, hit.TagID)
+	}
+	return newIDs, rescued
+}
+
+// collectLaneRecalledTags runs the lane recall channel and returns the tags it
+// contributes, their day article sets, and the `laneRecalled` marker set.
+//
+// Rules implemented here:
+//   - tags already recalled by the board channel are not duplicated (the board
+//     row wins on MatchReason/Score, task 3.4); only the ones whose board row is
+//     a non-quality tier get the lane marker, so a board-proof tag keeps its
+//     existing L3 eligibility unchanged;
+//   - cross-board exclusivity applies exactly as it does to the board channel
+//     (`semantic_board_report_exclusive_gap`): a tag owned clearly stronger by
+//     another board is not collected here;
+//   - nothing is written: no topic_tag_board_labels row, no topic/relation row.
+func collectLaneRecalledTags(boardID uint, existing []repository.TagInput, startOfDay, endOfDay time.Time, collectCfg dailyReportCollectConfig) ([]repository.TagInput, [][]uint, map[uint]bool) {
+	recallCfg := repository.LoadLaneRecallConfig(repository.Repo.DB())
+	hits, err := repository.Repo.RecallTagsForBoard(boardID, startOfDay, recallCfg)
+	if err != nil {
+		logging.Warnf("[daily-report] lane recall for board %d failed (board channel only): %v", boardID, err)
+		return nil, nil, nil
+	}
+	if len(hits) == 0 {
+		return nil, nil, nil
+	}
+	ordered := make([]repository.LaneRecalledTag, 0, len(hits))
+	for _, hit := range hits {
+		ordered = append(ordered, hit)
+	}
+	// Deterministic order (distance asc, tag id asc) so the same inputs always
+	// produce the same candidate order.
+	repository.SortLaneRecallHits(ordered)
+
+	existingReason := make(map[uint]string, len(existing))
+	for _, tag := range existing {
+		existingReason[tag.ID] = tag.MatchReason
+	}
+	allowed := laneRecallExclusivityAllowed(ordered, existingReason, boardID, collectCfg.ExclusiveGap)
+
+	newIDs, laneRecalled := laneRecallAdmission(ordered, existingReason, allowed)
+
+	var tags []repository.TagInput
+	var articleIDSets [][]uint
+	for _, tagID := range newIDs {
+		var tag models.TopicTag
+		if err := repository.Repo.DB().First(&tag, tagID).Error; err != nil {
+			logging.Warnf("[daily-report] lane recall: load tag %d failed, skipped: %v", tagID, err)
+			continue
+		}
+		var artIDs []uint
+		repository.Repo.DB().Model(&models.ArticleTopicTag{}).
+			Select("DISTINCT article_topic_tags.article_id").
+			Joins("JOIN articles ON articles.id = article_topic_tags.article_id").
+			Where("article_topic_tags.topic_tag_id = ? AND articles.pub_date >= ? AND articles.pub_date < ?", tag.ID, startOfDay, endOfDay).
+			Pluck("article_topic_tags.article_id", &artIDs)
+		if len(artIDs) == 0 {
+			continue
+		}
+		distance := hits[tag.ID].Distance
+		tags = append(tags, repository.TagInput{
+			ID:           tag.ID,
+			Label:        tag.Label,
+			Category:     tag.Category,
+			Description:  tag.Description,
+			ArticleCount: len(artIDs),
+			Source:       tag.Source,
+			MatchReason:  laneRecallTagReason,
+			// Score carries the lane evidence that admitted the tag: cosine
+			// similarity to the witnessing lane's anchor (1 - distance). It is
+			// NOT a board score — MatchReason says where it came from.
+			Score:          1 - distance,
+			ArticleContext: buildArticleContextForTag(tag.ID, startOfDay, endOfDay),
+		})
+		articleIDSets = append(articleIDSets, artIDs)
+		laneRecalled[tagID] = true
+	}
+	if len(tags) > 0 || len(laneRecalled) > 0 {
+		logging.Infof("[daily-report] lane recall board %d: witnesses=%d new_tags=%d dual_channel=%d",
+			boardID, len(ordered), len(tags), len(laneRecalled)-len(tags))
+	}
+	if len(laneRecalled) == 0 {
+		return tags, articleIDSets, nil
+	}
+	return tags, articleIDSets, laneRecalled
+}
+
+// laneRecallExclusivityAllowed applies the board channel's cross-board
+// exclusivity rule (`semantic_board_report_exclusive_gap`) to lane-recalled
+// tags, read-only:
+//
+//	thisBoardScore = max score of this tag's mount here (0 when unmounted here)
+//	bestOtherScore = max score of its mounts on other boards
+//	drop when bestOtherScore - thisBoardScore >= gap
+//
+// i.e. "another board clearly owns this tag" (design D6: 同一 tag 在别板明显
+// 更强时不收). gap <= 0 switches the rule off, matching the main query. Only
+// topic_tag_board_labels is read — the lane channel never writes mounts.
+func laneRecallExclusivityAllowed(hits []repository.LaneRecalledTag, existingReason map[uint]string, boardID uint, gap float64) map[uint]bool {
+	allowed := make(map[uint]bool, len(hits))
+	if len(hits) == 0 {
+		return allowed
+	}
+	if gap <= 0 {
+		for _, hit := range hits {
+			allowed[hit.TagID] = true
+		}
+		return allowed
+	}
+
+	pending := make([]uint, 0, len(hits))
+	for _, hit := range hits {
+		if _, ok := existingReason[hit.TagID]; ok {
+			continue // board-channel tags were already judged by the main query
+		}
+		pending = append(pending, hit.TagID)
+	}
+	if len(pending) == 0 {
+		return allowed
+	}
+
+	var rows []laneMountRow
+	err := repository.Repo.DB().Raw(
+		`SELECT topic_tag_id, semantic_board_id, score FROM topic_tag_board_labels WHERE topic_tag_id IN ?`, pending).
+		Scan(&rows).Error
+	if err != nil {
+		logging.Warnf("[daily-report] lane recall exclusivity lookup failed (keeping recalled tags): %v", err)
+		for _, id := range pending {
+			allowed[id] = true
+		}
+		return allowed
+	}
+	for id, ok := range laneRecallExclusivityVerdict(pending, rows, boardID, gap) {
+		allowed[id] = ok
+	}
+	return allowed
+}
+
+// laneMountRow is one topic_tag_board_labels row the exclusivity check reads.
+type laneMountRow struct {
+	TopicTagID      uint
+	SemanticBoardID uint
+	Score           float64
+}
+
+// laneRecallExclusivityVerdict is the pure arithmetic of the exclusivity rule
+// (split out so it is testable without Postgres): per tag, this board's best
+// mount score against the best score on any other board.
+//
+// gap <= 0 means "rule disabled" and is handled HERE as well as in the caller.
+// The duplicate is deliberate: the formula `bestOther - ownScore < gap` turns
+// into `0 - 0 < 0` = false for a tag mounted nowhere when gap is 0, i.e. the
+// exact opposite of "disabled". Callers keep their own early return only so the
+// disabled path never opens a DB query; this guard makes the pure function safe
+// on its own instead of relying on every caller remembering (review R-13).
+func laneRecallExclusivityVerdict(pending []uint, rows []laneMountRow, boardID uint, gap float64) map[uint]bool {
+	verdict := make(map[uint]bool, len(pending))
+	if gap <= 0 {
+		for _, id := range pending {
+			verdict[id] = true
+		}
+		return verdict
+	}
+	ownScore := make(map[uint]float64, len(pending))
+	bestOther := make(map[uint]float64, len(pending))
+	for _, row := range rows {
+		if row.SemanticBoardID == boardID {
+			if row.Score > ownScore[row.TopicTagID] {
+				ownScore[row.TopicTagID] = row.Score
+			}
+			continue
+		}
+		if _, ok := bestOther[row.TopicTagID]; !ok || row.Score > bestOther[row.TopicTagID] {
+			bestOther[row.TopicTagID] = row.Score
+		}
+	}
+	for _, id := range pending {
+		verdict[id] = bestOther[id]-ownScore[id] < gap
+	}
+	return verdict
 }
 
 // threadCandidateArticleIDs 把 tag→article 映射展平成候选文章 id 列表。
@@ -842,15 +1111,35 @@ func buildQualityBreakdownJSON(tags []repository.TagInput, tagIDs []uint) []byte
 	b, _ := json.Marshal(entries)
 	return b
 }
-func filterTagsByQuality(tags []repository.TagInput) []repository.TagInput {
+
+// filterTagsByQuality applies the board-evidence gate to the day's candidate
+// tags (lane-first-recall D3).
+//
+// The `kept >= 10` switch answers "can this tag prove it belongs to this BOARD",
+// using statistical evidence (hits / hit rate / overlap share). A single-article
+// new event structurally cannot satisfy it, which is why the switch used to drop
+// them in bulk and the board fell back to old tags only (2026-11-26).
+//
+// Tags witnessed by a lane carry a different, stronger kind of evidence — the
+// semantic distance to an established lane — so they neither raise `kept` over
+// the threshold (which would start dropping the remaining `weighted` tags) nor
+// get dropped by it. They also bypass the 30-tag board-evidence cap: that cap
+// exists to bound noisy board evidence, and lane witnesses are bounded already
+// by `lane_recall_top_k` per lane.
+func filterTagsByQuality(tags []repository.TagInput, laneRecalled map[uint]bool) []repository.TagInput {
 	// Separate by match reason quality
 	var kept []repository.TagInput
 	var weighted []repository.TagInput
+	var laneKept []repository.TagInput
 	for _, t := range tags {
 		switch t.MatchReason {
 		case "direct_hit", "hit_rate", "max_sim":
 			kept = append(kept, t)
 		default: // "weighted" or unknown
+			if laneRecalled[t.ID] {
+				laneKept = append(laneKept, t)
+				continue
+			}
 			weighted = append(weighted, t)
 		}
 	}
@@ -878,7 +1167,7 @@ func filterTagsByQuality(tags []repository.TagInput) []repository.TagInput {
 		kept = kept[:30]
 	}
 
-	return kept
+	return append(kept, laneKept...)
 }
 
 // resolveClusterLabel picks the section's display title via the fallback

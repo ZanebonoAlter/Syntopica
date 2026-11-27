@@ -360,7 +360,7 @@ func clusterLaneToTier(lane string) string {
 // (topic-lane-auxiliary-label-constraint). Callers that pass nothing (and every
 // test written before the change) get the exact legacy behaviour: no
 // constraints ⇒ no gate ⇒ zero extra LLM calls.
-func ClusterTagsLane(ctx context.Context, tags []repository.TagInput, topics []repository.BoardPersistentTopic, tagEmbeddings map[uint][]float64, briefs map[uint][]repository.TopicRecentBrief, cfg repository.PersistentTopicConfig, opts ...LaneConstraintOption) ([]repository.ClusterGroup, error) {
+func ClusterTagsLane(ctx context.Context, tags []repository.TagInput, topics []repository.BoardPersistentTopic, tagEmbeddings map[uint][]float64, briefs map[uint][]repository.TopicRecentBrief, cfg repository.PersistentTopicConfig, opts ...LaneOption) ([]repository.ClusterGroup, error) {
 	ctx, span := tracing.Tracer(tracing.ServiceName).Start(ctx, "workflow.daily_report.cluster_tags_lane")
 	defer span.End()
 
@@ -376,7 +376,17 @@ func ClusterTagsLane(ctx context.Context, tags []repository.TagInput, topics []r
 	buckets := BucketTagsByCentroid(tags, topics, tagEmbeddings, cfg)
 	l1 := buckets.L1
 	l2 := buckets.L2
-	l3pool := buckets.L3
+	laneOpts := laneConstraintOption(opts)
+	laneRecalled := laneOpts.LaneRecalled
+
+	// Lane-first-recall D4: tags admitted by the lane channel may only feed
+	// EXISTING lanes. A lane witness that still landed in the L3 bucket (no day
+	// embedding, or far from every anchorable topic) is dropped here instead of
+	// seeding a new narrative group.
+	l3pool, laneDropped := dropLaneRecalledTags(buckets.L3, laneRecalled)
+	if laneDropped > 0 {
+		logging.Warnf("daily-report: lane cluster dropped %d lane-recalled tags from the L3 pool (lane evidence must not seed new lanes)", laneDropped)
+	}
 
 	// Fallback: too few ambiguous tags to justify any LLM call. L1 still
 	// aggregates per-topic; each L2 tag anchors to its nearest candidate
@@ -391,7 +401,7 @@ func ClusterTagsLane(ctx context.Context, tags []repository.TagInput, topics []r
 			l3groups = append(l3groups, repository.ClusterGroup{GroupName: t.Label, TagIDs: []uint{t.ID}, Lane: "l3"})
 		}
 		groups := assembleLaneGroups(l1, l2dec, l3groups)
-		groups = ApplyLaneConstraintGate(ctx, groups, tags, topics, briefs, cfg, laneConstraintOption(opts))
+		groups = ApplyLaneConstraintGate(ctx, groups, tags, topics, briefs, cfg, laneOpts)
 		logging.Infof("daily-report: lane cluster (fallback, no LLM) %d tags → l1=%d l2=%d l3=%d groups=%d",
 			len(tags), len(l1), len(l2), len(l3pool), len(groups))
 		return groups, nil
@@ -406,10 +416,22 @@ func ClusterTagsLane(ctx context.Context, tags []repository.TagInput, topics []r
 	l2dec := parseL2Response(content, l2)
 
 	// Route L2 "new" decisions (incl. off-shortlist downgrades) into the L3 pool.
+	// Lane-recalled tags are dropped instead (lane-first-recall D4): their only
+	// admission evidence is lane proximity, which justifies feeding an existing
+	// lane, not opening a new one.
+	l2Dropped := 0
 	for i, d := range l2dec {
-		if d.decision == "new" && i < len(l2) {
-			l3pool = append(l3pool, l2[i].Tag)
+		if d.decision != "new" || i >= len(l2) {
+			continue
 		}
+		if laneRecalled[l2[i].Tag.ID] {
+			l2Dropped++
+			continue
+		}
+		l3pool = append(l3pool, l2[i].Tag)
+	}
+	if l2Dropped > 0 {
+		logging.Warnf("daily-report: lane cluster dropped %d lane-recalled tags adjudicated as new by L2 (no L3 seeding)", l2Dropped)
 	}
 
 	// L3 new-narrative grouping.
@@ -441,7 +463,7 @@ func ClusterTagsLane(ctx context.Context, tags []repository.TagInput, topics []r
 	}
 
 	groups := assembleLaneGroups(l1, l2dec, l3groups)
-	groups = ApplyLaneConstraintGate(ctx, groups, tags, topics, briefs, cfg, laneConstraintOption(opts))
+	groups = ApplyLaneConstraintGate(ctx, groups, tags, topics, briefs, cfg, laneOpts)
 	logging.Infof("daily-report: lane cluster %d tags → l1=%d l2=%d l3=%d groups=%d",
 		len(tags), len(l1), len(l2), len(l3pool), len(groups))
 	return groups, nil
@@ -551,12 +573,13 @@ func l3GroupsSchema() *airouter.JSONSchema {
 
 // ── 辅助标签约束闸门（topic-lane-auxiliary-label-constraint tasks 4.2~4.5）──────
 
-// LaneConstraintOption carries the auxiliary-label constraint context into the
-// lane pipeline. It is optional on purpose: a caller that passes nothing (and
-// every topic without constraint rows) skips the gate entirely — the spec's
+// LaneOption carries the optional lane-pipeline context into ClusterTagsLane:
+// the auxiliary-label constraint gate and the lane-first-recall admission
+// marker. It is optional on purpose: a caller that passes nothing (and every
+// topic without constraint rows) skips the gate entirely — the spec's
 // 「无约束话题行为不变，SHALL NOT 产生额外 LLM 调用」is structurally true, not a
 // branch that could regress.
-type LaneConstraintOption struct {
+type LaneOption struct {
 	// ConstraintsByTopic holds the constraint rows per topic. Empty map = no
 	// gate (存量话题零开销).
 	ConstraintsByTopic map[uint][]repository.TopicLaneConstraint
@@ -564,18 +587,66 @@ type LaneConstraintOption struct {
 	// through article_topic_tags (NOT cluster_tag_ids — 92.8% dangling). Tags
 	// absent from the map cannot be judged and are skipped.
 	LabelVectors map[uint]repository.LaneLabelVector
+	// LaneRecalled marks tags whose seat in the candidate set rests on the lane
+	// recall channel (lane-first-recall D4). Such a tag SHALL NOT seed a new
+	// narrative group: lane proximity is a "belongs to this existing lane"
+	// signal, never a "a new lane should exist" signal.
+	LaneRecalled map[uint]bool
 }
+
+// LaneConstraintOption is the historical name of LaneOption (introduced by
+// topic-lane-auxiliary-label-constraint). Kept as an alias so existing callers
+// keep compiling.
+type LaneConstraintOption = LaneOption
 
 // WithLaneConstraints builds the gate option from the loaded constraint rows.
-func WithLaneConstraints(constraints map[uint][]repository.TopicLaneConstraint, labelVectors map[uint]repository.LaneLabelVector) LaneConstraintOption {
-	return LaneConstraintOption{ConstraintsByTopic: constraints, LabelVectors: labelVectors}
+func WithLaneConstraints(constraints map[uint][]repository.TopicLaneConstraint, labelVectors map[uint]repository.LaneLabelVector) LaneOption {
+	return LaneOption{ConstraintsByTopic: constraints, LabelVectors: labelVectors}
 }
 
-func laneConstraintOption(opts []LaneConstraintOption) LaneConstraintOption {
-	if len(opts) == 0 {
-		return LaneConstraintOption{}
+// WithLaneRecalledTags carries the lane-recall admission marker into the lane
+// pipeline (lane-first-recall D4).
+func WithLaneRecalledTags(laneRecalled map[uint]bool) LaneOption {
+	return LaneOption{LaneRecalled: laneRecalled}
+}
+
+// laneConstraintOption merges the variadic options into one context. Merging
+// (instead of taking opts[0]) keeps constraint gating and lane recall
+// composable — the two call sites pass separate options.
+func laneConstraintOption(opts []LaneOption) LaneOption {
+	var out LaneOption
+	for _, opt := range opts {
+		if opt.ConstraintsByTopic != nil {
+			out.ConstraintsByTopic = opt.ConstraintsByTopic
+		}
+		if opt.LabelVectors != nil {
+			out.LabelVectors = opt.LabelVectors
+		}
+		if opt.LaneRecalled != nil {
+			out.LaneRecalled = opt.LaneRecalled
+		}
 	}
-	return opts[0]
+	return out
+}
+
+// dropLaneRecalledTags removes lane-recalled tags from the L3 pool: the pool's
+// only purpose is to seed new narrative lanes, and lane evidence must not do
+// that (lane-first-recall D4 硬上界). Returns the filtered pool and the number
+// of dropped tags.
+func dropLaneRecalledTags(pool []repository.TagInput, laneRecalled map[uint]bool) ([]repository.TagInput, int) {
+	if len(laneRecalled) == 0 || len(pool) == 0 {
+		return pool, 0
+	}
+	kept := make([]repository.TagInput, 0, len(pool))
+	dropped := 0
+	for _, tag := range pool {
+		if laneRecalled[tag.ID] {
+			dropped++
+			continue
+		}
+		kept = append(kept, tag)
+	}
+	return kept, dropped
 }
 
 // laneGroupLabelVectors projects a lane group's tag ids onto the judgeable
