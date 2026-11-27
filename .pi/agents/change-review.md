@@ -1,5 +1,6 @@
 ---
-description: 只读审查通用档（openspec change 制品审查 / UI e2e 验证按 brief 分流）；不绑模型——模型由派发时指定（默认 minimax-cn/MiniMax-M3.1-Flash:max），读 brief 文件产出中文审查报告
+name: change-review
+description: 只读审查通用档（openspec change 制品审查 / UI e2e 验证按 brief 分流）；模型见 .pi/settings.json 的 subagents 段（本档钉死强模型，不随 provider 变），读 brief 文件产出中文审查报告
 display_name: change-review
 tools: read, grep, find, ls, bash
 load_skills: true
@@ -11,6 +12,7 @@ run_in_background: false
 prompt_mode: append
 skills: true
 extensions: true
+model: zai-coding-cn/glm-5.4
 thinking: max
 ---
 

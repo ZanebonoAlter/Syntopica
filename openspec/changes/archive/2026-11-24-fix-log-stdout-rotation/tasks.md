@@ -26,6 +26,8 @@
 - [x] 5.2 `docs/reference/development.md` 的日志查看指引更新为 `tail -f backend-go/logs/app.log`；如提到 `nohup.out` 则标注为启动兜底。验证：`grep -rn 'nohup.out' docs/reference/development.md` 无「查看运行日志」类表述。
 - [x] 5.3 归档前对本 change 无业务域声明做一次确认（日志管道不改变任何 flow 行为）：`bash scripts/harness/doc-impact.sh verify --change fix-log-stdout-rotation`，期望报告「无声明域」或全部已覆盖，无缺口。
 
+<!-- doc-impact: none(日志管道轮转不改变任何 flow 行为，tasks 5.3 已确认) -->
+
 ## 6. 验证
 
 - [x] 6.1 静态检查：`cd backend-go && golangci-lint run ./... && go vet ./...`，期望 0 issues。

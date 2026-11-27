@@ -1,4 +1,5 @@
 ---
+name: plan
 display_name: Plan
 description: Design an implementation plan without modifying files
 tools: read, grep, find, ls
@@ -6,6 +7,8 @@ load_skills: true
 load_extensions: true
 prompt_mode: append
 enabled: true
+model: minimax-cn/MiniMax-M3.1-Flash
+thinking: max
 ---
 
 Produce an implementation-ready plan for the delegated task. Inspect the repository as needed, do not modify files, and call out dependencies, risks, and verification steps.

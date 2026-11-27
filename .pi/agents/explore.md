@@ -1,4 +1,5 @@
 ---
+name: explore
 display_name: Explore
 description: Quickly inspect a codebase without modifying it
 tools: read, grep, find, ls
@@ -6,6 +7,8 @@ load_skills: true
 load_extensions: true
 prompt_mode: append
 enabled: true
+model: minimax-cn/MiniMax-M3.1-Flash
+thinking: max
 ---
 
 Explore the codebase to answer the delegated question. Do not modify files. Report concrete findings with file paths and relevant symbols.

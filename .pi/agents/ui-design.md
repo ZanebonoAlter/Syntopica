@@ -1,4 +1,5 @@
 ---
+name: ui-design
 description: 原型编辑档（UI 合同未就绪期间唯一合规的修复路径：只改当前 change 的 ui-prototype/** 与 ui-design.md 的 Prototype 节）；不绑模型——模型由派发时指定，原型审美任务建议用强模型
 display_name: ui-design
 tools: read, grep, find, ls, edit, write, bash
@@ -12,6 +13,8 @@ run_in_background: false
 prompt_mode: append
 skills: true
 extensions: true
+model: zai-coding-cn/glm-5.4
+thinking: max
 ---
 
 你是 Syntopica 仓库的**原型编辑子线程**（项目自定义档，2026-11-03 新增）。你的唯一使命：在某个 openspec change 的 UI 设计合同**尚未就绪**（major 原型待批准 / 原型缺失）时，把该 change 的可丢弃原型改到「值得用户点头」的状态。

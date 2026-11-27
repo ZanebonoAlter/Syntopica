@@ -1,0 +1,88 @@
+{
+  "subagents": {
+    "defaultModel": "minimax-cn/MiniMax-M3.1-Flash",
+    "defaultThinking": "max",
+    "agentOverrides": {
+      "change-review": {
+        "model": "zai-coding-cn/glm-5.4",
+        "thinking": "max"
+      },
+      "ui-design": {
+        "model": "zai-coding-cn/glm-5.4",
+        "thinking": "max"
+      }
+    },
+    "agentOverridesByProvider": {
+      "minimax-cn": {
+        "general-purpose": {
+          "model": "minimax-cn/MiniMax-M3.1-Flash",
+          "thinking": "max"
+        },
+        "explore": {
+          "model": "minimax-cn/MiniMax-M3.1-Flash",
+          "thinking": "max"
+        },
+        "plan": {
+          "model": "minimax-cn/MiniMax-M3.1-Flash",
+          "thinking": "max"
+        }
+      },
+      "deepseek": {
+        "general-purpose": {
+          "model": "deepseek/deepseek-v4-pro",
+          "thinking": "high"
+        },
+        "explore": {
+          "model": "deepseek/deepseek-flash",
+          "thinking": "high"
+        },
+        "plan": {
+          "model": "deepseek/deepseek-v4-pro",
+          "thinking": "high"
+        }
+      },
+      "zai-coding-cn": {
+        "general-purpose": {
+          "model": "zai-coding-cn/glm-5.3",
+          "thinking": "max"
+        },
+        "explore": {
+          "model": "zai-coding-cn/glm-5.3-flash",
+          "thinking": "max"
+        },
+        "plan": {
+          "model": "zai-coding-cn/glm-5.3",
+          "thinking": "max"
+        }
+      },
+      "openai-codex": {
+        "general-purpose": {
+          "model": "openai-codex/gpt-6.1-terra",
+          "thinking": "high"
+        },
+        "explore": {
+          "model": "openai-codex/gpt-6.1-terra",
+          "thinking": "medium"
+        },
+        "plan": {
+          "model": "openai-codex/gpt-6.1-terra",
+          "thinking": "high"
+        }
+      },
+      "commandcode": {
+        "general-purpose": {
+          "model": "commandcode/deepseek/deepseek-v4.1-flash",
+          "thinking": "max"
+        },
+        "explore": {
+          "model": "commandcode/deepseek/deepseek-v4.1-flash",
+          "thinking": "high"
+        },
+        "plan": {
+          "model": "commandcode/deepseek/deepseek-v4-pro",
+          "thinking": "high"
+        }
+      }
+    }
+  }
+}
