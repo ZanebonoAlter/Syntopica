@@ -7,7 +7,6 @@ load_skills: true
 load_extensions: true
 prompt_mode: append
 enabled: true
-model: minimax-cn/MiniMax-M3.1-Flash
 thinking: max
 ---
 

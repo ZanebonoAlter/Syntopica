@@ -1,6 +1,6 @@
 {
   "subagents": {
-    "defaultModel": "minimax-cn/MiniMax-M3.1-Flash",
+    "defaultModel": "commandcode/deepseek/deepseek-v4.1-flash",
     "defaultThinking": "max",
     "agentOverrides": {
       "change-review": {
@@ -29,7 +29,7 @@
       },
       "deepseek": {
         "general-purpose": {
-          "model": "deepseek/deepseek-v4-pro",
+          "model": "deepseek/deepseek-flash",
           "thinking": "high"
         },
         "explore": {
@@ -37,13 +37,13 @@
           "thinking": "high"
         },
         "plan": {
-          "model": "deepseek/deepseek-v4-pro",
+          "model": "deepseek/deepseek-flash",
           "thinking": "high"
         }
       },
       "zai-coding-cn": {
         "general-purpose": {
-          "model": "zai-coding-cn/glm-5.3",
+          "model": "zai-coding-cn/glm-5.4",
           "thinking": "max"
         },
         "explore": {
@@ -51,21 +51,21 @@
           "thinking": "max"
         },
         "plan": {
-          "model": "zai-coding-cn/glm-5.3",
+          "model": "zai-coding-cn/glm-5.4",
           "thinking": "max"
         }
       },
       "openai-codex": {
         "general-purpose": {
-          "model": "openai-codex/gpt-6.1-terra",
+          "model": "openai-codex/gpt-6.2-sol",
           "thinking": "high"
         },
         "explore": {
-          "model": "openai-codex/gpt-6.1-terra",
+          "model": "openai-codex/gpt-6.2-sol",
           "thinking": "medium"
         },
         "plan": {
-          "model": "openai-codex/gpt-6.1-terra",
+          "model": "openai-codex/gpt-6.2-sol",
           "thinking": "high"
         }
       },
@@ -76,11 +76,11 @@
         },
         "explore": {
           "model": "commandcode/deepseek/deepseek-v4.1-flash",
-          "thinking": "high"
+          "thinking": "max"
         },
         "plan": {
-          "model": "commandcode/deepseek/deepseek-v4-pro",
-          "thinking": "high"
+          "model": "commandcode/deepseek/deepseek-v4.1-flash",
+          "thinking": "max"
         }
       }
     }

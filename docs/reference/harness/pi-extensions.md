@@ -135,7 +135,10 @@ doc-impact-applies: .pi/extensions, .pi/workflows, .pi/constraint-injection.json
 - **审计边界（D5）**：`--force` / `SPEC_GATE_BYPASS=1` 豁免、门禁自身异常 fail-open、提取不到 change 名的 warning 不进指纹表，保持每尝试一条（独立动作留痕）；检查①-⑥' block 判定与 `policy.decision(action=block)` 记账零改动。指纹态异常 fail-open：按无状态全量投递 + console.warn，绝不阻断归档。
 - **回检指标（归档后 7 天窗口，harness-retro）**：同 `session_id+change` 的 `concurrent-dirty-tree` warn 多条对数 5 → 0；spec-gate warn 计数/7 天 31 → ≤15。
 
-## 子线程通道矩阵（harden-subagent-constraint-channel）
+## 子线程通道矩阵
+
+**阶段档（2026-11-27 stage-agent-routing）**：六档 `stage-explore` / `stage-propose` / `stage-design` / `stage-implement` / `stage-verify` / `stage-archive`，由 `scripts/harness/stage-agent.sh <change>` 按 `stage.md` 的 marker 选取（fail-open 兜底 `general-purpose`）。权限按阶段收窄（`stage-explore` 无 bash/write/edit，是真只读；有 bash 的档「只读」靠纪律，见各档正文）。六档已加入 `ui-design-gate` 的 `UI_DISPATCH_ALLOWED_AGENTS` 白名单——否则 UI 合同未就绪时会被误拦（review R-1）。smoke：`bash scripts/harness/stage-agent.smoke.sh`（38 断言）。
+（harden-subagent-constraint-channel）
 
 子线程（子代理）能否收到 harness 约束取决于派发通道与模式，实测矩阵（2026-09-18，根因证据链见 `docs/research/subagent-constraint-gap/explore-findings.md`）：
 

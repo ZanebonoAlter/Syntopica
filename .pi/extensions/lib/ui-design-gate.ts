@@ -654,6 +654,14 @@ export const UI_DISPATCH_ALLOWED_AGENTS: readonly string[] = [
 	"plan",
 	"change-review",
 	"ui-design",
+	// stage-agent-routing：六个阶段档都是只读/规划/实现类派发，不产生 UI 合同外的界面改动。
+	// stage-* 的 tools 白名单已按阶段收窄（explore/verify 无 write/edit），此处放行不引入绕过。
+	"stage-explore",
+	"stage-propose",
+	"stage-design",
+	"stage-implement",
+	"stage-verify",
+	"stage-archive",
 ];
 
 /** 派发档位是否命中放行白名单（大小写不敏感——pi-web 档位解析本身大小写不敏感） */

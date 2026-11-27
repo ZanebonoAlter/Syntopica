@@ -13,7 +13,6 @@ run_in_background: false
 prompt_mode: append
 skills: true
 extensions: true
-model: minimax-cn/MiniMax-M3.1-Flash
 thinking: max
 ---
 
