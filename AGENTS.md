@@ -30,7 +30,7 @@ superpowers 流程型 skill 在本仓库一律按下表替代执行，**不做�
 - Syntopica: Nuxt 4 frontend + Go backend (Gin/GORM), single-user, no auth.
 - 后端 API 默认端口 `5100`（`http://localhost:5100/api`，避开 Windows 5000 端口 svchost/WSD 保留段冲突——该冲突为 Windows 特有，默认值跨平台统一）；前端 dev server 绑 `0.0.0.0`（默认 localhost 在 Windows 只绑 ::1 v6 环回，IPv4 环回与跨主机够不着）。
 - PostgreSQL + pgvector for persistence; Redis optional for job queues.
-- 和用户沟通使用中文，开发环境 **Linux（树莓派 arm64 / Debian 13）**，返回的回答尽量用大白话，接地气，能让用户理解。
+- 和用户沟通使用中文，开发环境 **Linux（树莓派 arm64 / Debian 13）**，返回的回答尽量用大白话，接地气，能让用户理解（判据与正反例见 [`standard/shared/doc-authoring.md`](docs/reference/standard/shared/doc-authoring.md) §汇报叙事）。
 - **所有改动默认走 openspec**（代码/功能/接口/数据模型必须先开 change）；豁免清单与编排见 `docs/reference/开发执行规范.md` §0.6「准入总则」
 - **UI 分档速查**（默认 schema `syntopica-ui`，make-ui-design-first-class）：新 change proposal 头声明 `<!-- ui-impact: none|minor|major -->`（与 complexity 正交）→ `ui-design.md` 必经制品（none=最小 N/A / minor=复用契约 / major=八节+`ui-prototype/` 原型）；**major 原型须用户明确批准（ui-approval: approved）才可进实现**，否则 ui-design-gate 拦截；旧 spec-driven change 不硬阻断（触及前端提醒一次迁移）。布局契约（page shell 四模式/dialog 四档/双视口验收）→ `docs/reference/standard/frontend/layout.md`
 
@@ -147,6 +147,7 @@ bash scripts/dev/start-dev.sh status       # 看端口 / PID / 健康 / 入口�
 - Keep code changes minimal and scoped. Match existing code style.
 - 完成任务后更新维护 `./docs/reference/` 知识库；openspec change 执行走 `开发执行规范.md` §0.6 标准编排流程（**apply 启动跑 `doc-impact.sh suggest`+`context`，归档前跑 `doc-impact.sh verify`+`check-standards.sh`**），归档前满足 §11 门禁，归档后按 §12 补 flow 变更溯源链接（archive 即永久家，v1.x 里程碑可选）。
 - **开工前/完工后必须汇报"部署后影响 + 需要的操作"**：每个 change 完工汇报必须包含一节明确告诉用户——(a) 部署/合并后用户可见行为会发生什么变化；(b) 需要用户手动执行的操作（如重新生成数据、清理、配置）；(c) 旧数据如何降级。避免用户打开界面才发现行为变了产生误会。涉及数据迁移、状态机变更、UI 分区变更时尤其强制。
+- **汇报先给人话（EIAL5）**：第一段说清「发生了什么、对你有什么影响」，术语/编号/`file:line` 放后面。判据、正反例、「为什么不做机检」全在 [`standard/shared/doc-authoring.md`](docs/reference/standard/shared/doc-authoring.md) §汇报叙事（不在此复制）。
 
 ## context-mode — 上下文工具
 
